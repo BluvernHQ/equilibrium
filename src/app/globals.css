@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #ffffff; /* keep white */
+    --foreground: #171717;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Toast animation */
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out forwards;
+}
+
+/* Fade in animation for sections */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out forwards;
+}
+
+/* Flash highlight animation for tag-to-block scrolling */
+@keyframes flash-highlight {
+  0% {
+    background-color: rgb(251, 191, 36); /* amber-400 */
+    box-shadow: 0 0 20px rgba(251, 191, 36, 0.6);
+  }
+  50% {
+    background-color: rgb(254, 243, 199); /* amber-100 */
+    box-shadow: 0 0 30px rgba(251, 191, 36, 0.8);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+
+.flash-highlight {
+  animation: flash-highlight 1.5s ease-out forwards;
+}

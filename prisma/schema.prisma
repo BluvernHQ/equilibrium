@@ -1,0 +1,339 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model master_tags {
+  sessionId    String         @db.Uuid
+  name         String         @db.VarChar(255)
+  description  String?
+  color        String?        @db.VarChar(7)
+  icon         String?        @db.VarChar(100)
+  created_at   DateTime       @default(now())
+  updated_at   DateTime
+  created_by   String?        @db.VarChar(36)
+  id           String         @id @db.Uuid
+  sessions     sessions       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  primary_tags primary_tags[]
+
+  @@index([name])
+  @@index([sessionId])
+}
+
+model primary_tags {
+  master_tag_id  String           @db.Uuid
+  name           String           @db.VarChar(255)
+  created_at     DateTime         @default(now())
+  updated_at     DateTime
+  id             String           @id @db.Uuid
+  master_tags    master_tags      @relation(fields: [master_tag_id], references: [id], onDelete: Cascade)
+  secondary_tags secondary_tags[]
+  tag_instances  tag_instances[]
+
+  @@index([master_tag_id])
+  @@index([master_tag_id, name])
+}
+
+model secondary_tags {
+  primary_tag_id String          @db.Uuid
+  name           String          @db.VarChar(255)
+  created_at     DateTime        @default(now())
+  updated_at     DateTime
+  id             String          @id @db.Uuid
+  primary_tags   primary_tags    @relation(fields: [primary_tag_id], references: [id], onDelete: Cascade)
+  tag_instances  tag_instances[]
+
+  @@unique([primary_tag_id, name])
+  @@index([primary_tag_id])
+  @@index([primary_tag_id, name])
+}
+
+model sessions {
+  media_url            String?
+  video_file_key       String?                @db.VarChar(500)
+  file_name            String?                @db.VarChar(255)
+  transcription_type   String?                @db.VarChar(20)
+  transcription_data   Json?
+  created_at           DateTime               @default(now())
+  updated_at           DateTime
+  id                   String                 @id @db.Uuid
+  master_tags          master_tags[]
+  tag_cross_references tag_cross_references[]
+
+  @@index([media_url])
+  @@index([video_file_key])
+}
+
+model tag_cross_references {
+  tag_instance_id       String        @db.Uuid
+  referenced_session_id String?       @db.Uuid
+  referenced_tag_id     String?       @db.Uuid
+  relationship          String        @db.VarChar(20)
+  created_at            DateTime      @default(now())
+  id                    String        @id @db.Uuid
+  sessions              sessions?     @relation(fields: [referenced_session_id], references: [id])
+  tag_instances         tag_instances @relation(fields: [tag_instance_id], references: [id], onDelete: Cascade)
+
+  @@index([referenced_session_id])
+  @@index([tag_instance_id])
+}
+
+model tag_instances {
+  primary_tag_id       String                 @db.Uuid
+  secondary_tag_id     String?                @db.Uuid
+  text_content         String
+  start_offset         Int
+  end_offset           Int
+  start_timestamp      Int?
+  end_timestamp        Int?
+  speaker              String?                @db.VarChar(255)
+  comment              String?
+  context_before       String?                @db.VarChar(200)
+  context_after        String?                @db.VarChar(200)
+  created_at           DateTime               @default(now())
+  updated_at           DateTime
+  id                   String                 @id @db.Uuid
+  tag_cross_references tag_cross_references[]
+  primary_tags         primary_tags           @relation(fields: [primary_tag_id], references: [id], onDelete: Cascade)
+  secondary_tags       secondary_tags?        @relation(fields: [secondary_tag_id], references: [id])
+
+  @@index([primary_tag_id])
+  @@index([secondary_tag_id])
+  @@index([speaker])
+  @@index([start_offset, end_offset])
+}
+
+// ============================================
+// Video Storage & Reference Model
+// ============================================
+model Video {
+  id                String          @id @default(uuid()) @db.Uuid
+  
+  // Source information (per documentation)
+  source_type       String          @db.VarChar(50) // youtube | s3 | local_upload | external_url
+  source_url        String          // Canonical URL
+  provider_video_id String?         // Optional, e.g. YouTube ID
+  duration_seconds  Float?          // Video duration in seconds
+  
+  // Legacy fields (for backward compatibility)
+  fileName          String?
+  fileKey           String?         @unique // The key in Digital Ocean Spaces
+  fileUrl           String?         // The public URL or presigned URL
+  fileSize          BigInt?         // File size in bytes
+  
+  // Timestamps
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  
+  // Relations
+  transcripts       Transcript[]
+  
+  @@index([source_url])
+  @@index([provider_video_id])
+  @@index([source_type])
+  @@index([createdAt])
+}
+
+// ============================================
+// Transcript Storage Model (Immutable)
+// ============================================
+model Transcript {
+  id                String          @id @default(uuid()) @db.Uuid
+  video_id          String          @db.Uuid
+  video             Video           @relation(fields: [video_id], references: [id], onDelete: Cascade)
+  
+  // Versioning (immutability)
+  version           Int             @default(1)
+  language          String          @default("en") @db.VarChar(10)
+  transcription_type String         @db.VarChar(20) // auto | manual | hybrid
+  
+  // Timestamps
+  created_at        DateTime        @default(now())
+  
+  // Relations
+  blocks            TranscriptBlock[]
+  sections          Section[]
+  tag_impressions   TagImpression[]
+  
+  @@unique([video_id, version])
+  @@index([video_id])
+  @@index([created_at])
+}
+
+// ============================================
+// Transcript Normalization (Atomic Blocks)
+// ============================================
+model TranscriptBlock {
+  id                String          @id @default(uuid()) @db.Uuid
+  transcript_id     String          @db.Uuid
+  transcript        Transcript      @relation(fields: [transcript_id], references: [id], onDelete: Cascade)
+  
+  // Block content
+  speaker_label     String?         @db.VarChar(255) // e.g. Person 1, Person 2
+  start_time_seconds Float?         // Start time in seconds
+  end_time_seconds   Float?         // End time in seconds
+  text              String          @db.Text
+  order_index       Int             // Order within transcript
+  
+  @@index([transcript_id])
+  @@index([transcript_id, order_index])
+  @@index([start_time_seconds, end_time_seconds])
+}
+
+// ============================================
+// Sections & Subsections (Contextual Layer)
+// ============================================
+model Section {
+  id                String          @id @default(uuid()) @db.Uuid
+  transcript_id     String          @db.Uuid
+  transcript        Transcript      @relation(fields: [transcript_id], references: [id], onDelete: Cascade)
+  
+  name              String          @db.VarChar(255)
+  start_block_index Int             // Starting block index
+  end_block_index   Int?            // Ending block index (nullable = open section)
+  
+  // Relations
+  subsections       Subsection[]
+  
+  @@index([transcript_id])
+}
+
+model Subsection {
+  id                String          @id @default(uuid()) @db.Uuid
+  section_id        String          @db.Uuid
+  section           Section         @relation(fields: [section_id], references: [id], onDelete: Cascade)
+  
+  name              String          @db.VarChar(255)
+  start_block_index Int
+  end_block_index   Int?            // Ending block index (nullable = open subsection)
+  
+  // Unique constraint: No two subsections with same name in same section
+  @@unique([section_id, name])
+  @@index([section_id])
+}
+
+// ============================================
+// Tagging Model (Semantic Layer)
+// ============================================
+model MasterTag {
+  id                String          @id @default(uuid()) @db.Uuid
+  name              String          @db.VarChar(255)
+  description       String?         @db.Text
+  color             String?         @db.VarChar(7)
+  icon              String?         @db.VarChar(100)
+  created_by        String?         @db.VarChar(36)
+  is_closed         Boolean         @default(false)
+  closed_at         DateTime?
+  created_at        DateTime        @default(now())
+  updated_at        DateTime        @updatedAt
+  
+  // Relations
+  primary_tags      PrimaryTag[]
+  branch_tags       BranchTag[]
+  tag_impressions   TagImpression[]
+  
+  @@unique([name]) // Globally unique per documentation
+  @@index([name])
+  @@index([created_at])
+}
+
+// ============================================
+// Branch Tags (Unique per Master Tag)
+// ============================================
+model BranchTag {
+  id                String          @id @default(uuid()) @db.Uuid
+  master_tag_id     String          @db.Uuid
+  master_tag        MasterTag       @relation(fields: [master_tag_id], references: [id], onDelete: Cascade)
+  
+  name              String          @db.VarChar(255)
+  description       String?         @db.Text
+  created_at        DateTime        @default(now())
+  updated_at        DateTime        @updatedAt
+  
+  // Unique constraint: Branch names must be unique within a Master tag
+  // But different Masters CAN reuse the same Branch name
+  @@unique([master_tag_id, name])
+  @@index([master_tag_id])
+  @@index([master_tag_id, name])
+}
+
+model PrimaryTag {
+  id                String          @id @default(uuid()) @db.Uuid
+  master_tag_id     String          @db.Uuid
+  master_tag        MasterTag       @relation(fields: [master_tag_id], references: [id], onDelete: Cascade)
+  
+  name              String          @db.VarChar(255)
+  created_at        DateTime        @default(now())
+  updated_at        DateTime        @updatedAt
+  
+  // Relations
+  secondary_tags    SecondaryTag[]
+  tag_impressions   TagImpression[]
+  
+  // NOTE: Duplicates ALLOWED - multiple Primary tags may share the same name under the same Master
+  @@index([master_tag_id])
+  @@index([master_tag_id, name])
+}
+
+model SecondaryTag {
+  id                String          @id @default(uuid()) @db.Uuid
+  primary_tag_id    String          @db.Uuid
+  primary_tag       PrimaryTag      @relation(fields: [primary_tag_id], references: [id], onDelete: Cascade)
+  
+  name              String          @db.VarChar(255)
+  created_at        DateTime        @default(now())
+  updated_at        DateTime        @updatedAt
+  
+  // NOTE: Duplicates ALLOWED - duplicate names allowed under the same Primary
+  @@index([primary_tag_id])
+  @@index([primary_tag_id, name])
+}
+
+// ============================================
+// Tag Impressions (The Most Important Concept)
+// ============================================
+model TagImpression {
+  id                String          @id @default(uuid()) @db.Uuid
+  transcript_id     String          @db.Uuid
+  transcript        Transcript      @relation(fields: [transcript_id], references: [id], onDelete: Cascade)
+  
+  // Block references (stored as JSON array of UUIDs)
+  block_ids         Json            // Array of TranscriptBlock UUIDs
+  
+  // Selection range data for precise highlight persistence
+  selected_text     String?         @db.Text      // The exact text that was selected (denormalized for quick preview)
+  selection_ranges  Json?           // Array of { blockId: string, startOffset: number, endOffset: number }
+  
+  // Tag references
+  master_tag_id     String          @db.Uuid
+  master_tag        MasterTag       @relation(fields: [master_tag_id], references: [id], onDelete: Cascade)
+  primary_tag_id    String?         @db.Uuid
+  primary_tag       PrimaryTag?     @relation(fields: [primary_tag_id], references: [id], onDelete: Cascade)
+  secondary_tag_ids Json?           // Array of SecondaryTag UUIDs
+  comment           String?         @db.Text
+  
+  // Optional Section/Subsection context (for analytics)
+  // Tags CAN exist outside any Section/Subsection
+  section_id        String?         @db.Uuid
+  subsection_id     String?         @db.Uuid
+  
+  // Metadata
+  created_by        String?         @db.VarChar(36)
+  created_at        DateTime        @default(now())
+  
+  @@index([transcript_id])
+  @@index([master_tag_id])
+  @@index([primary_tag_id])
+  @@index([section_id])
+  @@index([subsection_id])
+  @@index([created_at])
+}
+
+// ============================================
+// Legacy Models (for backward compatibility)
+// ============================================
+// These models are kept for backward compatibility but should be migrated
+// to the new Video/Transcript/TagImpression models over time
