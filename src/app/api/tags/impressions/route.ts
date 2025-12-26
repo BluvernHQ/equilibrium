@@ -10,6 +10,7 @@ export async function POST(req: NextRequest) {
             blockIds,
             masterTagName,
             masterTagDescription,
+            branchNames, // Added: Array of strings
             primaryTags, // Array of { name: string, comment?: string, secondaryTags?: string[], selectedText?: string, selectionRange?: object }
             createdBy,
             sectionId,      // Optional: Section context for analytics
@@ -55,6 +56,30 @@ export async function POST(req: NextRequest) {
                         created_by: createdBy || null,
                     }
                 });
+            }
+
+            // 1.5 Create Branch Tags if provided
+            if (branchNames && Array.isArray(branchNames)) {
+                for (const branchName of branchNames) {
+                    if (!branchName?.trim()) continue;
+                    
+                    // Check if branch tag already exists for this master tag
+                    const existingBranch = await tx.branchTag.findFirst({
+                        where: {
+                            master_tag_id: masterTag.id,
+                            name: branchName.trim()
+                        }
+                    });
+
+                    if (!existingBranch) {
+                        await tx.branchTag.create({
+                            data: {
+                                master_tag: { connect: { id: masterTag.id } },
+                                name: branchName.trim()
+                            }
+                        });
+                    }
+                }
             }
 
             // 2. Create Primary Tags and Tag Impressions

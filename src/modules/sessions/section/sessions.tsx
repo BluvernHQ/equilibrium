@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo, useLayoutEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { sessionsData } from "../data/sessions";
-import { PencilIcon, TrashIcon, CheckIcon, XMarkIcon, PlusIcon, ChatBubbleBottomCenterTextIcon, StopIcon, ArrowDownIcon } from "@heroicons/react/24/solid";
+import { PencilIcon, TrashIcon, CheckIcon, XMarkIcon, PlusIcon, ChatBubbleBottomCenterTextIcon, StopIcon, ArrowDownIcon, PencilSquareIcon } from "@heroicons/react/24/solid";
 import { DeleteModal } from "../components/action-modals";
 import RecentTags from "../components/RecentTags";
 import Link from "next/link";
@@ -97,6 +97,7 @@ export interface PendingEntry {
   primaryInput: string;
   primaryInputClosed?: boolean;
   primaryList: PendingPrimary[];
+  branchTags?: { value: string }[]; // Added branch tags support
   verticalOffset?: number; // Pixels from top of block
 }
 
@@ -2118,7 +2119,14 @@ export default function Sessions() {
     // 1. Handle saved tag (database update)
     const tag = tags.find(t => t.id === entryId);
     if (tag) {
-      const primaryTagId = tag.primaryList[primaryIndex]?.id;
+      const primary = tag.primaryList[primaryIndex];
+      if (primary && primary.secondaryTags && primary.secondaryTags.length >= 1) {
+        showToast("Only one secondary tag is allowed per primary tag.", "info");
+        setSecondaryInput(null);
+        return;
+      }
+      
+      const primaryTagId = primary?.id;
       if (primaryTagId) {
         try {
           const res = await fetch('/api/tags/secondary', {
@@ -2133,7 +2141,7 @@ export default function Sessions() {
               const newList = [...t.primaryList];
               newList[primaryIndex] = {
                 ...newList[primaryIndex],
-                secondaryTags: [...(newList[primaryIndex].secondaryTags || []), { id: data.secondaryTag.id, value: trimmed }]
+                secondaryTags: [{ id: data.secondaryTag.id, value: trimmed }] // Enforce only 1
               };
               return { ...t, primaryList: newList };
             }));
@@ -2151,9 +2159,12 @@ export default function Sessions() {
       const newPrimaryList = [...p.primaryList];
       const primary = newPrimaryList[primaryIndex];
       if (primary) {
+        if (primary.secondaryTags && primary.secondaryTags.length >= 1) {
+          return p;
+        }
         newPrimaryList[primaryIndex] = {
           ...primary,
-          secondaryTags: [...(primary.secondaryTags || []), { value: trimmed }]
+          secondaryTags: [{ value: trimmed }] // Enforce only 1
         };
       }
       return { ...p, primaryList: newPrimaryList };
@@ -2216,50 +2227,79 @@ export default function Sessions() {
     const trimmed = value.trim();
     if (!trimmed) return;
 
+    // 1. Handle saved tag (database update)
     const tag = tags.find(t => t.id === tagId);
-    const masterTagId = tag?.masterTagId;
+    if (tag) {
+      if (tag.branchTags && tag.branchTags.length >= 1) {
+        showToast("Only one branch tag is allowed per master tag.", "info");
+        setBranchInput(null);
+        return;
+      }
+      const masterTagId = tag?.masterTagId;
 
-    if (masterTagId) {
-      try {
-        const res = await fetch('/api/tags/branch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ masterTagId, name: trimmed })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setTags(prev => prev.map(t => {
-            if (t.id !== tagId) return t;
-            return {
-              ...t,
-              branchTags: [...(t.branchTags || []), { id: data.branchTag.id, name: trimmed }]
-            };
-          }));
-        } else {
-          const err = await res.json();
-          showToast(err.error || "Failed to add branch tag", "error");
+      if (masterTagId) {
+        try {
+          const res = await fetch('/api/tags/branch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ masterTagId, name: trimmed })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setTags(prev => prev.map(t => {
+              if (t.id !== tagId) return t;
+              return {
+                ...t,
+                branchTags: [{ id: data.branchTag.id, name: trimmed }] // Enforce only 1
+              };
+            }));
+          } else {
+            const err = await res.json();
+            showToast(err.error || "Failed to add branch tag", "error");
+          }
+        } catch (error) {
+          console.error("Error adding branch tag:", error);
         }
-      } catch (error) {
-        console.error("Error adding branch tag:", error);
       }
     }
+
+    // 2. Handle pending tag (state update only)
+    setPending(prev => prev.map(p => {
+      if (p.id !== tagId) return p;
+      if (p.branchTags && p.branchTags.length >= 1) return p;
+      return {
+        ...p,
+        branchTags: [{ value: trimmed }] // Enforce only 1
+      };
+    }));
 
     setBranchInput(null);
   };
 
-  const removeBranchTag = async (tagId: string, branchId: string) => {
-    try {
-      await fetch(`/api/tags/branch?id=${branchId}`, { method: 'DELETE' });
-      setTags(prev => prev.map(t => {
-        if (t.id !== tagId) return t;
-        return {
-          ...t,
-          branchTags: (t.branchTags || []).filter(b => b.id !== branchId)
-        };
-      }));
-    } catch (error) {
-      console.error("Error deleting branch tag:", error);
+  const removeBranchTag = async (tagId: string, branchId?: string, branchIdx?: number) => {
+    // 1. Handle saved tag
+    const tag = tags.find(t => t.id === tagId);
+    if (tag && branchId) {
+      try {
+        await fetch(`/api/tags/branch?id=${branchId}`, { method: 'DELETE' });
+        setTags(prev => prev.map(t => {
+          if (t.id !== tagId) return t;
+          return {
+            ...t,
+            branchTags: (t.branchTags || []).filter(b => b.id !== branchId)
+          };
+        }));
+      } catch (error) {
+        console.error("Error deleting branch tag:", error);
+      }
     }
+
+    // 2. Handle pending tag
+    setPending(prev => prev.map(p => {
+      if (p.id !== tagId) return p;
+      const newBranchTags = (p.branchTags || []).filter((_, idx) => idx !== branchIdx);
+      return { ...p, branchTags: newBranchTags };
+    }));
   };
 
   // ------------------------------------------------------------------
@@ -2414,6 +2454,9 @@ export default function Sessions() {
 
     const allTexts = entriesWithPrimaries.map((p) => p.selectedText);
     
+    // Collect branch tags from the first entry (branch tags belong to the master tag)
+    const branchNamesToApply = entriesWithPrimaries[0]?.branchTags?.map(b => b.value) || [];
+    
     // Find section context for the first block (tags span the same context)
     const firstEntry = entriesWithPrimaries[0];
     const sectionContext = firstEntry ? findSectionContext(firstEntry.messageIndex) : {};
@@ -2439,6 +2482,7 @@ export default function Sessions() {
             blockIds,
             masterTagName: masterToApply,
             masterTagDescription: masterComment || null,
+            branchNames: branchNamesToApply, // Pass branch tag names
             primaryTags: allPrimaries.map(p => ({
               id: p.id, // Send primary tag ID for reuse
               name: p.value,
@@ -2506,6 +2550,7 @@ export default function Sessions() {
         masterTagId: savedMasterTagId,
         masterComment: masterComment || undefined,
         masterColor: getMasterTagColor(savedMasterTagId || masterToApply || tagId),
+        branchTags: p.branchTags?.map(b => ({ id: Math.random().toString(36).slice(2, 9), name: b.value })), // Local branch tags
         primaryList: p.primaryList.map(val => {
           const imp = savedImpressions.find(si => si.primaryTagName === val.value && si.blockIds.includes(p.blockId!));
           return {
@@ -3821,16 +3866,18 @@ export default function Sessions() {
                                         {editingMasterName !== tag.master ? (
                                           <button 
                                             onClick={(e) => { e.stopPropagation(); setEditingMasterName(tag.master); }} 
-                                            className="text-[9px] px-1.5 py-0.5 bg-[#00A3AF] text-white rounded hover:bg-[#008c96] font-bold uppercase"
+                                            className="p-1 text-[#00A3AF] hover:bg-[#00A3AF]/10 rounded transition-colors"
+                                            title="Edit Master"
                                           >
-                                            Edit Master
+                                            <PencilSquareIcon className="w-4 h-4" />
                                           </button>
                                         ) : (
                                           <button 
                                             onClick={(e) => { e.stopPropagation(); setEditingMasterName(null); }} 
-                                            className="text-[9px] px-1.5 py-0.5 bg-gray-500 text-white rounded font-bold uppercase"
+                                            className="p-1 text-gray-500 hover:bg-gray-100 rounded transition-colors"
+                                            title="Exit Edit Mode"
                                           >
-                                            Exit
+                                            <XMarkIcon className="w-4 h-4" />
                                           </button>
                                         )}
                                       </div>
@@ -3921,16 +3968,7 @@ export default function Sessions() {
                                                 </button>
                                               </>
                                             )
-                                          ) : (
-                                            !isFirstOfAll && (
-                                              <button 
-                                                onClick={(e) => { e.stopPropagation(); setEditingMasterName(tag.master); }} 
-                                                className="text-[10px] text-[#00A3AF] opacity-0 group-hover/item:opacity-100 transition-opacity hover:underline font-bold"
-                                              >
-                                                Edit
-                                              </button>
-                                            )
-                                          )}
+                                          ) : null}
                                         </div>
                                       </div>
 
@@ -4074,13 +4112,65 @@ export default function Sessions() {
                               </div>
                             )}
 
-                          {/* --- CONFIRMED MASTER DISPLAY --- */}
-                          {pending[0]?.id === entry.id && masterConfirmed && !masterCancelled && (
-                            <div className="flex items-center justify-between bg-[#F0FDFA] px-3 py-2 rounded border border-[#CCFBF1] mb-2">
-                              <div className="flex items-center gap-2 flex-1">
-                                <div className="text-sm font-bold text-[#0F766E]">{masterInput || "Master (empty)"}</div>
-                                
-                                {editingItem.id === entry.id && editingItem.type === 'pending_master_comment' ? (
+                            {/* --- CONFIRMED MASTER DISPLAY --- */}
+                            {pending[0]?.id === entry.id && masterConfirmed && !masterCancelled && (
+                              <div className="flex items-center justify-between bg-[#F0FDFA] px-3 py-2 rounded border border-[#CCFBF1] mb-2">
+                                <div className="flex items-center gap-2 flex-1 flex-wrap">
+                                  <div className="text-sm font-bold text-[#0F766E]">{masterInput || "Master (empty)"}</div>
+                                  
+                                  {/* Branch Tags Display for Pending */}
+                                  {entry.branchTags && entry.branchTags.length > 0 && (
+                                    <div className="flex items-center gap-1">
+                                      {entry.branchTags.map((b, bIdx) => (
+                                        <span key={bIdx} className="text-[9px] bg-[#00A3AF]/10 text-[#00A3AF] px-1.5 py-0.5 rounded border border-[#00A3AF]/20 flex items-center gap-1 group/pbranch">
+                                          {b.value}
+                                          <button 
+                                            onClick={(e) => { e.stopPropagation(); removeBranchTag(entry.id, undefined, bIdx); }}
+                                            className="text-red-400 opacity-0 group-hover/pbranch:opacity-100 transition-opacity"
+                                          >
+                                            <XMarkIcon className="w-2.5 h-2.5" />
+                                          </button>
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {/* Add Branch Button for Pending - Limit to 1 */}
+                                  {(!entry.branchTags || entry.branchTags.length === 0) && (
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); toggleBranchInput(entry.id); }}
+                                      className="p-0.5 bg-white/50 hover:bg-white rounded text-[#00A3AF] transition-colors"
+                                      title="Add branch tag"
+                                    >
+                                      <PlusIcon className="w-3 h-3" />
+                                    </button>
+                                  )}
+
+                                  {/* Branch Tag Input for Pending */}
+                                  {branchInput?.tagId === entry.id && (
+                                    <div className="flex items-center gap-1 ml-1" onClick={(e) => e.stopPropagation()}>
+                                      <input
+                                        autoFocus
+                                        type="text"
+                                        placeholder="Branch..."
+                                        value={branchInput.value}
+                                        onChange={(e) => setBranchInput({ ...branchInput, value: e.target.value })}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') addBranchTag(entry.id, branchInput.value);
+                                          if (e.key === 'Escape') setBranchInput(null);
+                                        }}
+                                        className="px-2 py-0.5 text-[10px] border border-[#00A3AF] rounded focus:outline-none w-20"
+                                      />
+                                      <button onClick={() => addBranchTag(entry.id, branchInput.value)} className="p-0.5 hover:bg-[#E0F7FA] rounded">
+                                        <CheckIcon className="w-3.5 h-3.5 text-[#00A3AF]" />
+                                      </button>
+                                      <button onClick={() => setBranchInput(null)} className="p-0.5 hover:bg-gray-100 rounded">
+                                        <XMarkIcon className="w-3.5 h-3.5 text-gray-400" />
+                                      </button>
+                                    </div>
+                                  )}
+
+                                  {editingItem.id === entry.id && editingItem.type === 'pending_master_comment' ? (
                                   <div className="flex items-center gap-2 flex-1" onClick={(e) => e.stopPropagation()}>
                                     <input
                                       autoFocus
@@ -4122,7 +4212,13 @@ export default function Sessions() {
                                   </div>
                                 )}
                               </div>
-                              <button onClick={handleEditMaster} className="text-xs text-gray-500 hover:text-[#0F766E] ml-2">Edit</button>
+                                <button 
+                                  onClick={handleEditMaster} 
+                                  className="p-1 text-gray-400 hover:text-[#0F766E] hover:bg-[#0F766E]/10 rounded transition-colors"
+                                  title="Edit Master"
+                                >
+                                  <PencilSquareIcon className="w-3.5 h-3.5" />
+                                </button>
                             </div>
                           )}
 
