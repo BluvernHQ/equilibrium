@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSession } from "@/context/SessionContext";
-import { SparklesIcon, PencilSquareIcon, DocumentTextIcon } from "@heroicons/react/24/outline";
+import { SparklesIcon, PencilSquareIcon, DocumentTextIcon, CloudArrowUpIcon } from "@heroicons/react/24/outline";
 
 interface VideoItem {
   key: string;
@@ -21,7 +21,8 @@ export default function Recordings() {
   const [loadingVideos, setLoadingVideos] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<VideoItem | null>(null);
   const router = useRouter();
-  const { setVideoUrl } = useSession();
+  const { setVideoUrl, uploadFile, isUploading, uploadStatus } = useSession();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Fetch uploaded videos from both Spaces and Database
   const fetchVideos = async () => {
@@ -79,6 +80,31 @@ export default function Recordings() {
     fetchVideos();
   }, []);
 
+  // Refresh videos list after successful upload
+  useEffect(() => {
+    if (uploadStatus === "success") {
+      // Wait a bit for the file to be available, then refresh
+      setTimeout(() => {
+        fetchVideos();
+      }, 2000);
+    }
+  }, [uploadStatus]);
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      await uploadFile(file);
+      // Reset input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return bytes + " B";
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + " KB";
@@ -101,33 +127,59 @@ export default function Recordings() {
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
-            <Link href="/">
-              <img src="/icons/arrow-left.png" alt="Back" className="w-[24px] h-[24px] cursor-pointer" />
-            </Link>
             <h1 className="text-[24px] font-medium text-[#111827]">Recordings</h1>
           </div>
-          <button
-            onClick={fetchVideos}
-            disabled={loadingVideos}
-            className="px-4 py-2 bg-[#00A3AF] text-white rounded-lg font-medium hover:bg-[#008C97] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-          >
-            {loadingVideos ? (
-              <>
-                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                Refreshing...
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                Refresh
-              </>
-            )}
-          </button>
+          <div className="flex items-center gap-3">
+            <input
+              type="file"
+              ref={fileInputRef}
+              className="hidden"
+              accept="audio/*,video/*"
+              onChange={handleFileSelect}
+            />
+            <button
+              onClick={handleUploadClick}
+              disabled={isUploading}
+              className="px-4 py-2 bg-[#111827] text-white rounded-lg font-medium hover:bg-black transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            >
+              {isUploading ? (
+                <>
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  Uploading...
+                </>
+              ) : (
+                <>
+                  <CloudArrowUpIcon className="w-4 h-4" />
+                  Upload
+                </>
+              )}
+            </button>
+            <button
+              onClick={fetchVideos}
+              disabled={loadingVideos || isUploading}
+              className="px-4 py-2 bg-[#00A3AF] text-white rounded-lg font-medium hover:bg-[#008C97] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            >
+              {loadingVideos ? (
+                <>
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  Refreshing...
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Refresh
+                </>
+              )}
+            </button>
+          </div>
         </div>
 
         {/* Content */}
@@ -143,7 +195,7 @@ export default function Recordings() {
               </svg>
             </div>
             <div className="text-gray-400 mb-2 text-lg font-medium">No recordings found</div>
-            <div className="text-sm text-gray-500">Upload videos from the home page to see them here</div>
+            <div className="text-sm text-gray-500">Upload videos to see them here</div>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 overflow-y-auto">

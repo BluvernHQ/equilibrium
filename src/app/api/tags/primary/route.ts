@@ -146,3 +146,45 @@ export async function POST(req: NextRequest) {
         );
     }
 }
+
+// PATCH - Update a primary tag (rename)
+export async function PATCH(req: NextRequest) {
+    try {
+        const body = await req.json();
+        const { id, name } = body;
+
+        if (!id) {
+            return NextResponse.json(
+                { error: "Primary tag ID is required" },
+                { status: 400 }
+            );
+        }
+
+        if (!name?.trim()) {
+            return NextResponse.json(
+                { error: "Primary tag name is required" },
+                { status: 400 }
+            );
+        }
+
+        // @ts-ignore
+        const primaryTag = await prisma.primaryTag.update({
+            where: { id },
+            data: { name: name.trim() }
+        });
+
+        return NextResponse.json({
+            success: true,
+            primaryTag: {
+                id: primaryTag.id,
+                name: primaryTag.name,
+            },
+        });
+    } catch (error: any) {
+        console.error("Update primary tag error:", error);
+        return NextResponse.json(
+            { error: error.message || "Failed to update primary tag" },
+            { status: 500 }
+        );
+    }
+}

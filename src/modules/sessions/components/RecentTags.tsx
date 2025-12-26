@@ -29,12 +29,14 @@ interface RecentPrimary {
   value: string;
   displayName?: string; // Display name with numbering
   impressionId?: string;
+  secondaryTags?: { id: string, name: string }[];
 }
 
 interface RecentMaster {
   id: string;
   name: string;
   description?: string;
+  branchTags?: { id: string, name: string }[];
   primaries: RecentPrimary[];
   color?: string;
 }
@@ -87,6 +89,7 @@ export default function RecentTags({}: RecentTagsProps) {
                 id: group.id || group.masterTag.id,
                 name: group.masterTag.name,
                 description: group.masterTag.description,
+                branchTags: group.branchTags, // Added
                 // Use stored color from DB, or generate consistent color based on ID
                 color: group.masterTag.color || getMasterTagColor(group.masterTag.id || group.masterTag.name),
                 primaries: group.primaryTags.map((pt: any) => ({
@@ -94,6 +97,7 @@ export default function RecentTags({}: RecentTagsProps) {
                   value: pt.name,
                   displayName: pt.displayName,
                   impressionId: pt.impressionId,
+                  secondaryTags: pt.secondaryTags, // Added
                 })),
               }));
               
@@ -246,13 +250,26 @@ export default function RecentTags({}: RecentTagsProps) {
                       {shouldShowHeader && (
                   <div className="px-3 py-2 bg-gradient-to-r from-gray-50 to-white border-b border-gray-100">
                     <div className="flex items-center justify-between">
-                      <span
-                        className="text-sm font-semibold truncate"
-                        style={{ color: tag.color }}
-                        title={tag.name}
-                      >
-                        {tag.name}
-                      </span>
+                      <div className="flex items-center gap-2 overflow-hidden">
+                        <span
+                          className="text-sm font-semibold truncate"
+                          style={{ color: tag.color }}
+                          title={tag.name}
+                        >
+                          {tag.name}
+                        </span>
+                        
+                        {/* Branch Tags Display */}
+                        {tag.branchTags && tag.branchTags.length > 0 && (
+                          <div className="flex items-center gap-1">
+                            {tag.branchTags.map((b) => (
+                              <span key={b.id} className="text-[9px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded border border-gray-200">
+                                {b.name}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                       <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
                         {tag.primaries.length} tag{tag.primaries.length !== 1 ? "s" : ""}
                       </span>
@@ -270,15 +287,28 @@ export default function RecentTags({}: RecentTagsProps) {
                         return (
                           <div
                             key={p.impressionId || `${p.id}-${pIdx}`}
-                            className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-gray-50 transition-colors"
+                            className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-gray-50 transition-colors overflow-hidden"
                           >
                             <div
                               className={`w-1.5 h-1.5 rounded-full flex-shrink-0`}
                               style={{ backgroundColor: tag.color }}
                             />
-                            <span className="text-xs text-gray-700 truncate" title={p.value}>
-                              {p.value}
-                            </span>
+                            <div className="flex items-center gap-2 overflow-hidden">
+                              <span className="text-xs text-gray-700 truncate" title={displayText}>
+                                {displayText}
+                              </span>
+                              
+                              {/* Secondary Tags Display */}
+                              {p.secondaryTags && p.secondaryTags.length > 0 && (
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  {p.secondaryTags.map((sec) => (
+                                    <span key={sec.id} className="text-[9px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100">
+                                      {sec.name}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         );
                       })}

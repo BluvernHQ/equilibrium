@@ -91,9 +91,17 @@ export async function POST(req: NextRequest) {
         const buffer = Buffer.from(arrayBuffer);
         console.log("Buffer created, size:", `${(buffer.length / (1024 * 1024)).toFixed(2)} MB`);
 
-        // Generate unique filename
-        const fileExtension = file.name.split('.').pop() || 'mp4';
-        const fileName = `${uuidv4()}.${fileExtension}`;
+        // Use original filename with timestamp suffix to ensure uniqueness
+        const originalFileName = file.name;
+        const fileExtension = originalFileName.split('.').pop() || 'mp4';
+        const baseName = originalFileName.substring(0, originalFileName.lastIndexOf('.')) || originalFileName;
+        
+        // Sanitize filename: remove special characters, keep only alphanumeric, spaces, hyphens, underscores
+        const sanitizedBaseName = baseName.replace(/[^a-zA-Z0-9\s\-_]/g, '_').trim();
+        
+        // Add timestamp to ensure uniqueness
+        const timestamp = Date.now();
+        const fileName = `${sanitizedBaseName}_${timestamp}.${fileExtension}`;
         const key = `Equilibrium/${fileName}`;
 
         // Format the endpoint for S3 client

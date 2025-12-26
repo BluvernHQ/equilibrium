@@ -1,6 +1,6 @@
-import Recordings from "@/modules/recordings/section/recordings";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <Recordings />;
+  redirect("/");
 }
 

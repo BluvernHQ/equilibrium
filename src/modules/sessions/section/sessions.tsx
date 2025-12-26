@@ -41,8 +41,8 @@ export interface SelectionRange {
   endOffset: number;
 }
 
-// Secondary tag interface
 interface SecondaryTag {
+  id?: string;
   value: string;
   comment?: string;
 }
@@ -68,6 +68,7 @@ interface TagItem {
   masterComment?: string;
   masterColor?: string; // Stored or generated color for this master tag
   isClosed?: boolean;
+  branchTags?: { id: string, name: string }[];
   primaryList: PrimaryTagDetail[];
   allText: string[];
   blockIds: string[]; // All block IDs for this tag group
@@ -152,6 +153,7 @@ interface DbTagGroup {
     color?: string;
     is_closed?: boolean;
   };
+  branchTags?: { id: string, name: string }[];
   primaryTags: {
     id: string;
     name: string;
@@ -161,6 +163,7 @@ interface DbTagGroup {
     blockIds: string[];
     selectedText?: string; // The exact selected text
     selectionRanges?: SelectionRange[]; // Character offsets within blocks
+    secondaryTags?: { id: string, name: string }[];
     comment?: string;
   }[];
   blockIds: string[];
@@ -323,6 +326,12 @@ export default function Sessions() {
     value: string;
   } | null>(null);
 
+  // --- Branch Tag Input State ---
+  const [branchInput, setBranchInput] = useState<{
+    tagId: string;
+    value: string;
+  } | null>(null);
+
   // Data State
   const [tags, setTags] = useState<TagItem[]>([]);
 
@@ -461,7 +470,7 @@ export default function Sessions() {
   // Inline Edit State
   const [editingItem, setEditingItem] = useState<{
     id: string | null;
-    type: 'master' | 'primary' | 'master_comment' | 'primary_comment' | 'pending_master_comment' | 'pending_primary_comment' | null;
+    type: 'master' | 'primary' | 'master_comment' | 'primary_comment' | 'pending_master_comment' | 'pending_primary' | 'pending_primary_comment' | null;
     index: number | null;
     tempValue: string;
   }>({ id: null, type: null, index: null, tempValue: "" });
@@ -480,6 +489,22 @@ export default function Sessions() {
   const leftListRef = useRef<HTMLDivElement | null>(null);
   const rightListRef = useRef<HTMLDivElement | null>(null);
   const leftRowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const sharedScrollRootRef = useRef<HTMLDivElement | null>(null); // Shared scroll container for both panes
+  
+  // Geometry-driven alignment system
+  // Coordinate system: Transcript is source of truth, Sidebar follows
+  const [elementPositions, setElementPositions] = useState<Map<number, {
+    top: number;
+    height: number;
+    selectionTop?: number; // For tag alignment with selected text
+  }>>(new Map());
+  
+  // Collision detection for sidebar tags
+  const [tagPositions, setTagPositions] = useState<Map<string, {
+    top: number;
+    height: number;
+    adjustedTop: number; // After collision handling
+  }>>(new Map());
   
   // Find the last open section/subsection for closing
   const findLastOpenSection = useCallback(() => {
@@ -777,6 +802,7 @@ export default function Sessions() {
               masterComment: group.masterTag.description || undefined,
               masterColor: group.masterTag.color || getMasterTagColor(group.masterTag.id),
               isClosed: group.masterTag.is_closed,
+              branchTags: group.branchTags,
               primaryList: [{
                 id: pt.id,
                 value: pt.name,
@@ -786,6 +812,7 @@ export default function Sessions() {
                 blockId: pt.blockIds[0],
                 impressionId: pt.impressionId,
                 comment: pt.comment,
+                secondaryTags: pt.secondaryTags?.map(s => ({ id: s.id, value: s.name })),
                 selectedText: pt.selectedText,
                 selectionRange: pt.selectionRanges?.[0],
               }],
@@ -979,6 +1006,447 @@ export default function Sessions() {
     const heights = leftRowRefs.current.map((el) => el?.offsetHeight || 0);
     setLeftRowHeights(heights);
   }, [pending, tags, displayItems]);
+
+  // ============================================
+  // GEOMETRY-DRIVEN COORDINATE SYSTEM
+  // ============================================
+  // 
+  // CRITICAL PRINCIPLE: Measurement-Driven, Not Layout-Driven
+  // 
+  // This function ALWAYS uses live DOM measurements via getBoundingClientRect().
+  // Positions are NEVER cached or assumed. Every calculation reads from the
+  // current state of the DOM, ensuring perfect alignment even after:
+  // - Text reflow (wrapping, font changes)
+  // - Window resize
+  // - Zoom changes
+  // - Orientation changes
+  // - Font loading
+  // - Content updates
+  //
+  // The Transcript pane is the source of truth. The Sidebar mirrors it.
+  // ============================================
+  
+  const calculateElementPositions = useCallback(() => {
+    const transcriptContainer = leftListRef.current;
+    const sidebarContainer = rightListRef.current;
+    const sharedScrollRoot = sharedScrollRootRef.current;
+    
+    if (!transcriptContainer || !sidebarContainer || !sharedScrollRoot) return;
+    
+    // CRITICAL: Use shared scroll root as the SINGLE coordinate origin
+    // Both transcript and sidebar elements must be measured relative to this
+    const scrollRootRect = sharedScrollRoot.getBoundingClientRect();
+    
+    // Calculate sidebar container's offset within scroll root
+    // This accounts for padding and any offset between containers
+    const sidebarContainerRect = sidebarContainer.getBoundingClientRect();
+    const sidebarOffsetInScrollRoot = sidebarContainerRect.top - scrollRootRect.top + sharedScrollRoot.scrollTop;
+    
+    const newPositions = new Map<number, { top: number; height: number; selectionTop?: number }>();
+    
+    // Calculate positions for each display item using CURRENT DOM state
+    displayItems.forEach((item, index) => {
+      const element = leftRowRefs.current[index];
+      if (!element) {
+        // Element not yet rendered - skip but don't break
+        return;
+      }
+      
+      // CRITICAL: Always measure fresh - getBoundingClientRect() is live
+      const elementRect = element.getBoundingClientRect();
+      
+      // Calculate top relative to SHARED SCROLL ROOT (single coordinate origin)
+      // This ensures transcript and sidebar use the same coordinate system
+      const relativeTop = elementRect.top - scrollRootRect.top + sharedScrollRoot.scrollTop;
+      const height = elementRect.height; // Live height measurement
+      
+      // For sidebar positioning: subtract sidebar container's offset
+      // This gives us position relative to sidebar container's content area
+      const sidebarRelativeTop = relativeTop - sidebarOffsetInScrollRoot;
+      
+      // For data items, also calculate selection position if there's a pending entry
+      let selectionTop: number | undefined;
+      if (item.type === 'data') {
+        const dataIndex = item.originalIndex!;
+        const pendingEntry = pending.find(p => p.messageIndex === dataIndex);
+        
+        if (pendingEntry && pendingEntry.verticalOffset !== undefined) {
+          // Recalculate selection position from current element state
+          // This ensures selection stays aligned even after text reflow
+          const blockElement = element.querySelector('[data-block-text]') || element;
+          if (blockElement) {
+            // Try to find the actual selection range in the DOM
+            const selection = window.getSelection();
+            if (selection && selection.rangeCount > 0) {
+              const range = selection.getRangeAt(0);
+              if (blockElement.contains(range.commonAncestorContainer)) {
+                const rangeRect = range.getBoundingClientRect();
+                const blockRect = blockElement.getBoundingClientRect();
+                const liveOffset = rangeRect.top - blockRect.top;
+                // Measure selection top relative to scroll root, then adjust for sidebar
+                selectionTop = (rangeRect.top - scrollRootRect.top + sharedScrollRoot.scrollTop) - sidebarOffsetInScrollRoot;
+              } else {
+                // Fallback to stored offset
+                selectionTop = sidebarRelativeTop + pendingEntry.verticalOffset;
+              }
+            } else {
+              // No active selection, use stored offset
+              selectionTop = sidebarRelativeTop + pendingEntry.verticalOffset;
+            }
+          } else {
+            // Fallback to stored offset
+            selectionTop = sidebarRelativeTop + pendingEntry.verticalOffset;
+          }
+        }
+      }
+      
+      newPositions.set(index, {
+        top: sidebarRelativeTop, // Position relative to sidebar container
+        height,
+        selectionTop
+      });
+    });
+    
+    // Update positions state - this triggers re-render with new coordinates
+    setElementPositions(newPositions);
+    
+    // Calculate tag positions with collision detection using fresh measurements
+    calculateTagPositions(newPositions, sidebarContainer);
+  }, [displayItems, pending, tags]);
+
+  // Calculate tag positions with collision detection
+  const calculateTagPositions = useCallback((
+    elementPositions: Map<number, { top: number; height: number; selectionTop?: number }>,
+    sidebarContainer: HTMLDivElement
+  ) => {
+    const sidebarRect = sidebarContainer.getBoundingClientRect();
+    const newTagPositions = new Map<string, { top: number; height: number; adjustedTop: number }>();
+    const occupiedRanges: Array<{ top: number; bottom: number }> = [];
+    const MIN_SPACING = 10; // Minimum spacing between tags (px)
+    
+    // Process tags in order of their appearance
+    const sortedTags = [...tags].sort((a, b) => {
+      const aMinIndex = Math.min(...a.primaryList.map(p => {
+        const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === p.messageIndex);
+        return itemIndex >= 0 ? itemIndex : Infinity;
+      }));
+      const bMinIndex = Math.min(...b.primaryList.map(p => {
+        const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === p.messageIndex);
+        return itemIndex >= 0 ? itemIndex : Infinity;
+      }));
+      return aMinIndex - bMinIndex;
+    });
+    
+    sortedTags.forEach((tag) => {
+      // Find the first primary tag's position
+      const firstPrimary = tag.primaryList[0];
+      if (!firstPrimary) return;
+      
+      const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === firstPrimary.messageIndex);
+      if (itemIndex < 0) return;
+      
+      const elementPos = elementPositions.get(itemIndex);
+      if (!elementPos) return;
+      
+      // Use selection top if available, otherwise use element top
+      const intendedTop = elementPos.selectionTop ?? elementPos.top;
+      
+      // Measure actual tag height from DOM if available, otherwise estimate
+      const tagElement = sidebarContainer.querySelector(`[data-tag-id="${tag.id}"]`) as HTMLElement;
+      const actualHeight = tagElement ? tagElement.offsetHeight : 120; // Fallback estimate
+      
+      // Check for collisions and adjust
+      let adjustedTop = intendedTop;
+      let hasCollision = true;
+      let iterations = 0;
+      const MAX_ITERATIONS = 100; // Safety limit
+      
+      while (hasCollision && iterations < MAX_ITERATIONS) {
+        iterations++;
+        hasCollision = false;
+        const adjustedBottom = adjustedTop + actualHeight;
+        
+        // Check against all occupied ranges
+        for (const range of occupiedRanges) {
+          if (
+            (adjustedTop >= range.top && adjustedTop < range.bottom) ||
+            (adjustedBottom > range.top && adjustedBottom <= range.bottom) ||
+            (adjustedTop <= range.top && adjustedBottom >= range.bottom)
+          ) {
+            // Collision detected, push down
+            adjustedTop = range.bottom + MIN_SPACING;
+            hasCollision = true;
+            break;
+          }
+        }
+      }
+      
+      // Record this tag's occupied range
+      occupiedRanges.push({
+        top: adjustedTop,
+        bottom: adjustedTop + actualHeight
+      });
+      
+      newTagPositions.set(tag.id, {
+        top: intendedTop,
+        height: actualHeight,
+        adjustedTop
+      });
+    });
+    
+    setTagPositions(newTagPositions);
+  }, [tags, displayItems]);
+
+  // Real-time position recalculation with observers - FULLY RESPONSIVE
+  useLayoutEffect(() => {
+    const transcriptContainer = leftListRef.current;
+    const sidebarContainer = rightListRef.current;
+    const sharedScrollRoot = sharedScrollRootRef.current;
+    
+    if (!transcriptContainer || !sidebarContainer || !sharedScrollRoot) return;
+    
+    // Debounced calculation to batch rapid updates
+    let rafId: number | null = null;
+    const scheduleCalculation = () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        calculateElementPositions();
+        rafId = null;
+      });
+    };
+    
+    // Initial calculation after a brief delay to ensure DOM is ready
+    const timeoutId = setTimeout(() => {
+      calculateElementPositions();
+    }, 0);
+    
+    // ============================================
+    // 1. RESIZE OBSERVERS (Container & Content)
+    // ============================================
+    
+    // CRITICAL: Observe shared scroll root - this is the coordinate origin
+    const scrollRootResizer = new ResizeObserver(scheduleCalculation);
+    scrollRootResizer.observe(sharedScrollRoot);
+    
+    // ResizeObserver for transcript container (width/height changes)
+    const transcriptResizer = new ResizeObserver(scheduleCalculation);
+    transcriptResizer.observe(transcriptContainer);
+    
+    // ResizeObserver for sidebar container (width changes affect layout)
+    const sidebarResizer = new ResizeObserver(scheduleCalculation);
+    sidebarResizer.observe(sidebarContainer);
+    
+    // ResizeObserver for individual transcript elements (text reflow)
+    const elementResizers = new ResizeObserver(scheduleCalculation);
+    const observeElements = () => {
+      leftRowRefs.current.forEach((el) => {
+        if (el) {
+          elementResizers.observe(el);
+          // Also observe text content within blocks for reflow
+          const textElements = el.querySelectorAll('p, span, div[data-block-text]');
+          textElements.forEach((textEl) => {
+            elementResizers.observe(textEl);
+          });
+        }
+      });
+    };
+    observeElements();
+    
+    // ResizeObserver for tag elements in sidebar (height changes)
+    const tagResizers = new ResizeObserver(scheduleCalculation);
+    const observeTags = () => {
+      const tagElements = sidebarContainer.querySelectorAll('[data-tag-id]');
+      tagElements.forEach((el) => {
+        tagResizers.observe(el);
+      });
+    };
+    observeTags();
+    
+    // ============================================
+    // 2. SCROLL & VIEWPORT EVENTS
+    // ============================================
+    
+    // CRITICAL: Scroll listener on SHARED SCROLL ROOT (single coordinate origin)
+    // Both transcript and sidebar scroll together in this container
+    const handleScroll = () => {
+      scheduleCalculation();
+    };
+    sharedScrollRoot.addEventListener('scroll', handleScroll, { passive: true });
+    
+    // Visual Viewport API for mobile zoom and viewport changes
+    let visualViewport: VisualViewport | null = null;
+    if (typeof window !== 'undefined' && window.visualViewport) {
+      visualViewport = window.visualViewport;
+      visualViewport.addEventListener('resize', scheduleCalculation);
+      visualViewport.addEventListener('scroll', scheduleCalculation);
+    }
+    
+    // ============================================
+    // 3. WINDOW & ORIENTATION EVENTS
+    // ============================================
+    
+    // Window resize listener (desktop)
+    const handleResize = () => {
+      scheduleCalculation();
+    };
+    window.addEventListener('resize', handleResize);
+    
+    // Orientation change (mobile/tablet)
+    const handleOrientationChange = () => {
+      // Delay slightly to allow layout to settle
+      setTimeout(scheduleCalculation, 100);
+    };
+    window.addEventListener('orientationchange', handleOrientationChange);
+    
+    // ============================================
+    // 4. FONT LOAD EVENTS
+    // ============================================
+    
+    // Font load detection - recalculate when fonts finish loading
+    if (typeof document !== 'undefined' && document.fonts) {
+      document.fonts.ready.then(() => {
+        scheduleCalculation();
+      });
+      
+      // Also listen for individual font loads
+      document.fonts.addEventListener('loadingdone', scheduleCalculation);
+    }
+    
+    // ============================================
+    // 5. MUTATION OBSERVERS (DOM Changes)
+    // ============================================
+    
+    // Also observe shared scroll root for structural changes
+    const scrollRootMutator = new MutationObserver(scheduleCalculation);
+    scrollRootMutator.observe(sharedScrollRoot, {
+      childList: true,
+      subtree: false, // Only direct children
+      attributes: true,
+      attributeFilter: ['style', 'class']
+    });
+    
+    // MutationObserver for transcript content changes (text edits, wrapping)
+    const transcriptMutator = new MutationObserver((mutations) => {
+      // Check for text content changes that might cause reflow
+      const hasContentChanges = mutations.some(m => 
+        m.type === 'characterData' || 
+        m.type === 'childList' ||
+        (m.type === 'attributes' && (m.attributeName === 'style' || m.attributeName === 'class'))
+      );
+      
+      if (hasContentChanges) {
+        // Re-observe elements that may have changed
+        observeElements();
+        scheduleCalculation();
+      }
+    });
+    transcriptMutator.observe(transcriptContainer, {
+      childList: true,
+      subtree: true,
+      characterData: true, // Text node changes
+      attributes: true,
+      attributeFilter: ['style', 'class']
+    });
+    
+    // MutationObserver for sidebar changes (tag creation/deletion)
+    const sidebarMutator = new MutationObserver((mutations) => {
+      // Check if tags were added/removed
+      const hasTagChanges = mutations.some(m => 
+        Array.from(m.addedNodes).some(n => (n as Element)?.hasAttribute?.('data-tag-id')) ||
+        Array.from(m.removedNodes).some(n => (n as Element)?.hasAttribute?.('data-tag-id'))
+      );
+      
+      if (hasTagChanges) {
+        // Re-observe new tag elements
+        observeTags();
+        scheduleCalculation();
+      } else {
+        // Even if no tag changes, recalculate for other DOM changes
+        scheduleCalculation();
+      }
+    });
+    sidebarMutator.observe(sidebarContainer, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['style', 'class']
+    });
+    
+    // ============================================
+    // 6. MEDIA QUERY CHANGES (Optional but helpful)
+    // ============================================
+    
+    // Listen for media query changes (if using CSS breakpoints)
+    let mediaQueryList: MediaQueryList | null = null;
+    if (typeof window !== 'undefined' && window.matchMedia) {
+      // Example: watch for common breakpoint changes
+      const queries = [
+        window.matchMedia('(max-width: 768px)'),
+        window.matchMedia('(max-width: 1024px)'),
+        window.matchMedia('(prefers-reduced-motion: reduce)')
+      ];
+      
+      queries.forEach(mq => {
+        mq.addEventListener('change', scheduleCalculation);
+      });
+      
+      mediaQueryList = queries[0]; // Store for cleanup
+    }
+    
+    // ============================================
+    // CLEANUP
+    // ============================================
+    
+    return () => {
+      clearTimeout(timeoutId);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      
+      // Disconnect observers
+      scrollRootResizer.disconnect();
+      transcriptResizer.disconnect();
+      sidebarResizer.disconnect();
+      elementResizers.disconnect();
+      tagResizers.disconnect();
+      scrollRootMutator.disconnect();
+      transcriptMutator.disconnect();
+      sidebarMutator.disconnect();
+      
+      // Remove event listeners
+      sharedScrollRoot.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleOrientationChange);
+      
+      if (visualViewport) {
+        visualViewport.removeEventListener('resize', scheduleCalculation);
+        visualViewport.removeEventListener('scroll', scheduleCalculation);
+      }
+      
+      if (typeof document !== 'undefined' && document.fonts) {
+        document.fonts.removeEventListener('loadingdone', scheduleCalculation);
+      }
+      
+      if (mediaQueryList && typeof window !== 'undefined' && window.matchMedia) {
+        const queries = [
+          window.matchMedia('(max-width: 768px)'),
+          window.matchMedia('(max-width: 1024px)'),
+          window.matchMedia('(prefers-reduced-motion: reduce)')
+        ];
+        queries.forEach(mq => {
+          mq.removeEventListener('change', scheduleCalculation);
+        });
+      }
+    };
+  }, [calculateElementPositions, displayItems, tags, pending]);
+
+  // Force recalculation when displayItems change (new sections, subsections, etc.)
+  useEffect(() => {
+    // Small delay to ensure DOM has updated
+    const timeoutId = setTimeout(() => {
+      calculateElementPositions();
+    }, 0);
+    
+    return () => clearTimeout(timeoutId);
+  }, [displayItems.length, calculateElementPositions]);
 
   // Only load from localStorage when NOT loading from database (no videoId)
   useEffect(() => {
@@ -1585,7 +2053,7 @@ export default function Sessions() {
   // --- PRIMARY TAG: POPUP & ADD LOGIC ---
   // ------------------------------------------------------------------
 
-  const handleSelectPrimaryInstance = (entryId: string, instance: { id: string; name: string; displayName: string }) => {
+  const handleSelectPrimaryInstance = (entryId: string, instance: { id: string; name: string; displayName: string; secondaryTags?: any[] }) => {
     // Add directly without popup
     setPending((prev) =>
       prev.map((p) => {
@@ -1597,6 +2065,7 @@ export default function Sessions() {
             id: instance.id,
             value: instance.name, 
             displayName: instance.displayName,
+            secondaryTags: (instance.secondaryTags || []).map(s => ({ id: s.id, value: s.name }))
           }],
           primaryInput: "",
           primaryInputClosed: true,
@@ -1642,10 +2111,40 @@ export default function Sessions() {
     }
   };
 
-  const addSecondaryTag = (entryId: string, primaryIndex: number, value: string) => {
+  const addSecondaryTag = async (entryId: string, primaryIndex: number, value: string) => {
     const trimmed = value.trim();
     if (!trimmed) return;
 
+    // 1. Handle saved tag (database update)
+    const tag = tags.find(t => t.id === entryId);
+    if (tag) {
+      const primaryTagId = tag.primaryList[primaryIndex]?.id;
+      if (primaryTagId) {
+        try {
+          const res = await fetch('/api/tags/secondary', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ primaryTagId, name: trimmed })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setTags(prev => prev.map(t => {
+              if (t.id !== entryId) return t;
+              const newList = [...t.primaryList];
+              newList[primaryIndex] = {
+                ...newList[primaryIndex],
+                secondaryTags: [...(newList[primaryIndex].secondaryTags || []), { id: data.secondaryTag.id, value: trimmed }]
+              };
+              return { ...t, primaryList: newList };
+            }));
+          }
+        } catch (error) {
+          console.error("Error adding secondary tag:", error);
+        }
+      }
+    }
+
+    // 2. Handle pending tag (state update only)
     setPending(prev => prev.map(p => {
       if (p.id !== entryId) return p;
       
@@ -1663,7 +2162,33 @@ export default function Sessions() {
     setSecondaryInput(null);
   };
 
-  const removeSecondaryTag = (entryId: string, primaryIndex: number, secondaryIndex: number) => {
+  const removeSecondaryTag = async (entryId: string, primaryIndex: number, secondaryIndex: number) => {
+    // 1. Handle saved tag (database update)
+    const tag = tags.find(t => t.id === entryId);
+    if (tag) {
+      const secTagId = tag.primaryList[primaryIndex]?.secondaryTags?.[secondaryIndex]?.id;
+      if (secTagId) {
+        try {
+          await fetch(`/api/tags/secondary?id=${secTagId}`, { method: 'DELETE' });
+        } catch (error) {
+          console.error("Error deleting secondary tag:", error);
+        }
+      }
+      
+      setTags(prev => prev.map(t => {
+        if (t.id !== entryId) return t;
+        const newList = [...t.primaryList];
+        if (newList[primaryIndex]?.secondaryTags) {
+          newList[primaryIndex] = { 
+            ...newList[primaryIndex], 
+            secondaryTags: newList[primaryIndex].secondaryTags!.filter((_, idx) => idx !== secondaryIndex) 
+          };
+        }
+        return { ...t, primaryList: newList };
+      }));
+    }
+
+    // 2. Handle pending tag
     setPending(prev => prev.map(p => {
       if (p.id !== entryId) return p;
       
@@ -1677,6 +2202,64 @@ export default function Sessions() {
       }
       return { ...p, primaryList: newPrimaryList };
     }));
+  };
+
+  const toggleBranchInput = (tagId: string) => {
+    if (branchInput?.tagId === tagId) {
+      setBranchInput(null);
+    } else {
+      setBranchInput({ tagId, value: '' });
+    }
+  };
+
+  const addBranchTag = async (tagId: string, value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+
+    const tag = tags.find(t => t.id === tagId);
+    const masterTagId = tag?.masterTagId;
+
+    if (masterTagId) {
+      try {
+        const res = await fetch('/api/tags/branch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ masterTagId, name: trimmed })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setTags(prev => prev.map(t => {
+            if (t.id !== tagId) return t;
+            return {
+              ...t,
+              branchTags: [...(t.branchTags || []), { id: data.branchTag.id, name: trimmed }]
+            };
+          }));
+        } else {
+          const err = await res.json();
+          showToast(err.error || "Failed to add branch tag", "error");
+        }
+      } catch (error) {
+        console.error("Error adding branch tag:", error);
+      }
+    }
+
+    setBranchInput(null);
+  };
+
+  const removeBranchTag = async (tagId: string, branchId: string) => {
+    try {
+      await fetch(`/api/tags/branch?id=${branchId}`, { method: 'DELETE' });
+      setTags(prev => prev.map(t => {
+        if (t.id !== tagId) return t;
+        return {
+          ...t,
+          branchTags: (t.branchTags || []).filter(b => b.id !== branchId)
+        };
+      }));
+    } catch (error) {
+      console.error("Error deleting branch tag:", error);
+    }
   };
 
   // ------------------------------------------------------------------
@@ -2121,7 +2704,7 @@ export default function Sessions() {
     return highlightTextWithRanges(text, undefined);
   };
 
-  const startEditing = (id: string, type: 'master' | 'primary' | 'master_comment' | 'primary_comment' | 'pending_master_comment' | 'pending_primary_comment', currentValue: string, index: number | null = null) => {
+  const startEditing = (id: string, type: 'master' | 'primary' | 'master_comment' | 'primary_comment' | 'pending_master_comment' | 'pending_primary' | 'pending_primary_comment', currentValue: string, index: number | null = null) => {
     // Check if the master tag is in edit mode
     if (type === 'master' || type === 'primary' || type === 'master_comment' || type === 'primary_comment') {
       const tag = tags.find(t => t.id === id);
@@ -2169,6 +2752,17 @@ export default function Sessions() {
         setTags(prev => prev.map(t => t.id === id ? { ...t, masterComment: trimmedVal } : t));
       }
       else if (type === 'primary' && index !== null) {
+        // 1. Update Primary Tag record in DB
+        const tag = tags.find(t => t.id === id);
+        const primaryTagId = tag?.primaryList[index]?.id;
+        if (primaryTagId) {
+          await fetch('/api/tags/primary', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: primaryTagId, name: trimmedVal })
+          });
+        }
+        // 2. Update local state
         setTags(prev => prev.map(t => {
           if (t.id !== id) return t;
           if (!trimmedVal) return t;
@@ -2196,6 +2790,14 @@ export default function Sessions() {
       }
       else if (type === 'pending_master_comment') {
         setMasterComment(trimmedVal);
+      }
+      else if (type === 'pending_primary' && index !== null) {
+        setPending(prev => prev.map(p => {
+          if (p.id !== id) return p;
+          const newList = [...p.primaryList];
+          newList[index] = { ...newList[index], value: trimmedVal };
+          return { ...p, primaryList: newList };
+        }));
       }
       else if (type === 'pending_primary_comment' && index !== null) {
         setPending(prev => prev.map(p => {
@@ -2551,14 +3153,16 @@ export default function Sessions() {
                 Loading transcript...
               </div>
             )}
-            {pending.length > 0 && (
+            {(pending.length > 0 || editingMasterName) && (
               <button
-                onClick={handleOverallAdd}
+                onClick={pending.length > 0 ? handleOverallAdd : () => setEditingMasterName(null)}
                 disabled={savingTags}
                 className={`px-4 py-2 text-white rounded-lg shadow-sm text-sm transition-all duration-200 flex items-center gap-2 ${
                   savingTags 
                     ? 'bg-gray-400 cursor-not-allowed' 
-                    : 'bg-[#00A3AF] hover:bg-[#008C97] hover:shadow-md'
+                    : editingMasterName && pending.length === 0
+                      ? 'bg-gray-800 hover:bg-black'
+                      : 'bg-[#00A3AF] hover:bg-[#008C97] hover:shadow-md'
                 }`}
               >
                 {savingTags ? (
@@ -2570,14 +3174,14 @@ export default function Sessions() {
                     Saving...
                   </>
                 ) : (
-                  'Close Master'
+                  pending.length > 0 ? 'Close Master' : 'Exit Edit Mode'
                 )}
               </button>
             )}
           </div>
         </header>
 
-        <div className="flex flex-1 overflow-y-auto">
+        <div className="flex flex-1 overflow-y-auto" ref={sharedScrollRootRef} data-transcript-scroll-root>
           {/* Left Side: Transcript */}
           <div className="flex-1 p-6" ref={leftListRef}>
             <div className="flex items-center justify-between mb-4">
@@ -2946,26 +3550,37 @@ export default function Sessions() {
             </div>
 
             {activeTab === "current" && (
-              <div className="relative">
+              <div className="relative" style={{ position: 'relative', minHeight: '100%' }}>
                 {displayItems.map((item, index) => {
                     const LANE_WIDTH = 12;
 
                     if (item.type !== 'data') {
+                      // Geometry-driven: Get position from transcript element
+                      const elementPos = elementPositions.get(index);
+                      if (!elementPos) return null; // Wait for position calculation
+                      
                       // Collect all active master names that should pass through this section spacer
                       const activeMasterNames = Object.entries(masterTagMetadata)
                         .filter(([_, meta]) => index >= meta.firstItemIndex && index <= meta.lastItemIndex)
                         .map(([name, _]) => name);
 
-                      // Section/Subsection spacer
+                      // Section/Subsection spacer - absolutely positioned
                       return (
                         <div
                           key={item.id}
-                          style={{ minHeight: leftRowHeights[index] || 48 }}
-                          className="w-full py-2 relative"
+                          style={{
+                            position: 'absolute',
+                            top: `${elementPos.top}px`,
+                            left: 0,
+                            right: 0,
+                            height: `${elementPos.height}px`,
+                            pointerEvents: 'none' // Allow clicks to pass through to tags below
+                          }}
+                          className="w-full"
                         >
                           {/* Show section indicator in right panel */}
                           {item.type === 'section' && (
-                            <div className="flex items-center gap-2 px-2 py-1">
+                            <div className="flex items-center gap-2 px-2 py-1 pointer-events-auto">
                               <div className="w-2 h-2 rounded-full bg-[#00A3AF]" />
                               <span className="text-xs font-semibold text-[#00A3AF] uppercase tracking-wider">
                                 {item.title || 'Section'}
@@ -2974,7 +3589,7 @@ export default function Sessions() {
                             </div>
                           )}
                           {item.type === 'subsection' && (
-                            <div className="flex items-center gap-2 px-2 py-1 ml-4">
+                            <div className="flex items-center gap-2 px-2 py-1 ml-4 pointer-events-auto">
                               <div className="w-1.5 h-1.5 rounded-full bg-amber-500" />
                               <span className="text-xs font-medium text-amber-600 uppercase tracking-wider">
                                 {item.title || 'Subsection'}
@@ -2986,200 +3601,434 @@ export default function Sessions() {
                       );
                     }
 
-                    const dataIndex = item.originalIndex!;
-                    const entry = pending.find((p) => p.messageIndex === dataIndex);
+                    // Geometry-driven: Tags are rendered absolutely, not in rows
+                    // Return null here - tags will be rendered separately
+                    return null;
+                  })}
+                  
+                  {/* Render all tags with absolute positioning */}
+                  {tags.map((tag) => {
+                    const LANE_WIDTH = 12;
+                    const firstPrimary = tag.primaryList[0];
+                    if (!firstPrimary) return null;
                     
-                    // Collect all tags for this row
-                    const tagsForThisRow = tags.filter(tag => {
-                      const indices = tag.primaryList.map(p => p.messageIndex);
-                      const startRow = Math.min(...indices);
-                      const endRow = Math.max(...indices);
-                      return dataIndex >= startRow && dataIndex <= endRow;
-                    });
-
-                    const activeMasterNames = Object.entries(masterTagMetadata)
-                      .filter(([_, meta]) => index >= meta.firstItemIndex && index <= meta.lastItemIndex)
-                      .map(([name, _]) => name);
-
+                    // Find the display item index for this tag's first primary
+                    const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === firstPrimary.messageIndex);
+                    if (itemIndex < 0) return null;
+                    
+                    // Get position from coordinate system
+                    const elementPos = elementPositions.get(itemIndex);
+                    const tagPos = tagPositions.get(tag.id);
+                    
+                    if (!elementPos || !tagPos) return null; // Wait for position calculation
+                    
+                    // Use adjusted top from collision detection
+                    const topPosition = tagPos.adjustedTop;
+                    
+                    const meta = masterTagMetadata[tag.master || 'No Master'];
+                    const masterLaneLeft = (meta?.uniqueIndex || 0) * LANE_WIDTH + 12;
+                    const tagColor = tag.masterColor || getMasterTagColor(tag.masterTagId || tag.id || tag.master || '');
+                    
+                    // Check if this is the first occurrence
+                    const isFirstRowForTag = itemIndex === meta?.firstItemIndex;
+                    const isFirstInstance = tag.id === meta?.id || tags.find(t => t.master === tag.master)?.id === tag.id;
+                    const shouldShowHeader = isFirstRowForTag && isFirstInstance;
+                    
+                    // Get all primaries for this tag
+                    const allPrimaries = tag.primaryList.map((p, i) => ({ ...p, originalIndex: i }));
+                    
                     return (
                       <div
-                        key={item.id}
-                        className="relative pl-16" // Room for tree lines
-                        style={{ minHeight: leftRowHeights[index] || 'auto' }}
+                        key={tag.id}
+                        data-tag-id={tag.id}
+                        style={{
+                          position: 'absolute',
+                          top: `${topPosition}px`,
+                          left: '64px', // Room for tree lines
+                          right: '24px',
+                          zIndex: hoveredTagId === tag.id ? 30 : 10
+                        }}
+                        className="relative"
+                        data-spine-item={tag.master}
+                        data-is-root={shouldShowHeader}
                       >
-                        {/* Tag List */}
-                        <div className="relative w-full h-full flex flex-col gap-2 pb-4">
-                          {tagsForThisRow.map((tag, tagIdx) => {
-                            const meta = masterTagMetadata[tag.master || 'No Master'];
-                            const masterLaneLeft = (meta?.uniqueIndex || 0) * LANE_WIDTH + 12;
+                        {/* Vertical Spine - Anchored to Root Card Context */}
+                        {shouldShowHeader && spineOffsets[tag.master!] && (
+                          <div 
+                            className="absolute w-[1.5px] transition-all duration-300 pointer-events-none z-0"
+                            style={{ 
+                              left: `-${64 - masterLaneLeft}px`, 
+                              top: '18px',
+                              height: `${spineOffsets[tag.master!].height}px`,
+                              backgroundColor: tagColor,
+                              opacity: 0.4
+                            }}
+                          />
+                        )}
+                        
+                        {/* Render all primary tags for this master tag */}
+                        <div className="flex flex-col gap-2">
+                          {allPrimaries.map((p, i) => {
+                            const isFirstOfAll = shouldShowHeader && i === 0;
                             
-                            const rowPrimaries = tag.primaryList
-                              .map((p, i) => ({ ...p, originalIndex: i }))
-                              .filter(p => p.messageIndex === dataIndex);
-                            
-                            // Only show master header if this is the ABSOLUTE first time this name appears in the sidebar
-                            const isFirstRowForTag = index === meta?.firstItemIndex;
-                            // And only for the first tag instance that has this name
-                            const isFirstInstance = tag.id === meta?.id || tags.find(t => t.master === tag.master)?.id === tag.id;
-                            const shouldShowHeader = isFirstRowForTag && isFirstInstance;
-
-                            const tagColor = tag.masterColor || getMasterTagColor(tag.masterTagId || tag.id || tag.master || '');
-                            
-                            if (rowPrimaries.length === 0 && !shouldShowHeader) return null;
-
                             return (
-                              <div key={`${tag.id}-row-${dataIndex}`} className="relative w-full">
-                                {/* Primary Tags - First one attached to Master if shouldShowHeader is true */}
-                                {rowPrimaries.map((p, i) => {
-                                  const isFirstOfAll = shouldShowHeader && i === 0;
-                                  const displayText = p.value; // Show only the name, not the instance numbering
-
-                                  return (
-                                    <div 
-                                      key={p.impressionId || `${p.value}-${i}`} 
-                                      className={`relative mt-1 mb-2 ${isFirstOfAll ? 'ml-0' : 'ml-6'}`}
-                                      data-spine-item={tag.master}
-                                      data-is-root={isFirstOfAll}
-                                    >
-                                      {/* Vertical Spine - Anchored to Root Card Context */}
-                                      {isFirstOfAll && spineOffsets[tag.master!] && (
-                                        <div 
-                                          className="absolute w-[1.5px] transition-all duration-300 pointer-events-none z-0"
-                                          style={{ 
-                                            left: `-${64 - masterLaneLeft}px`, 
-                                            top: '18px',
-                                            height: `${spineOffsets[tag.master!].height}px`,
-                                            backgroundColor: tagColor,
-                                            opacity: 0.4
-                                          }}
-                                        />
-                                      )}
-                                      
-                                      {/* Horizontal Stem from Master Lane */}
-                                      <div 
-                                        className="absolute h-[1.5px] pointer-events-none"
-                                        style={{ 
-                                          left: isFirstOfAll ? `-${64 - masterLaneLeft}px` : `-${24 + (64 - masterLaneLeft)}px`, 
-                                          width: isFirstOfAll ? `${64 - masterLaneLeft}px` : `${24 + (64 - masterLaneLeft)}px`, 
-                                          top: isFirstOfAll ? '18px' : '18px', 
-                                          backgroundColor: tagColor, 
-                                          opacity: 0.4 
-                                        }}
-                                      />
-                                      
-                                      <div 
-                                        className={`bg-white rounded-lg border shadow-sm overflow-hidden cursor-pointer group/item transition-all ${
-                                          hoveredTagId === tag.id
-                                            ? 'z-30 scale-[1.02] shadow-md'
-                                            : editingMasterName === tag.master 
-                                              ? 'border-blue-200 ring-1 ring-blue-100 bg-blue-50/5' 
-                                              : 'border-gray-100 hover:border-gray-200'
-                                        }`} 
-                                        style={{ 
-                                          borderLeftColor: tagColor, 
-                                          borderLeftWidth: isFirstOfAll ? '4px' : '2px',
-                                          borderColor: hoveredTagId === tag.id ? tagColor : undefined,
-                                          boxShadow: hoveredTagId === tag.id ? `0 0 0 3px ${tagColor}44` : undefined
-                                        }}
-                                        onMouseEnter={() => handleTagHover(tag.id, tag.blockIds || [])}
-                                        onMouseLeave={() => handleTagHover(null)}
-                                        onClick={() => scrollToTagBlock(tag.blockIds || [])}
-                                      >
-                                        {/* Master Header - Integrated into the first primary tag card */}
-                                        {isFirstOfAll && (
-                                          <div className="px-3 py-1.5 bg-gradient-to-r from-gray-50 to-white border-b border-gray-100 flex items-center justify-between">
-                                            <div className="flex items-center gap-2 min-w-0">
-                                              <span className="text-[11px] font-black uppercase tracking-wider opacity-70" style={{ color: tagColor }}>
-                                                {tag.master || "No Master"}
-                                              </span>
-                                              {tag.isClosed && (
-                                                <span className="text-[9px] text-gray-500 bg-gray-100 px-1 py-0.5 rounded border border-gray-200 uppercase font-bold">
-                                                  Closed
-                                                </span>
-                                              )}
-                                            </div>
-                                            <div className="flex items-center gap-1 opacity-0 group-hover/item:opacity-100 transition-opacity">
-                                              {editingMasterName !== tag.master ? (
-                                                <button 
-                                                  onClick={(e) => { e.stopPropagation(); setEditingMasterName(tag.master); }} 
-                                                  className="text-[9px] px-1.5 py-0.5 bg-[#00A3AF] text-white rounded hover:bg-[#008c96] font-bold uppercase"
-                                                >
-                                                  Edit Master
-                                                </button>
-                                              ) : (
-                                                <button 
-                                                  onClick={(e) => { e.stopPropagation(); setEditingMasterName(null); }} 
-                                                  className="text-[9px] px-1.5 py-0.5 bg-gray-500 text-white rounded font-bold uppercase"
-                                                >
-                                                  Exit
-                                                </button>
-                                              )}
-                                            </div>
-                                          </div>
-                                        )}
-
-                                        <div className="p-2">
-                                          <div className="flex items-center justify-between gap-2">
-                                            <div className="flex items-center gap-2 flex-1 min-w-0">
-                                              <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: tagColor }} />
-                                              <span className={`text-xs font-semibold text-gray-700 truncate ${isFirstOfAll ? 'text-sm' : ''}`}>
-                                                {displayText}
-                                              </span>
-                                            </div>
-                                            
-                                            <div className="flex items-center gap-1">
-                                              {editingMasterName === tag.master ? (
-                                                <>
-                                                  <button onClick={(e) => { e.stopPropagation(); startEditing(tag.id, 'primary', p.value, p.originalIndex); }} className="p-0.5 hover:bg-gray-200 rounded text-gray-400">
-                                                    <PencilIcon className="w-3 h-3" />
-                                                  </button>
-                                                  <button onClick={(e) => { e.stopPropagation(); initiateDeletePrimary(tag.id, p.originalIndex, p.impressionId); }} className="p-0.5 hover:bg-red-50 rounded text-red-300">
-                                                    <TrashIcon className="w-3 h-3" />
-                                                  </button>
-                                                </>
-                                              ) : (
-                                                !isFirstOfAll && (
-                                                  <button 
-                                                    onClick={(e) => { e.stopPropagation(); setEditingMasterName(tag.master); }} 
-                                                    className="text-[10px] text-[#00A3AF] opacity-0 group-hover/item:opacity-100 transition-opacity hover:underline font-bold"
-                                                  >
-                                                    Edit
-                                                  </button>
-                                                )
-                                              )}
-                                            </div>
-                                          </div>
-
-                                          {p.selectedText && (
-                                            <p className="text-[10px] text-gray-400 italic mt-1 line-clamp-1 border-l border-gray-200 pl-2 ml-1">
-                                              "{p.selectedText}"
-                                            </p>
+                              <div 
+                                key={p.impressionId || `${p.value}-${i}`} 
+                                className={`relative ${isFirstOfAll ? 'ml-0' : 'ml-6'}`}
+                              >
+                                {/* Horizontal Stem from Master Lane */}
+                                <div 
+                                  className="absolute h-[1.5px] pointer-events-none"
+                                  style={{ 
+                                    left: isFirstOfAll ? `-${64 - masterLaneLeft}px` : `-${24 + (64 - masterLaneLeft)}px`, 
+                                    width: isFirstOfAll ? `${64 - masterLaneLeft}px` : `${24 + (64 - masterLaneLeft)}px`, 
+                                    top: '18px', 
+                                    backgroundColor: tagColor, 
+                                    opacity: 0.4 
+                                  }}
+                                />
+                                
+                                <div 
+                                  className={`bg-white rounded-lg border shadow-sm overflow-hidden cursor-pointer group/item transition-all ${
+                                    hoveredTagId === tag.id
+                                      ? 'z-30 scale-[1.02] shadow-md'
+                                      : editingMasterName === tag.master 
+                                        ? 'border-blue-200 ring-1 ring-blue-100 bg-blue-50/5' 
+                                        : 'border-gray-100 hover:border-gray-200'
+                                  }`} 
+                                  style={{ 
+                                    borderLeftColor: tagColor, 
+                                    borderLeftWidth: isFirstOfAll ? '4px' : '2px',
+                                    borderColor: hoveredTagId === tag.id ? tagColor : undefined,
+                                    boxShadow: hoveredTagId === tag.id ? `0 0 0 3px ${tagColor}44` : undefined
+                                  }}
+                                  onMouseEnter={() => handleTagHover(tag.id, tag.blockIds || [])}
+                                  onMouseLeave={() => handleTagHover(null)}
+                                  onClick={() => scrollToTagBlock(tag.blockIds || [])}
+                                >
+                                  {/* Master Header - Integrated into the first primary tag card */}
+                                  {isFirstOfAll && (
+                                    <div className="px-3 py-1.5 bg-gradient-to-r from-gray-50 to-white border-b border-gray-100 flex items-center justify-between">
+                                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                                        <div className="flex items-center gap-2 min-w-0">
+                                          <span className="text-[11px] font-black uppercase tracking-wider opacity-70" style={{ color: tagColor }}>
+                                            {tag.master || "No Master"}
+                                          </span>
+                                          {tag.isClosed && (
+                                            <span className="text-[9px] text-gray-500 bg-gray-100 px-1 py-0.5 rounded border border-gray-200 uppercase font-bold">
+                                              Closed
+                                            </span>
                                           )}
 
-                                          {/* Secondary Tags (Double Indented) */}
-                                          {p.secondaryTags && p.secondaryTags.length > 0 && (
-                                            <div className="mt-2 ml-4 space-y-1 relative">
-                                              <div className="absolute left-[-10px] top-0 bottom-2 w-[1px] bg-purple-200" />
-                                              {p.secondaryTags.map((sec, secIdx) => (
-                                                <div key={secIdx} className="relative flex items-center gap-2">
-                                                  <div className="absolute left-[-10px] top-1/2 w-2 h-[1px] bg-purple-200" />
-                                                  <span className="text-[9px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100">
-                                                    {sec.value}
-                                                  </span>
-                                                </div>
+                                          {/* Branch Tags Display */}
+                                          {tag.branchTags && tag.branchTags.length > 0 && (
+                                            <div className="flex items-center gap-1">
+                                              {tag.branchTags.map((b) => (
+                                                <span key={b.id} className="text-[9px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded border border-gray-200 flex items-center gap-1 group/branch">
+                                                  {b.name}
+                                                  {editingMasterName === tag.master && (
+                                                    <button 
+                                                      onClick={(e) => { e.stopPropagation(); removeBranchTag(tag.id, b.id); }}
+                                                      className="text-red-400 opacity-0 group-hover/branch:opacity-100 transition-opacity"
+                                                    >
+                                                      <XMarkIcon className="w-2.5 h-2.5" />
+                                                    </button>
+                                                  )}
+                                                </span>
                                               ))}
                                             </div>
                                           )}
+
+                                          {/* Add Branch Button - Limit to 1 branch tag */}
+                                          {editingMasterName === tag.master && (!tag.branchTags || tag.branchTags.length === 0) && (
+                                            <button 
+                                              onClick={(e) => { e.stopPropagation(); toggleBranchInput(tag.id); }}
+                                              className="p-0.5 bg-gray-100 hover:bg-gray-200 rounded text-gray-500 transition-colors"
+                                              title="Add branch tag"
+                                            >
+                                              <PlusIcon className="w-3 h-3" />
+                                            </button>
+                                          )}
                                         </div>
+
+                                        {/* Branch Tag Input */}
+                                        {branchInput?.tagId === tag.id && (
+                                          <div className="flex items-center gap-2 ml-2" onClick={(e) => e.stopPropagation()}>
+                                            <input
+                                              autoFocus
+                                              type="text"
+                                              placeholder="Branch tag..."
+                                              value={branchInput.value}
+                                              onChange={(e) => setBranchInput({ ...branchInput, value: e.target.value })}
+                                              onKeyDown={(e) => {
+                                                if (e.key === 'Enter') addBranchTag(tag.id, branchInput.value);
+                                                if (e.key === 'Escape') setBranchInput(null);
+                                              }}
+                                              className="px-2 py-0.5 text-[10px] border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-[#00A3AF] w-24"
+                                            />
+                                            <button onClick={() => addBranchTag(tag.id, branchInput.value)} className="p-0.5 hover:bg-emerald-50 rounded">
+                                              <CheckIcon className="w-3 h-3 text-emerald-500" />
+                                            </button>
+                                            <button onClick={() => setBranchInput(null)} className="p-0.5 hover:bg-gray-100 rounded">
+                                              <XMarkIcon className="w-3 h-3 text-gray-400" />
+                                            </button>
+                                          </div>
+                                        )}
+
+                                        {/* Master Comment UI */}
+                                        {editingItem.id === tag.id && editingItem.type === 'master_comment' ? (
+                                          <div className="flex items-center gap-2 flex-1 ml-2" onClick={(e) => e.stopPropagation()}>
+                                            <input
+                                              autoFocus
+                                              type="text"
+                                              placeholder="Master comment..."
+                                              value={editingItem.tempValue}
+                                              onChange={(e) => setEditingItem({ ...editingItem, tempValue: e.target.value })}
+                                              onKeyDown={(e) => {
+                                                if (e.key === 'Enter') saveEditing();
+                                                if (e.key === 'Escape') cancelEditing();
+                                              }}
+                                              className="flex-1 px-2 py-0.5 text-[10px] border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-[#00A3AF]"
+                                            />
+                                            <button onClick={saveEditing} className="p-0.5 hover:bg-emerald-50 rounded">
+                                              <CheckIcon className="w-3 h-3 text-emerald-500" />
+                                            </button>
+                                            <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded">
+                                              <XMarkIcon className="w-3 h-3 text-gray-400" />
+                                            </button>
+                                          </div>
+                                        ) : (
+                                          <div className="relative group/mcomment ml-1">
+                                            <button 
+                                              onClick={(e) => { e.stopPropagation(); startEditing(tag.id, 'master_comment', tag.masterComment || ""); }}
+                                              className={`p-1 rounded transition-colors ${editingMasterName === tag.master ? 'hover:bg-gray-100 opacity-100' : 'opacity-0 group-hover/item:opacity-100'}`}
+                                            >
+                                              <ChatBubbleBottomCenterTextIcon 
+                                                className={`w-3.5 h-3.5 ${tag.masterComment ? 'text-[#00A3AF]' : 'text-gray-300'}`} 
+                                              />
+                                            </button>
+                                            {tag.masterComment && (
+                                              <div className="absolute top-full left-0 mt-1 w-max max-w-[200px] hidden group-hover/mcomment:block z-50">
+                                                <div className="bg-gray-800 text-white text-[10px] rounded py-1 px-2 shadow-lg">
+                                                  {tag.masterComment}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                      <div className="flex items-center gap-1 opacity-0 group-hover/item:opacity-100 transition-opacity">
+                                        {editingMasterName !== tag.master ? (
+                                          <button 
+                                            onClick={(e) => { e.stopPropagation(); setEditingMasterName(tag.master); }} 
+                                            className="text-[9px] px-1.5 py-0.5 bg-[#00A3AF] text-white rounded hover:bg-[#008c96] font-bold uppercase"
+                                          >
+                                            Edit Master
+                                          </button>
+                                        ) : (
+                                          <button 
+                                            onClick={(e) => { e.stopPropagation(); setEditingMasterName(null); }} 
+                                            className="text-[9px] px-1.5 py-0.5 bg-gray-500 text-white rounded font-bold uppercase"
+                                          >
+                                            Exit
+                                          </button>
+                                        )}
                                       </div>
                                     </div>
-                                  );
-                                })}
+                                  )}
+
+                                    <div className="p-2">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                                          <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: tagColor }} />
+                                          {editingItem.id === tag.id && editingItem.type === 'primary' && editingItem.index === p.originalIndex ? (
+                                            <div className="flex items-center gap-1 flex-1" onClick={(e) => e.stopPropagation()}>
+                                              <input
+                                                autoFocus
+                                                type="text"
+                                                value={editingItem.tempValue}
+                                                onChange={(e) => setEditingItem({ ...editingItem, tempValue: e.target.value })}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === 'Enter') saveEditing();
+                                                  if (e.key === 'Escape') cancelEditing();
+                                                }}
+                                                className="flex-1 px-2 py-0.5 text-xs font-semibold border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-[#00A3AF] min-w-0"
+                                              />
+                                              <button onClick={saveEditing} className="p-0.5 hover:bg-emerald-50 rounded flex-shrink-0">
+                                                <CheckIcon className="w-3.5 h-3.5 text-emerald-500" />
+                                              </button>
+                                              <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0">
+                                                <XMarkIcon className="w-3.5 h-3.5 text-gray-400" />
+                                              </button>
+                                            </div>
+                                          ) : (
+                                            <div className="flex items-center gap-2 overflow-hidden">
+                                              <span className={`text-xs font-semibold text-gray-700 truncate ${isFirstOfAll ? 'text-sm' : ''}`}>
+                                                {p.value}
+                                              </span>
+                                              
+                                              {/* Inline Secondary Tags Display */}
+                                              {p.secondaryTags && p.secondaryTags.length > 0 && (
+                                                <div className="flex items-center gap-1 flex-shrink-0">
+                                                  {p.secondaryTags.map((sec, secIdx) => (
+                                                    <span key={secIdx} className="text-[9px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100 flex items-center gap-1 group/sec">
+                                                      {sec.value}
+                                                      {editingMasterName === tag.master && (
+                                                        <button 
+                                                          onClick={(e) => { e.stopPropagation(); removeSecondaryTag(tag.id, p.originalIndex, secIdx); }}
+                                                          className="text-red-400 opacity-0 group-hover/sec:opacity-100 transition-opacity"
+                                                        >
+                                                          <XMarkIcon className="w-2.5 h-2.5" />
+                                                        </button>
+                                                      )}
+                                                    </span>
+                                                  ))}
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                        
+                                        <div className="flex items-center gap-1">
+                                          {editingMasterName === tag.master ? (
+                                            editingItem.id === tag.id && editingItem.type === 'primary' && editingItem.index === p.originalIndex ? null : (
+                                              <>
+                                                {/* Add Secondary Tag Button - Limit to 1 */}
+                                                {(!p.secondaryTags || p.secondaryTags.length === 0) && (
+                                                  <button 
+                                                    onClick={(e) => { e.stopPropagation(); toggleSecondaryInput(tag.id, p.originalIndex); }}
+                                                    className="p-0.5 hover:bg-gray-200 rounded text-gray-400"
+                                                    title="Add secondary tag"
+                                                  >
+                                                    <PlusIcon className="w-3 h-3" />
+                                                  </button>
+                                                )}
+
+                                                {/* Primary Comment Button */}
+                                                <button 
+                                                  onClick={(e) => { e.stopPropagation(); startEditing(tag.id, 'primary_comment', p.comment || "", p.originalIndex); }}
+                                                  className="p-0.5 hover:bg-gray-200 rounded text-gray-400"
+                                                  title="Add/Edit comment"
+                                                >
+                                                  <ChatBubbleBottomCenterTextIcon className={`w-3 h-3 ${p.comment ? 'text-[#00A3AF]' : 'text-gray-300'}`} />
+                                                </button>
+
+                                                <button onClick={(e) => { e.stopPropagation(); startEditing(tag.id, 'primary', p.value, p.originalIndex); }} className="p-0.5 hover:bg-gray-200 rounded text-gray-400">
+                                                  <PencilIcon className="w-3 h-3" />
+                                                </button>
+                                                <button onClick={(e) => { e.stopPropagation(); initiateDeletePrimary(tag.id, p.originalIndex, p.impressionId); }} className="p-0.5 hover:bg-red-50 rounded text-red-300">
+                                                  <TrashIcon className="w-3 h-3" />
+                                                </button>
+                                              </>
+                                            )
+                                          ) : (
+                                            !isFirstOfAll && (
+                                              <button 
+                                                onClick={(e) => { e.stopPropagation(); setEditingMasterName(tag.master); }} 
+                                                className="text-[10px] text-[#00A3AF] opacity-0 group-hover/item:opacity-100 transition-opacity hover:underline font-bold"
+                                              >
+                                                Edit
+                                              </button>
+                                            )
+                                          )}
+                                        </div>
+                                      </div>
+
+                                      {/* Inline Primary Comment Editor */}
+                                      {editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex && (
+                                        <div className="mt-1 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                          <input
+                                            autoFocus
+                                            type="text"
+                                            placeholder="Add comment..."
+                                            value={editingItem.tempValue}
+                                            onChange={(e) => setEditingItem({ ...editingItem, tempValue: e.target.value })}
+                                            onKeyDown={(e) => {
+                                              if (e.key === 'Enter') saveEditing();
+                                              if (e.key === 'Escape') cancelEditing();
+                                            }}
+                                            className="flex-1 px-2 py-0.5 text-[10px] border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-[#00A3AF]"
+                                          />
+                                          <button onClick={saveEditing} className="p-0.5 hover:bg-emerald-50 rounded">
+                                            <CheckIcon className="w-3 h-3 text-emerald-500" />
+                                          </button>
+                                          <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded">
+                                            <XMarkIcon className="w-3 h-3 text-gray-400" />
+                                          </button>
+                                        </div>
+                                      )}
+
+                                      {p.comment && !(editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex) && (
+                                        <p className="text-[10px] text-[#00A3AF] mt-0.5 ml-3 italic truncate">
+                                          "{p.comment}"
+                                        </p>
+                                      )}
+                                      
+                                      {p.selectedText && (
+                                        <p className="text-[10px] text-gray-400 italic mt-1 line-clamp-1 border-l border-gray-200 pl-2 ml-1">
+                                          "{p.selectedText}"
+                                        </p>
+                                      )}
+
+                                      {/* Secondary Tag Input */}
+                                      {secondaryInput?.entryId === tag.id && secondaryInput?.primaryIndex === p.originalIndex && (
+                                        <div className="ml-10 mt-2 flex items-center gap-2">
+                                          <input
+                                            type="text"
+                                            placeholder="Secondary tag name..."
+                                            value={secondaryInput.value}
+                                            onChange={(e) => setSecondaryInput({ ...secondaryInput, value: e.target.value })}
+                                            onKeyDown={(e) => {
+                                              if (e.key === 'Enter') {
+                                                addSecondaryTag(tag.id, p.originalIndex, secondaryInput.value);
+                                              } else if (e.key === 'Escape') {
+                                                setSecondaryInput(null);
+                                              }
+                                            }}
+                                            autoFocus
+                                            className="flex-1 text-xs px-2 py-1 border border-purple-200 rounded focus:outline-none focus:ring-1 focus:ring-purple-300"
+                                          />
+                                          <button onClick={() => addSecondaryTag(tag.id, p.originalIndex, secondaryInput.value)} className="p-0.5 hover:bg-emerald-50 rounded">
+                                            <CheckIcon className="w-3.5 h-3.5 text-emerald-500" />
+                                          </button>
+                                          <button onClick={() => setSecondaryInput(null)} className="p-0.5 hover:bg-gray-100 rounded">
+                                            <XMarkIcon className="w-3.5 h-3.5 text-gray-400" />
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                </div>
                               </div>
                             );
                           })}
                         </div>
-
+                      </div>
+                    );
+                  })}
+                  
+                  {/* Render pending entries with absolute positioning */}
+                  {pending.map((entry) => {
+                    const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === entry.messageIndex);
+                    if (itemIndex < 0) return null;
+                    
+                    const elementPos = elementPositions.get(itemIndex);
+                    if (!elementPos) return null;
+                    
+                    // Use selection top if available, otherwise element top
+                    const topPosition = elementPos.selectionTop ?? elementPos.top;
+                    
+                    return (
+                      <div
+                        key={entry.id}
+                        style={{
+                          position: 'absolute',
+                          top: `${topPosition}px`,
+                          left: '64px',
+                          right: '24px',
+                          zIndex: 20
+                        }}
+                        className="relative"
+                      >
                         {/* PENDING ENTRY FORM */}
                         {entry && (
                         <div className="p-4 rounded-xl bg-white border-2 border-[#E0F7FA] shadow-md relative z-30 mt-2">
@@ -3354,23 +4203,20 @@ export default function Sessions() {
                                       <div className="absolute left-[9px] top-1/2 w-3 h-[2px] bg-gray-200 -translate-y-1/2"></div>
                                       <div className="absolute left-[6px] top-1/2 -translate-y-1/2 w-2 h-2 bg-white border border-gray-300 rounded-full"></div>
 
-                                      <div className="flex flex-col flex-1">
+                                      <div className="flex flex-col flex-1 min-w-0">
                                         <div className="flex items-center gap-2">
-                                          <span className="text-gray-700 bg-gray-50 px-2 py-1 rounded border border-gray-100">{p.value}</span>
-                                          
-                                          {editingItem.id === entry.id && editingItem.type === 'pending_primary_comment' && editingItem.index === pIndex ? (
+                                          {editingItem.id === entry.id && editingItem.type === 'pending_primary' && editingItem.index === pIndex ? (
                                             <div className="flex items-center gap-2 flex-1" onClick={(e) => e.stopPropagation()}>
                                               <input
                                                 autoFocus
                                                 type="text"
-                                                placeholder="Add comment..."
                                                 value={editingItem.tempValue}
                                                 onChange={(e) => setEditingItem({ ...editingItem, tempValue: e.target.value })}
                                                 onKeyDown={(e) => {
                                                   if (e.key === 'Enter') saveEditing();
                                                   if (e.key === 'Escape') cancelEditing();
                                                 }}
-                                                className="flex-1 px-2 py-1 text-[10px] border border-[#00A3AF] rounded focus:outline-none"
+                                                className="flex-1 px-2 py-1 text-xs font-semibold border border-[#00A3AF] rounded focus:outline-none"
                                               />
                                               <button onClick={saveEditing} className="p-0.5 hover:bg-[#E0F7FA] rounded">
                                                 <CheckIcon className="w-3 h-3 text-[#00A3AF]" />
@@ -3380,7 +4226,51 @@ export default function Sessions() {
                                               </button>
                                             </div>
                                           ) : (
-                                            <div className="flex items-center gap-1">
+                                            <div className="flex items-center gap-2 overflow-hidden">
+                                              <span className="font-semibold text-gray-700 truncate">{p.displayName || p.value}</span>
+                                              
+                                              {/* Inline Secondary Tags Display for Pending */}
+                                              {p.secondaryTags && p.secondaryTags.length > 0 && (
+                                                <div className="flex items-center gap-1 flex-shrink-0">
+                                                  {p.secondaryTags.map((sec, secIdx) => (
+                                                    <span key={secIdx} className="text-[9px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100 flex items-center gap-1 group/sec">
+                                                      {sec.value}
+                                                      <button 
+                                                        onClick={(e) => { e.stopPropagation(); removeSecondaryTag(entry.id, pIndex, secIdx); }}
+                                                        className="text-red-400 opacity-0 group-hover/sec:opacity-100 transition-opacity"
+                                                      >
+                                                        <XMarkIcon className="w-2.5 h-2.5" />
+                                                      </button>
+                                                    </span>
+                                                  ))}
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        <div className="flex items-center gap-1 mt-1">
+                                          {editingItem.id === entry.id && editingItem.type === 'pending_primary' && editingItem.index === pIndex ? null : (
+                                            <>
+                                              {/* Add Secondary Tag Button - Limit to 1 */}
+                                              {(!p.secondaryTags || p.secondaryTags.length === 0) && (
+                                                <button 
+                                                  onClick={() => toggleSecondaryInput(entry.id, pIndex)}
+                                                  className="p-1 hover:bg-gray-100 rounded text-gray-400"
+                                                  title="Add secondary tag"
+                                                >
+                                                  <PlusIcon className="w-3.5 h-3.5" />
+                                                </button>
+                                              )}
+
+                                              <button 
+                                                onClick={() => startEditing(entry.id, 'pending_primary', p.value, pIndex)}
+                                                className="p-1 hover:bg-gray-100 rounded"
+                                                title="Edit primary tag"
+                                              >
+                                                <PencilIcon className="w-3.5 h-3.5 text-gray-400" />
+                                              </button>
+
                                               <button 
                                                 onClick={() => startEditing(entry.id, 'pending_primary_comment', p.comment || "", pIndex)}
                                                 className="p-1 hover:bg-gray-100 rounded"
@@ -3389,45 +4279,19 @@ export default function Sessions() {
                                                   className={`w-3.5 h-3.5 cursor-pointer ${p.comment ? 'text-[#00A3AF]' : 'text-gray-300'}`} 
                                                 />
                                               </button>
-                                              
-                                              {/* Add Secondary Tag Button */}
-                                              <button 
-                                                onClick={() => toggleSecondaryInput(entry.id, pIndex)}
-                                                className="text-[10px] text-[#00A3AF] hover:text-[#008C97] font-medium opacity-0 group-hover:opacity-100 transition-opacity"
-                                                title="Add secondary tag"
-                                              >
-                                                + Secondary
-                                              </button>
-                                            </div>
+                                            </>
                                           )}
                                         </div>
+                                        
                                         {p.comment && !(editingItem.id === entry.id && editingItem.type === 'pending_primary_comment' && editingItem.index === pIndex) && (
-                                          <span className="text-[10px] text-gray-400 mt-0.5 ml-1 italic truncate max-w-[150px]">"{p.comment}"</span>
+                                          <span className="text-[10px] text-gray-400 mt-0.5 italic truncate max-w-[150px]">"{p.comment}"</span>
                                         )}
                                       </div>
 
-                                      <button onClick={() => handleDeletePendingPrimary(entry.id, pIndex)} className="text-red-500 text-xs opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <button onClick={() => handleDeletePendingPrimary(entry.id, pIndex)} className="text-red-500 text-xs opacity-0 group-hover:opacity-100 transition-opacity self-start mt-1">
                                         <TrashIcon className="w-4 h-4" />
                                       </button>
                                     </div>
-
-                                    {/* Secondary Tags */}
-                                    {p.secondaryTags && p.secondaryTags.length > 0 && (
-                                      <div className="ml-10 mt-2 space-y-1">
-                                        {p.secondaryTags.map((sec, sIndex) => (
-                                          <div key={sIndex} className="flex items-center gap-2 text-xs group/sec">
-                                            <span className="w-1.5 h-1.5 bg-purple-400 rounded-full"></span>
-                                            <span className="text-gray-600 bg-purple-50 px-2 py-0.5 rounded border border-purple-100">{sec.value}</span>
-                                            <button 
-                                              onClick={() => removeSecondaryTag(entry.id, pIndex, sIndex)}
-                                              className="text-red-400 opacity-0 group-hover/sec:opacity-100 transition-opacity"
-                                            >
-                                              <XMarkIcon className="w-3 h-3" />
-                                            </button>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    )}
 
                                     {/* Secondary Tag Input */}
                                     {secondaryInput?.entryId === entry.id && secondaryInput?.primaryIndex === pIndex && (
@@ -3449,15 +4313,15 @@ export default function Sessions() {
                                         />
                                         <button
                                           onClick={() => addSecondaryTag(entry.id, pIndex, secondaryInput.value)}
-                                          className="text-[10px] bg-purple-500 text-white px-2 py-1 rounded hover:bg-purple-600"
+                                          className="p-1 hover:bg-emerald-50 rounded"
                                         >
-                                          Add
+                                          <CheckIcon className="w-4 h-4 text-emerald-500" />
                                         </button>
                                         <button
                                           onClick={() => setSecondaryInput(null)}
-                                          className="text-gray-400 hover:text-gray-600"
+                                          className="p-1 hover:bg-gray-100 rounded"
                                         >
-                                          <XMarkIcon className="w-4 h-4" />
+                                          <XMarkIcon className="w-4 h-4 text-gray-400" />
                                         </button>
                                       </div>
                                     )}

@@ -21,12 +21,18 @@ export async function GET(
                         color: true,
                         icon: true,
                         is_closed: true,
+                        branch_tags: {
+                            select: { id: true, name: true }
+                        }
                     }
                 },
                 primary_tag: {
                     select: {
                         id: true,
                         name: true,
+                        secondary_tags: {
+                            select: { id: true, name: true }
+                        }
                     }
                 },
             },
@@ -63,6 +69,7 @@ export async function GET(
                 tagGroups[groupingKey] = {
                     id: imp.id, // Use the first impression ID as the group ID
                     masterTag: imp.master_tag,
+                    branchTags: imp.master_tag.branch_tags || [],
                     primaryTags: [],
                     blockIds: new Set(),
                 };
@@ -87,7 +94,7 @@ export async function GET(
                     blockIds: imp.block_ids,
                     selectedText: imp.selected_text, // The exact text that was selected
                     selectionRanges: imp.selection_ranges, // Array of {blockId, startOffset, endOffset}
-                    secondaryTagIds: imp.secondary_tag_ids,
+                    secondaryTags: imp.primary_tag.secondary_tags || [],
                     comment: imp.comment,
                     sectionId: imp.section_id,
                     subsectionId: imp.subsection_id,
