@@ -39,7 +39,7 @@
     "@types/react-dom": "^19",
     "@types/react-slick": "^0.23.13",
     "@types/uuid": "^10.0.0",
-    "baseline-browser-mapping": "^2.9.2",
+    "baseline-browser-mapping": "^2.9.11",
     "eslint": "^9",
     "eslint-config-next": "16.0.4",
     "tailwindcss": "^4",

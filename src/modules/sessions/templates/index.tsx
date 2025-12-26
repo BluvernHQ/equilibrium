@@ -1,4 +1,4 @@
-import { FC } from "react"
+import { FC, Suspense } from "react"
 import Sessions from "../section/sessions"
 
 interface SessionsTemplateProps { }
@@ -6,7 +6,9 @@ interface SessionsTemplateProps { }
 const SessionsTemplate: FC<SessionsTemplateProps> = () => {
   return (
     <div className=''>
-      <Sessions />
+      <Suspense fallback={<div className="flex items-center justify-center min-h-screen"><div className="text-gray-500">Loading...</div></div>}>
+        <Sessions />
+      </Suspense>
     </div>
   )
 }
