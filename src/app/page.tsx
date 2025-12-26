@@ -11,7 +11,6 @@ import {
 } from "@heroicons/react/24/outline";
 
 // New Components
-import UploadArea from "@/components/UploadArea";
 import AutoTranscription from "@/modules/auto-transcription/section/auto-transcription";
 import ManualTranscription from "@/modules/manual-transcription/section/manual-transcription";
 
@@ -124,14 +123,14 @@ export default function Home() {
         <div className="absolute top-0 right-0 w-[600px] h-[600px] bg-[#00A3AF]/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/3" />
         <div className="absolute bottom-0 left-0 w-[400px] h-[400px] bg-blue-200/20 rounded-full blur-3xl translate-y-1/3 -translate-x-1/4" />
 
-        <div className="container mx-auto px-6 grid lg:grid-cols-2 gap-12 items-center relative z-10">
+        <div className="container mx-auto px-6 flex items-center justify-center relative z-10">
 
-          {/* Left Column: Text */}
+          {/* Content: Text */}
           <motion.div
             initial={{ opacity: 0, x: -30 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.8 }}
-            className="text-left"
+            className="text-center max-w-4xl"
           >
             <div className="inline-block px-3 py-1 mb-6 text-xs font-semibold tracking-wider text-[#00A3AF] uppercase bg-[#00A3AF]/10 rounded-full">
               Equilibrium collab
@@ -144,12 +143,12 @@ export default function Home() {
               </span>
             </h1>
 
-            <p className="text-lg text-gray-500 mb-8 max-w-lg leading-relaxed">
+            <p className="text-lg text-gray-500 mb-8 max-w-2xl mx-auto leading-relaxed">
               Experience the future of project management. Real-time sessions, auto-generated notes, and precise manual transcriptions in one workspace.
             </p>
 
             {/* BUTTON GROUP */}
-            <div className="flex flex-col sm:flex-row flex-wrap gap-4">
+            <div className="flex flex-col sm:flex-row flex-wrap gap-4 justify-center">
               <Link href="/sessions" className="group flex items-center justify-center gap-2 bg-[#111827] text-white px-6 py-3.5 rounded-xl font-medium shadow-lg hover:shadow-xl hover:bg-black transition-all">
                 Tags
                 <ArrowRightIcon className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
@@ -164,22 +163,6 @@ export default function Home() {
                 Manual Tool
               </Link>
             </div>
-          </motion.div>
-
-          {/* Right Column: Upload Area (Replaces Floating Cards) */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.8, delay: 0.2 }}
-            className="relative z-20"
-          >
-            <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-2xl p-2 border border-white/50">
-              <UploadArea />
-            </div>
-
-            {/* Decorative Elements behind upload */}
-            <div className="absolute -z-10 top-10 -right-10 w-24 h-24 bg-[#00A3AF]/20 rounded-full blur-xl animate-pulse" />
-            <div className="absolute -z-10 -bottom-5 -left-5 w-32 h-32 bg-blue-200/30 rounded-full blur-xl" />
           </motion.div>
 
         </div>
