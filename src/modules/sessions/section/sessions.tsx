@@ -1130,43 +1130,98 @@ export default function Sessions() {
       return;
     }
     
+    const trimmedTitle = item.title.trim();
+    
+    // Frontend validation: Check for duplicate section names within the same transcript
+    if (item.type === 'section' && transcriptId) {
+      const trimmedName = trimmedTitle.toLowerCase();
+      const existingSection = dbSections.find(
+        (section: any) => section.name.toLowerCase() === trimmedName
+      );
+      
+      if (existingSection && existingSection.id !== item.dbId) {
+        showToast("Section name must be unique within the same transcript", "error");
+        return;
+      }
+    }
+    
     // Only save to database if we have a transcriptId
     if (transcriptId) {
       try {
         const isSubsection = item.type === 'subsection';
         const endpoint = isSubsection ? '/api/subsections' : '/api/sections';
         
+        // If item has dbId, it's an update (PUT), otherwise it's a create (POST)
+        const isUpdate = !!item.dbId;
+        const method = isUpdate ? 'PUT' : 'POST';
+        
+        const requestBody = isUpdate
+          ? {
+              id: item.dbId,
+              name: trimmedTitle,
+              startBlockIndex: item.startBlockIndex,
+              endBlockIndex: item.endBlockIndex,
+            }
+          : {
+              transcriptId,
+              name: trimmedTitle,
+              startBlockIndex: item.startBlockIndex || 0,
+              endBlockIndex: item.endBlockIndex,
+              // Include parentSectionId for subsections
+              ...(isSubsection ? { sectionId: item.parentSectionId } : {})
+            };
+        
         const response = await fetch(endpoint, {
-          method: 'POST',
+          method,
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            transcriptId,
-            name: item.title.trim(),
-            startBlockIndex: item.startBlockIndex || 0,
-            endBlockIndex: item.endBlockIndex,
-            // Include parentSectionId for subsections
-            ...(isSubsection ? { sectionId: item.parentSectionId } : {})
-          }),
+          body: JSON.stringify(requestBody),
         });
         
         if (response.ok) {
           const data = await response.json();
-          // Update dbSections to include the new section/subsection so it persists through displayItems refresh
-          setDbSections(prev => {
-            if (!isSubsection) {
-              return [...prev, { ...data.section, subsections: [] }];
-            }
-            return prev.map(s => s.id === item.parentSectionId 
-              ? { ...s, subsections: [...(s.subsections || []), data.subsection] } 
-              : s
-            );
-          });
           
-          // Update with database ID
-          setDisplayItems(prev => prev.map(i =>
-            i.id === id ? { ...i, isEditing: false, dbId: isSubsection ? data.subsection?.id : data.section?.id } : i
-          ));
-          showToast(isSubsection ? "Subsection created" : "Section created", "success");
+          if (isUpdate) {
+            // Update existing section/subsection in dbSections
+            setDbSections(prev => {
+              if (!isSubsection) {
+                return prev.map(s => s.id === item.dbId 
+                  ? { ...s, name: data.section.name, startBlockIndex: data.section.startBlockIndex, endBlockIndex: data.section.endBlockIndex }
+                  : s
+                );
+              }
+              return prev.map(s => ({
+                ...s,
+                subsections: s.subsections?.map(sub => 
+                  sub.id === item.dbId 
+                    ? { ...sub, name: data.subsection.name, startBlockIndex: data.subsection.startBlockIndex, endBlockIndex: data.subsection.endBlockIndex }
+                    : sub
+                ) || []
+              }));
+            });
+            
+            // Update display item
+            setDisplayItems(prev => prev.map(i =>
+              i.id === id ? { ...i, isEditing: false, title: trimmedTitle } : i
+            ));
+            showToast(isSubsection ? "Subsection updated" : "Section updated", "success");
+          } else {
+            // Create new section/subsection
+            setDbSections(prev => {
+              if (!isSubsection) {
+                return [...prev, { ...data.section, subsections: [] }];
+              }
+              return prev.map(s => s.id === item.parentSectionId 
+                ? { ...s, subsections: [...(s.subsections || []), data.subsection] } 
+                : s
+              );
+            });
+            
+            // Update with database ID
+            setDisplayItems(prev => prev.map(i =>
+              i.id === id ? { ...i, isEditing: false, dbId: isSubsection ? data.subsection?.id : data.section?.id } : i
+            ));
+            showToast(isSubsection ? "Subsection created" : "Section created", "success");
+          }
           return;
         } else {
           const errData = await response.json();

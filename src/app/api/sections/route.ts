@@ -76,6 +76,29 @@ export async function POST(req: NextRequest) {
             );
         }
 
+        // RULE: Check for duplicate section name within the same transcript (case-insensitive)
+        // @ts-ignore
+        const existingSections = await prisma.section.findMany({
+            where: {
+                transcript_id: transcriptId
+            },
+            select: {
+                name: true
+            }
+        });
+
+        const trimmedName = name.trim().toLowerCase();
+        const isDuplicate = existingSections.some(
+            (section: any) => section.name.toLowerCase() === trimmedName
+        );
+
+        if (isDuplicate) {
+            return NextResponse.json(
+                { error: "Section name must be unique within the same transcript" },
+                { status: 400 }
+            );
+        }
+
         // @ts-ignore - Prisma v7 requires relation connect syntax
         const section = await prisma.section.create({
             data: {
@@ -117,6 +140,46 @@ export async function PUT(req: NextRequest) {
                 { error: "Section ID is required" },
                 { status: 400 }
             );
+        }
+
+        // Get existing section to check transcript_id
+        // @ts-ignore
+        const existing = await prisma.section.findUnique({
+            where: { id }
+        });
+
+        if (!existing) {
+            return NextResponse.json(
+                { error: "Section not found" },
+                { status: 404 }
+            );
+        }
+
+        // If name is being updated, validate the new name for duplicates
+        if (name !== undefined && name.trim().toLowerCase() !== existing.name.toLowerCase()) {
+            // RULE: Check for duplicate section name within the same transcript (case-insensitive)
+            // @ts-ignore
+            const allSections = await prisma.section.findMany({
+                where: {
+                    transcript_id: existing.transcript_id
+                },
+                select: {
+                    id: true,
+                    name: true
+                }
+            });
+
+            const trimmedName = name.trim().toLowerCase();
+            const isDuplicate = allSections.some(
+                (section: any) => section.id !== id && section.name.toLowerCase() === trimmedName
+            );
+
+            if (isDuplicate) {
+                return NextResponse.json(
+                    { error: "Section name must be unique within the same transcript" },
+                    { status: 400 }
+                );
+            }
         }
 
         const updateData: any = {};
