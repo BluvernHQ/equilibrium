@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
             if (branchNames && Array.isArray(branchNames)) {
                 for (const branchName of branchNames) {
                     if (!branchName?.trim()) continue;
-                    
+
                     // Check if branch tag already exists for this master tag
                     const existingBranch = await tx.branchTag.findFirst({
                         where: {
@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
 
                 // Determine if we should reuse an existing primary tag or create a new one
                 let primary = null;
-                
+
                 if (primaryTag.id) {
                     // Use existing primary tag instance
                     primary = await tx.primaryTag.findUnique({
@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
                 if (primaryTag.secondaryTags && Array.isArray(primaryTag.secondaryTags)) {
                     for (const secondaryName of primaryTag.secondaryTags) {
                         if (!secondaryName?.trim()) continue;
-                        
+
                         // Create secondary tag under this primary
                         const secondary = await tx.secondaryTag.create({
                             data: {
@@ -155,8 +155,8 @@ export async function POST(req: NextRequest) {
                         block_ids: primaryTag.blockId ? [primaryTag.blockId] : blockIds,
                         // Selection data for precise highlight persistence
                         selected_text: primaryTag.selectedText || selectedText || null,
-                        selection_ranges: primaryTag.selectionRange 
-                            ? [primaryTag.selectionRange] 
+                        selection_ranges: primaryTag.selectionRange
+                            ? [primaryTag.selectionRange]
                             : (selectionRanges || null),
                         master_tag: {
                             connect: { id: masterTag.id }
@@ -185,8 +185,8 @@ export async function POST(req: NextRequest) {
                     secondaryTagIds: secondaryTagIds,
                     blockIds: primaryTag.blockId ? [primaryTag.blockId] : blockIds,
                     selectedText: primaryTag.selectedText || selectedText || null,
-                    selectionRanges: primaryTag.selectionRange 
-                        ? [primaryTag.selectionRange] 
+                    selectionRanges: primaryTag.selectionRange
+                        ? [primaryTag.selectionRange]
                         : (selectionRanges || null),
                 });
             }
@@ -254,7 +254,7 @@ export async function DELETE(req: NextRequest) {
         });
     } catch (error: any) {
         console.error("Delete tag impression error:", error);
-        
+
         // Handle "record not found" error gracefully
         if (error.code === 'P2025') {
             return NextResponse.json({
@@ -263,7 +263,7 @@ export async function DELETE(req: NextRequest) {
                 alreadyDeleted: true,
             });
         }
-        
+
         return NextResponse.json(
             { error: error.message || "Failed to delete tag impression" },
             { status: 500 }
@@ -301,10 +301,10 @@ export async function PATCH(req: NextRequest) {
         if (secondaryTagName) {
             // Add a secondary tag to this impression
             // For JSON field, we need to handle it carefully
-            const existingSecondaryIds = Array.isArray(existing.secondary_tag_ids) 
-                ? (existing.secondary_tag_ids as string[]) 
+            const existingSecondaryIds = Array.isArray(existing.secondary_tag_ids)
+                ? (existing.secondary_tag_ids as string[])
                 : [];
-            
+
             // First create the secondary tag if needed
             // @ts-ignore
             const secondary = await prisma.secondaryTag.create({

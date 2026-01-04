@@ -1,10 +1,28 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, useMemo, useLayoutEffect } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo, useLayoutEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { sessionsData } from "../data/sessions";
-import { PencilIcon, TrashIcon, CheckIcon, XMarkIcon, PlusIcon, ChatBubbleBottomCenterTextIcon, StopIcon, ArrowDownIcon, PencilSquareIcon } from "@heroicons/react/24/solid";
+import {
+  PencilIcon,
+  TrashIcon,
+  CheckIcon,
+  XMarkIcon,
+  PlusIcon,
+  ChatBubbleBottomCenterTextIcon,
+  StopIcon,
+  ArrowDownIcon,
+  PencilSquareIcon
+} from "@heroicons/react/24/outline";
 import { DeleteModal } from "../components/action-modals";
+import {
+  MasterTagRow,
+  PrimaryTagRow,
+  ReservedEditSlotRow,
+  BranchTagChip,
+  TagRowLayout,
+  TagContextHeader
+} from '../components/tag-hierarchy';
 import RecentTags from "../components/RecentTags";
 import Link from "next/link";
 
@@ -180,7 +198,7 @@ interface VideoItem {
 
 // Speaker colors for avatar display
 const speakerColors = [
-  "#00A3AF", "#E91E63", "#9C27B0", "#673AB7", 
+  "#00A3AF", "#E91E63", "#9C27B0", "#673AB7",
   "#3F51B5", "#2196F3", "#009688", "#4CAF50",
   "#FF9800", "#795548", "#607D8B", "#FF5722"
 ];
@@ -224,21 +242,21 @@ function getSpeakerName(label: string): string {
 export default function Sessions() {
   const searchParams = useSearchParams();
   const videoId = searchParams.get('videoId');
-  
+
   const [activeTab, setActiveTab] = useState("current");
   const [displayItems, setDisplayItems] = useState<DisplayItem[]>([]);
-  
+
   const [sessionData, setSessionData] = useState<SessionDataItem[]>([]);
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [loadingVideos, setLoadingVideos] = useState(false);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [loadedVideo, setLoadedVideo] = useState<LoadedVideo | null>(null);
-  
+
   // Session name editing state
   const [isEditingSessionName, setIsEditingSessionName] = useState(false);
   const [sessionNameInput, setSessionNameInput] = useState("");
   const [savingSessionName, setSavingSessionName] = useState(false);
-  
+
   // Database state
   const [transcriptId, setTranscriptId] = useState<string | null>(null);
   const [transcriptBlocks, setTranscriptBlocks] = useState<TranscriptBlock[]>([]);
@@ -253,10 +271,10 @@ export default function Sessions() {
     const masterId = master?.id;
 
     try {
-      const url = masterId 
+      const url = masterId
         ? `/api/tags/primary?masterTagId=${masterId}&search=${encodeURIComponent(search)}`
         : `/api/tags/primary?masterTagName=${encodeURIComponent(masterName)}&search=${encodeURIComponent(search)}`;
-        
+
       const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
@@ -301,8 +319,8 @@ export default function Sessions() {
     const openSection = displayItems.find(i => i.type === 'section' && !i.isClosed);
     const openSubsection = displayItems.find(i => i.type === 'subsection' && !i.isClosed);
 
-    return { 
-      activeSection: currentSection, 
+    return {
+      activeSection: currentSection,
       activeSubsection: currentSubsection,
       hasOpenSection: !!openSection,
       hasOpenSubsection: !!openSubsection
@@ -319,7 +337,7 @@ export default function Sessions() {
   // --- Primary Input State ---
   const [pending, setPending] = useState<PendingEntry[]>([]);
   const [showPrimarySuggestions, setShowPrimarySuggestions] = useState<string | null>(null);
-  
+
   // --- Secondary Tag Input State ---
   const [secondaryInput, setSecondaryInput] = useState<{
     entryId: string;
@@ -328,10 +346,8 @@ export default function Sessions() {
   } | null>(null);
 
   // --- Branch Tag Input State ---
-  const [branchInput, setBranchInput] = useState<{
-    tagId: string;
-    value: string;
-  } | null>(null);
+  const [branchInput, setBranchInput] = useState<{ tagId: string; value: string } | null>(null);
+  const [savedPrimaryInput, setSavedPrimaryInput] = useState<{ tagId: string; value: string } | null>(null);
 
   // Data State
   const [tags, setTags] = useState<TagItem[]>([]);
@@ -339,30 +355,35 @@ export default function Sessions() {
   // Track the absolute first occurrence of each master tag name for sidebar headers
   // Track the absolute first and last occurrences of each master tag name for tree lines
   const masterTagMetadata = useMemo(() => {
-    const metadata: Record<string, { 
-      firstItemIndex: number, 
+    const metadata: Record<string, {
+      firstItemIndex: number,
       lastItemIndex: number,
       color: string,
       id: string,
       uniqueIndex: number // Used for horizontal positioning of vertical lines
     }> = {};
-    
+
     let masterCounter = 0;
-    
+
     displayItems.forEach((item, itemIndex) => {
       if (item.type !== 'data') return;
       const dataIndex = item.originalIndex!;
-      
+
       const tagsForThisRow = tags.filter(tag => {
-        const indices = tag.primaryList.map(p => p.messageIndex);
-        return dataIndex >= Math.min(...indices) && dataIndex <= Math.max(...indices);
+        if (tag.primaryList.length > 0) {
+          const indices = tag.primaryList.map(p => p.messageIndex);
+          return dataIndex >= Math.min(...indices) && dataIndex <= Math.max(...indices);
+        } else {
+          // If no primaries, use blockIds
+          return tag.blockIds.includes(item.id);
+        }
       });
-      
+
       tagsForThisRow.forEach((tag) => {
         const name = tag.master || 'No Master';
         if (!metadata[name]) {
-          metadata[name] = { 
-            firstItemIndex: itemIndex, 
+          metadata[name] = {
+            firstItemIndex: itemIndex,
             lastItemIndex: itemIndex,
             color: tag.masterColor || getMasterTagColor(tag.masterTagId || tag.id || name),
             id: tag.masterTagId || tag.id,
@@ -373,7 +394,7 @@ export default function Sessions() {
         }
       });
     });
-    
+
     return metadata;
   }, [displayItems, tags]);
 
@@ -400,11 +421,11 @@ export default function Sessions() {
           const rect = item.getBoundingClientRect();
           // Normalize to container space (relative to right panel root)
           const relativeTop = rect.top - containerRect.top + container.scrollTop;
-          
+
           if (item.getAttribute('data-is-root') === 'true') {
             rootTop = relativeTop + 18; // Spine starts at stem level (18px from top of card)
           }
-          
+
           // Every item's horizontal stem level is a potential end point for the spine
           const stemLevel = relativeTop + 18;
           if (stemLevel > maxBottom) maxBottom = stemLevel;
@@ -425,14 +446,14 @@ export default function Sessions() {
     // Use ResizeObserver for height changes (wrapping, reflows)
     const resizer = new ResizeObserver(updateSpines);
     resizer.observe(container);
-    
+
     // Use MutationObserver for appended/removed nodes or text changes
     const mutator = new MutationObserver(updateSpines);
     mutator.observe(container, { childList: true, subtree: true, characterData: true });
 
     // Ensure we handle window resize too
     window.addEventListener('resize', updateSpines);
-    
+
     // If the right list container scrolls, keep spines in sync
     container.addEventListener('scroll', updateSpines);
 
@@ -452,26 +473,41 @@ export default function Sessions() {
 
   // Toast/Notification State
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
-  
+
   // Filter State
   const [hideUntagged, setHideUntagged] = useState(false);
   const [filterSection, setFilterSection] = useState<string | null>(null); // Section ID to filter by
   const [filterMaster, setFilterMaster] = useState<string | null>(null); // Master tag ID to filter by
-  
+
   // Hover state for tag-to-text connection
   const [hoveredTagId, setHoveredTagId] = useState<string | null>(null);
   const [hoveredBlockIds, setHoveredBlockIds] = useState<Set<string>>(new Set());
-  
+
   // Track which master tag name is currently in "Edit Master" mode
   const [editingMasterName, setEditingMasterName] = useState<string | null>(null);
-  
+
   // Refs for scrolling to blocks
   const blockRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   // Inline Edit State
+  // State for expanded tag groups (branch tags and secondary tags)
+  const [expandedTagGroups, setExpandedTagGroups] = useState<Set<string>>(new Set());
+
+  const toggleTagGroupExpansion = useCallback((groupId: string) => {
+    setExpandedTagGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) {
+        next.delete(groupId);
+      } else {
+        next.add(groupId);
+      }
+      return next;
+    });
+  }, []);
+
   const [editingItem, setEditingItem] = useState<{
     id: string | null;
-    type: 'master' | 'primary' | 'master_comment' | 'primary_comment' | 'pending_master_comment' | 'pending_primary' | 'pending_primary_comment' | null;
+    type: 'master' | 'primary' | 'master_branch' | 'secondary' | 'master_comment' | 'primary_comment' | 'pending_master_comment' | 'pending_primary' | 'pending_primary_comment' | null;
     index: number | null;
     tempValue: string;
   }>({ id: null, type: null, index: null, tempValue: "" });
@@ -491,7 +527,7 @@ export default function Sessions() {
   const rightListRef = useRef<HTMLDivElement | null>(null);
   const leftRowRefs = useRef<(HTMLDivElement | null)[]>([]);
   const sharedScrollRootRef = useRef<HTMLDivElement | null>(null); // Shared scroll container for both panes
-  
+
   // Geometry-driven alignment system
   // Coordinate system: Transcript is source of truth, Sidebar follows
   const [elementPositions, setElementPositions] = useState<Map<number, {
@@ -499,14 +535,14 @@ export default function Sessions() {
     height: number;
     selectionTop?: number; // For tag alignment with selected text
   }>>(new Map());
-  
+
   // Collision detection for sidebar tags
   const [tagPositions, setTagPositions] = useState<Map<string, {
     top: number;
     height: number;
     adjustedTop: number; // After collision handling
   }>>(new Map());
-  
+
   // Find the last open section/subsection for closing
   const findLastOpenSection = useCallback(() => {
     for (let i = displayItems.length - 1; i >= 0; i--) {
@@ -522,11 +558,11 @@ export default function Sessions() {
   const findSectionContext = useCallback((blockIndex: number): { sectionId?: string; subsectionId?: string } => {
     let sectionId: string | undefined;
     let subsectionId: string | undefined;
-    
+
     // Find the section and subsection that contains this block index
     for (let i = 0; i < displayItems.length; i++) {
       const item = displayItems[i];
-      
+
       if (item.type === 'section' && item.dbId) {
         const start = item.startBlockIndex || 0;
         const end = item.endBlockIndex ?? Infinity;
@@ -535,7 +571,7 @@ export default function Sessions() {
           subsectionId = undefined; // Reset subsection when entering new section
         }
       }
-      
+
       if (item.type === 'subsection' && item.dbId) {
         const start = item.startBlockIndex || 0;
         const end = item.endBlockIndex ?? Infinity;
@@ -544,7 +580,7 @@ export default function Sessions() {
         }
       }
     }
-    
+
     return { sectionId, subsectionId };
   }, [displayItems]);
 
@@ -553,14 +589,14 @@ export default function Sessions() {
     setHoveredTagId(tagId);
     setHoveredBlockIds(new Set(blockIds));
   }, []);
-  
+
   // Scroll to and highlight a tag's first block when clicked
   const scrollToTagBlock = useCallback((blockIds: string[]) => {
     if (blockIds.length === 0) return;
-    
+
     const firstBlockId = blockIds[0];
     const blockRef = blockRefs.current.get(firstBlockId);
-    
+
     if (blockRef) {
       blockRef.scrollIntoView({ behavior: 'smooth', block: 'center' });
       // Flash animation
@@ -582,7 +618,7 @@ export default function Sessions() {
       setIsEditingSessionName(false);
       return;
     }
-    
+
     setSavingSessionName(true);
     try {
       const response = await fetch('/api/videos/update', {
@@ -590,7 +626,7 @@ export default function Sessions() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ videoId, fileName: newName }),
       });
-      
+
       if (response.ok) {
         setLoadedVideo(prev => prev ? { ...prev, fileName: newName } : null);
         showToast("Session name updated!", "success");
@@ -602,7 +638,7 @@ export default function Sessions() {
     } finally {
       setSavingSessionName(false);
     }
-    
+
     setIsEditingSessionName(false);
   }, [sessionNameInput, videoId, showToast]);
 
@@ -621,9 +657,9 @@ export default function Sessions() {
 
     // Get tagged block IDs for hide untagged filter
     const taggedBlockIds = new Set(tags.flatMap(t => t.blockIds || []));
-    
+
     // Get block IDs for master tag filter
-    const masterBlockIds = filterMaster 
+    const masterBlockIds = filterMaster
       ? new Set(tags.filter(t => t.masterTagId === filterMaster || t.master === filterMaster).flatMap(t => t.blockIds))
       : null;
 
@@ -636,7 +672,7 @@ export default function Sessions() {
       if (item.type === 'section') {
         currentSectionId = item.dbId || null;
         inFilteredSection = !filterSection || currentSectionId === filterSection;
-        
+
         // Always show section headers if we're filtering by that section
         if (filterSection && currentSectionId === filterSection) {
           return true;
@@ -668,7 +704,7 @@ export default function Sessions() {
 
       // Data items
       const blockId = item.originalData?.blockId;
-      
+
       // Apply section filter
       if (filterSection && !inFilteredSection) {
         return false;
@@ -713,26 +749,26 @@ export default function Sessions() {
         }
 
         const data = await response.json();
-        
+
         if (data.transcription?.blocks && data.transcription.blocks.length > 0) {
           // Store transcript ID and blocks
           setTranscriptId(data.transcription.id);
           setTranscriptBlocks(data.transcription.blocks);
-          
+
           // Build speaker color map
           const speakerColorMap = new Map<string, string>();
           let colorIndex = 0;
-          
+
           // Convert transcript blocks to session data format with block IDs
           const convertedData: SessionDataItem[] = data.transcription.blocks.map((block: TranscriptBlock) => {
             const speakerLabel = block.speaker_label || "A";
-            
+
             // Assign color to speaker
             if (!speakerColorMap.has(speakerLabel)) {
               speakerColorMap.set(speakerLabel, speakerColors[colorIndex % speakerColors.length]);
               colorIndex++;
             }
-            
+
             return {
               name: getSpeakerName(speakerLabel),
               time: formatTime(block.start_time_seconds),
@@ -743,7 +779,7 @@ export default function Sessions() {
           });
 
           setSessionData(convertedData);
-          
+
           // Set video info
           if (data.video) {
             setLoadedVideo({
@@ -752,7 +788,7 @@ export default function Sessions() {
               source_url: data.video.source_url || "",
             });
           }
-          
+
           // Load existing tags and sections for this transcript
           await loadTagsFromDatabase(data.transcription.id, data.transcription.blocks);
         } else {
@@ -769,33 +805,33 @@ export default function Sessions() {
 
     fetchTranscript();
   }, [videoId]);
-  
+
   // Load tags and sections from database
   const loadTagsFromDatabase = async (tId: string, blocks: TranscriptBlock[]) => {
     try {
       const response = await fetch(`/api/tags/load/${tId}`);
       if (!response.ok) return;
-      
+
       const data = await response.json();
-      
+
       // Create a map of block IDs to their indices for messageIndex lookup
       const blockIdToIndex = new Map<string, number>();
       blocks.forEach((block, index) => {
         blockIdToIndex.set(block.id, index);
       });
-      
+
       // Convert database tag groups to local TagItem format
       if (data.tagGroups && data.tagGroups.length > 0) {
         const loadedTags: TagItem[] = [];
-        
+
         data.tagGroups.forEach((group: DbTagGroup) => {
           // Each primary tag (impression) should be its own TagItem for independent positioning
           group.primaryTags.forEach((pt) => {
             const allSelectionRanges = pt.selectionRanges || (pt.blockIds[0] ? [{ blockId: pt.blockIds[0], startOffset: 0, endOffset: 0 }] : []);
-            
+
             // Calculate vertical offset if possible (requires DOM access, might need to be deferred)
             // For now, we'll store the selection data and calculate offset during render or via a helper
-            
+
             loadedTags.push({
               id: pt.impressionId || pt.id,
               master: group.masterTag.name,
@@ -823,9 +859,9 @@ export default function Sessions() {
             });
           });
         });
-        
+
         setTags(loadedTags);
-        
+
         // Set highlight texts to the actual selected texts (not full blocks)
         const allBlockIds = data.tagGroups.flatMap((g: DbTagGroup) => g.blockIds);
         const allTexts = loadedTags.flatMap((t) => t.allText);
@@ -837,7 +873,7 @@ export default function Sessions() {
         setHighlightedBlockIds(new Set());
         setHighlightedTexts([]);
       }
-      
+
       // Load sections into displayItems (will be merged with data items)
       if (data.sections && data.sections.length > 0) {
         setDbSections(data.sections);
@@ -845,14 +881,14 @@ export default function Sessions() {
       } else {
         setDbSections([]);
       }
-      
+
       // Collect all existing master/primary tags for autocomplete
-      const masterTags = data.tagGroups?.map((g: DbTagGroup) => ({ 
-        id: g.masterTag.id, 
-        name: g.masterTag.name 
+      const masterTags = data.tagGroups?.map((g: DbTagGroup) => ({
+        id: g.masterTag.id,
+        name: g.masterTag.name
       })) || [];
       setDbMasterTags(masterTags);
-      
+
     } catch (error) {
       console.error("Failed to load tags from database:", error);
     }
@@ -861,7 +897,7 @@ export default function Sessions() {
   // Initialize Display Items when sessionData or dbSections changes
   useEffect(() => {
     if (sessionData.length === 0) return;
-    
+
     // Start with all data items
     let items: DisplayItem[] = sessionData.map((data, index) => ({
       id: data.blockId || `data-${index}`,
@@ -875,7 +911,7 @@ export default function Sessions() {
       // Sort sections by start index desc to insert from end to beginning
       // this keeps indices stable while inserting
       const markers: { index: number; item: DisplayItem }[] = [];
-      
+
       dbSections.forEach(section => {
         // Add section start
         markers.push({
@@ -949,14 +985,14 @@ export default function Sessions() {
       // For same index: Close markers before Headers, Section headers last (to appear first)
       markers.sort((a, b) => {
         if (b.index !== a.index) return b.index - a.index;
-        
+
         const isCloseA = a.item.type.includes('close');
         const isCloseB = b.item.type.includes('close');
-        
+
         if (isCloseA !== isCloseB) {
           return isCloseA ? -1 : 1; // Close markers first in sorted array
         }
-        
+
         if (isCloseA) {
           // Both are close markers: Section close before Subsection close
           return a.item.type === 'section_close' ? -1 : 1;
@@ -972,7 +1008,7 @@ export default function Sessions() {
         // Since we are inserting from the end, the originalIndex of data items still works
         // We need to find the item that has originalIndex === marker.index
         let insertAt = items.findIndex(item => item.type === 'data' && item.originalIndex === marker.index);
-        
+
         if (insertAt !== -1) {
           // If it's a close marker, insert AFTER the block
           if (marker.item.type.includes('close')) {
@@ -1026,25 +1062,25 @@ export default function Sessions() {
   //
   // The Transcript pane is the source of truth. The Sidebar mirrors it.
   // ============================================
-  
+
   const calculateElementPositions = useCallback(() => {
     const transcriptContainer = leftListRef.current;
     const sidebarContainer = rightListRef.current;
     const sharedScrollRoot = sharedScrollRootRef.current;
-    
+
     if (!transcriptContainer || !sidebarContainer || !sharedScrollRoot) return;
-    
+
     // CRITICAL: Use shared scroll root as the SINGLE coordinate origin
     // Both transcript and sidebar elements must be measured relative to this
     const scrollRootRect = sharedScrollRoot.getBoundingClientRect();
-    
+
     // Calculate sidebar container's offset within scroll root
     // This accounts for padding and any offset between containers
     const sidebarContainerRect = sidebarContainer.getBoundingClientRect();
     const sidebarOffsetInScrollRoot = sidebarContainerRect.top - scrollRootRect.top + sharedScrollRoot.scrollTop;
-    
+
     const newPositions = new Map<number, { top: number; height: number; selectionTop?: number }>();
-    
+
     // Calculate positions for each display item using CURRENT DOM state
     displayItems.forEach((item, index) => {
       const element = leftRowRefs.current[index];
@@ -1052,25 +1088,25 @@ export default function Sessions() {
         // Element not yet rendered - skip but don't break
         return;
       }
-      
+
       // CRITICAL: Always measure fresh - getBoundingClientRect() is live
       const elementRect = element.getBoundingClientRect();
-      
+
       // Calculate top relative to SHARED SCROLL ROOT (single coordinate origin)
       // This ensures transcript and sidebar use the same coordinate system
       const relativeTop = elementRect.top - scrollRootRect.top + sharedScrollRoot.scrollTop;
       const height = elementRect.height; // Live height measurement
-      
+
       // For sidebar positioning: subtract sidebar container's offset
       // This gives us position relative to sidebar container's content area
       const sidebarRelativeTop = relativeTop - sidebarOffsetInScrollRoot;
-      
+
       // For data items, also calculate selection position if there's a pending entry
       let selectionTop: number | undefined;
       if (item.type === 'data') {
         const dataIndex = item.originalIndex!;
         const pendingEntry = pending.find(p => p.messageIndex === dataIndex);
-        
+
         if (pendingEntry && pendingEntry.verticalOffset !== undefined) {
           // Recalculate selection position from current element state
           // This ensures selection stays aligned even after text reflow
@@ -1100,17 +1136,17 @@ export default function Sessions() {
           }
         }
       }
-      
+
       newPositions.set(index, {
         top: sidebarRelativeTop, // Position relative to sidebar container
         height,
         selectionTop
       });
     });
-    
+
     // Update positions state - this triggers re-render with new coordinates
     setElementPositions(newPositions);
-    
+
     // Calculate tag positions with collision detection using fresh measurements
     calculateTagPositions(newPositions, sidebarContainer);
   }, [displayItems, pending, tags]);
@@ -1124,49 +1160,58 @@ export default function Sessions() {
     const newTagPositions = new Map<string, { top: number; height: number; adjustedTop: number }>();
     const occupiedRanges: Array<{ top: number; bottom: number }> = [];
     const MIN_SPACING = 10; // Minimum spacing between tags (px)
-    
+
     // Process tags in order of their appearance
     const sortedTags = [...tags].sort((a, b) => {
-      const aMinIndex = Math.min(...a.primaryList.map(p => {
-        const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === p.messageIndex);
-        return itemIndex >= 0 ? itemIndex : Infinity;
-      }));
-      const bMinIndex = Math.min(...b.primaryList.map(p => {
-        const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === p.messageIndex);
-        return itemIndex >= 0 ? itemIndex : Infinity;
-      }));
-      return aMinIndex - bMinIndex;
+      const getTagMinIndex = (tag: TagItem) => {
+        if (tag.primaryList.length > 0) {
+          return Math.min(...tag.primaryList.map(p => {
+            const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === p.messageIndex);
+            return itemIndex >= 0 ? itemIndex : Infinity;
+          }));
+        } else if (tag.blockIds && tag.blockIds.length > 0) {
+          const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.id === tag.blockIds[0]);
+          return itemIndex >= 0 ? itemIndex : Infinity;
+        }
+        return Infinity;
+      };
+      return getTagMinIndex(a) - getTagMinIndex(b);
     });
-    
+
     sortedTags.forEach((tag) => {
-      // Find the first primary tag's position
+      // Find the tag's position (using first primary or first block ID)
       const firstPrimary = tag.primaryList[0];
-      if (!firstPrimary) return;
-      
-      const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === firstPrimary.messageIndex);
+      let itemIndex = -1;
+
+      if (firstPrimary) {
+        itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === firstPrimary.messageIndex);
+      } else if (tag.blockIds && tag.blockIds.length > 0) {
+        itemIndex = displayItems.findIndex(d => d.type === 'data' && d.id === tag.blockIds[0]);
+      }
+
       if (itemIndex < 0) return;
-      
+
       const elementPos = elementPositions.get(itemIndex);
       if (!elementPos) return;
-      
+
       // Use selection top if available, otherwise use element top
       const intendedTop = elementPos.selectionTop ?? elementPos.top;
-      
+
       // Measure actual tag height from DOM if available, otherwise estimate
       const tagElement = sidebarContainer.querySelector(`[data-tag-id="${tag.id}"]`) as HTMLElement;
       const actualHeight = tagElement ? tagElement.offsetHeight : 120; // Fallback estimate
-      
+
       // Check for collisions and adjust
       let adjustedTop = intendedTop;
       let hasCollision = true;
       let iterations = 0;
       const MAX_ITERATIONS = 100; // Safety limit
-      
+
       while (hasCollision && iterations < MAX_ITERATIONS) {
         iterations++;
         hasCollision = false;
         const adjustedBottom = adjustedTop + actualHeight;
-        
+
         // Check against all occupied ranges
         for (const range of occupiedRanges) {
           if (
@@ -1181,20 +1226,20 @@ export default function Sessions() {
           }
         }
       }
-      
+
       // Record this tag's occupied range
       occupiedRanges.push({
         top: adjustedTop,
         bottom: adjustedTop + actualHeight
       });
-      
+
       newTagPositions.set(tag.id, {
         top: intendedTop,
         height: actualHeight,
         adjustedTop
       });
     });
-    
+
     setTagPositions(newTagPositions);
   }, [tags, displayItems]);
 
@@ -1203,9 +1248,9 @@ export default function Sessions() {
     const transcriptContainer = leftListRef.current;
     const sidebarContainer = rightListRef.current;
     const sharedScrollRoot = sharedScrollRootRef.current;
-    
+
     if (!transcriptContainer || !sidebarContainer || !sharedScrollRoot) return;
-    
+
     // Debounced calculation to batch rapid updates
     let rafId: number | null = null;
     const scheduleCalculation = () => {
@@ -1215,28 +1260,28 @@ export default function Sessions() {
         rafId = null;
       });
     };
-    
+
     // Initial calculation after a brief delay to ensure DOM is ready
     const timeoutId = setTimeout(() => {
       calculateElementPositions();
     }, 0);
-    
+
     // ============================================
     // 1. RESIZE OBSERVERS (Container & Content)
     // ============================================
-    
+
     // CRITICAL: Observe shared scroll root - this is the coordinate origin
     const scrollRootResizer = new ResizeObserver(scheduleCalculation);
     scrollRootResizer.observe(sharedScrollRoot);
-    
+
     // ResizeObserver for transcript container (width/height changes)
     const transcriptResizer = new ResizeObserver(scheduleCalculation);
     transcriptResizer.observe(transcriptContainer);
-    
+
     // ResizeObserver for sidebar container (width changes affect layout)
     const sidebarResizer = new ResizeObserver(scheduleCalculation);
     sidebarResizer.observe(sidebarContainer);
-    
+
     // ResizeObserver for individual transcript elements (text reflow)
     const elementResizers = new ResizeObserver(scheduleCalculation);
     const observeElements = () => {
@@ -1252,7 +1297,7 @@ export default function Sessions() {
       });
     };
     observeElements();
-    
+
     // ResizeObserver for tag elements in sidebar (height changes)
     const tagResizers = new ResizeObserver(scheduleCalculation);
     const observeTags = () => {
@@ -1262,18 +1307,18 @@ export default function Sessions() {
       });
     };
     observeTags();
-    
+
     // ============================================
     // 2. SCROLL & VIEWPORT EVENTS
     // ============================================
-    
+
     // CRITICAL: Scroll listener on SHARED SCROLL ROOT (single coordinate origin)
     // Both transcript and sidebar scroll together in this container
     const handleScroll = () => {
       scheduleCalculation();
     };
     sharedScrollRoot.addEventListener('scroll', handleScroll, { passive: true });
-    
+
     // Visual Viewport API for mobile zoom and viewport changes
     let visualViewport: VisualViewport | null = null;
     if (typeof window !== 'undefined' && window.visualViewport) {
@@ -1281,42 +1326,42 @@ export default function Sessions() {
       visualViewport.addEventListener('resize', scheduleCalculation);
       visualViewport.addEventListener('scroll', scheduleCalculation);
     }
-    
+
     // ============================================
     // 3. WINDOW & ORIENTATION EVENTS
     // ============================================
-    
+
     // Window resize listener (desktop)
     const handleResize = () => {
       scheduleCalculation();
     };
     window.addEventListener('resize', handleResize);
-    
+
     // Orientation change (mobile/tablet)
     const handleOrientationChange = () => {
       // Delay slightly to allow layout to settle
       setTimeout(scheduleCalculation, 100);
     };
     window.addEventListener('orientationchange', handleOrientationChange);
-    
+
     // ============================================
     // 4. FONT LOAD EVENTS
     // ============================================
-    
+
     // Font load detection - recalculate when fonts finish loading
     if (typeof document !== 'undefined' && document.fonts) {
       document.fonts.ready.then(() => {
         scheduleCalculation();
       });
-      
+
       // Also listen for individual font loads
       document.fonts.addEventListener('loadingdone', scheduleCalculation);
     }
-    
+
     // ============================================
     // 5. MUTATION OBSERVERS (DOM Changes)
     // ============================================
-    
+
     // Also observe shared scroll root for structural changes
     const scrollRootMutator = new MutationObserver(scheduleCalculation);
     scrollRootMutator.observe(sharedScrollRoot, {
@@ -1325,16 +1370,16 @@ export default function Sessions() {
       attributes: true,
       attributeFilter: ['style', 'class']
     });
-    
+
     // MutationObserver for transcript content changes (text edits, wrapping)
     const transcriptMutator = new MutationObserver((mutations) => {
       // Check for text content changes that might cause reflow
-      const hasContentChanges = mutations.some(m => 
-        m.type === 'characterData' || 
+      const hasContentChanges = mutations.some(m =>
+        m.type === 'characterData' ||
         m.type === 'childList' ||
         (m.type === 'attributes' && (m.attributeName === 'style' || m.attributeName === 'class'))
       );
-      
+
       if (hasContentChanges) {
         // Re-observe elements that may have changed
         observeElements();
@@ -1348,15 +1393,15 @@ export default function Sessions() {
       attributes: true,
       attributeFilter: ['style', 'class']
     });
-    
+
     // MutationObserver for sidebar changes (tag creation/deletion)
     const sidebarMutator = new MutationObserver((mutations) => {
       // Check if tags were added/removed
-      const hasTagChanges = mutations.some(m => 
+      const hasTagChanges = mutations.some(m =>
         Array.from(m.addedNodes).some(n => (n as Element)?.hasAttribute?.('data-tag-id')) ||
         Array.from(m.removedNodes).some(n => (n as Element)?.hasAttribute?.('data-tag-id'))
       );
-      
+
       if (hasTagChanges) {
         // Re-observe new tag elements
         observeTags();
@@ -1372,11 +1417,11 @@ export default function Sessions() {
       attributes: true,
       attributeFilter: ['style', 'class']
     });
-    
+
     // ============================================
     // 6. MEDIA QUERY CHANGES (Optional but helpful)
     // ============================================
-    
+
     // Listen for media query changes (if using CSS breakpoints)
     let mediaQueryList: MediaQueryList | null = null;
     if (typeof window !== 'undefined' && window.matchMedia) {
@@ -1386,22 +1431,22 @@ export default function Sessions() {
         window.matchMedia('(max-width: 1024px)'),
         window.matchMedia('(prefers-reduced-motion: reduce)')
       ];
-      
+
       queries.forEach(mq => {
         mq.addEventListener('change', scheduleCalculation);
       });
-      
+
       mediaQueryList = queries[0]; // Store for cleanup
     }
-    
+
     // ============================================
     // CLEANUP
     // ============================================
-    
+
     return () => {
       clearTimeout(timeoutId);
       if (rafId !== null) cancelAnimationFrame(rafId);
-      
+
       // Disconnect observers
       scrollRootResizer.disconnect();
       transcriptResizer.disconnect();
@@ -1411,21 +1456,21 @@ export default function Sessions() {
       scrollRootMutator.disconnect();
       transcriptMutator.disconnect();
       sidebarMutator.disconnect();
-      
+
       // Remove event listeners
       sharedScrollRoot.removeEventListener('scroll', handleScroll);
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('orientationchange', handleOrientationChange);
-      
+
       if (visualViewport) {
         visualViewport.removeEventListener('resize', scheduleCalculation);
         visualViewport.removeEventListener('scroll', scheduleCalculation);
       }
-      
+
       if (typeof document !== 'undefined' && document.fonts) {
         document.fonts.removeEventListener('loadingdone', scheduleCalculation);
       }
-      
+
       if (mediaQueryList && typeof window !== 'undefined' && window.matchMedia) {
         const queries = [
           window.matchMedia('(max-width: 768px)'),
@@ -1445,14 +1490,14 @@ export default function Sessions() {
     const timeoutId = setTimeout(() => {
       calculateElementPositions();
     }, 0);
-    
+
     return () => clearTimeout(timeoutId);
   }, [displayItems.length, calculateElementPositions]);
 
   // Only load from localStorage when NOT loading from database (no videoId)
   useEffect(() => {
     if (videoId) return; // Skip localStorage when we have a videoId (will load from DB)
-    
+
     const saved = localStorage.getItem("selectedTags_v7");
     if (saved) {
       try {
@@ -1524,7 +1569,7 @@ export default function Sessions() {
   const handleAddDivider = (type: 'section' | 'subsection') => {
     if (!contextMenu) return;
     const { displayIndex, transcriptIndex } = contextMenu;
-    
+
     // Rule-driven validation at the state level using displayIndex for layout scanning
     const { activeSection, activeSubsection, hasOpenSection, hasOpenSubsection } = getHierarchyStateAt(displayIndex);
 
@@ -1563,10 +1608,10 @@ export default function Sessions() {
         return;
       }
     }
-    
+
     // For subsections, the parent is the currently active section (even if closed)
     const parentSectionId = activeSection ? (activeSection.dbId || activeSection.id) : undefined;
-    
+
     const newItems = [...displayItems];
     const newItem: DisplayItem = {
       id: `${type}-${Date.now()}`,
@@ -1598,76 +1643,76 @@ export default function Sessions() {
       showToast("Section name is required", "error");
       return;
     }
-    
+
     const trimmedTitle = item.title.trim();
-    
+
     // Frontend validation: Check for duplicate section names within the same transcript
     if (item.type === 'section' && transcriptId) {
       const trimmedName = trimmedTitle.toLowerCase();
       const existingSection = dbSections.find(
         (section: any) => section.name.toLowerCase() === trimmedName
       );
-      
+
       if (existingSection && existingSection.id !== item.dbId) {
         showToast("Section name must be unique within the same transcript", "error");
         return;
       }
     }
-    
+
     // Only save to database if we have a transcriptId
     if (transcriptId) {
       try {
         const isSubsection = item.type === 'subsection';
         const endpoint = isSubsection ? '/api/subsections' : '/api/sections';
-        
+
         // If item has dbId, it's an update (PUT), otherwise it's a create (POST)
         const isUpdate = !!item.dbId;
         const method = isUpdate ? 'PUT' : 'POST';
-        
+
         const requestBody = isUpdate
           ? {
-              id: item.dbId,
-              name: trimmedTitle,
-              startBlockIndex: item.startBlockIndex,
-              endBlockIndex: item.endBlockIndex,
-            }
+            id: item.dbId,
+            name: trimmedTitle,
+            startBlockIndex: item.startBlockIndex,
+            endBlockIndex: item.endBlockIndex,
+          }
           : {
-              transcriptId,
-              name: trimmedTitle,
-              startBlockIndex: item.startBlockIndex || 0,
-              endBlockIndex: item.endBlockIndex,
-              // Include parentSectionId for subsections
-              ...(isSubsection ? { sectionId: item.parentSectionId } : {})
-            };
-        
+            transcriptId,
+            name: trimmedTitle,
+            startBlockIndex: item.startBlockIndex || 0,
+            endBlockIndex: item.endBlockIndex,
+            // Include parentSectionId for subsections
+            ...(isSubsection ? { sectionId: item.parentSectionId } : {})
+          };
+
         const response = await fetch(endpoint, {
           method,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(requestBody),
         });
-        
+
         if (response.ok) {
           const data = await response.json();
-          
+
           if (isUpdate) {
             // Update existing section/subsection in dbSections
             setDbSections(prev => {
               if (!isSubsection) {
-                return prev.map(s => s.id === item.dbId 
+                return prev.map(s => s.id === item.dbId
                   ? { ...s, name: data.section.name, startBlockIndex: data.section.startBlockIndex, endBlockIndex: data.section.endBlockIndex }
                   : s
                 );
               }
               return prev.map(s => ({
                 ...s,
-                subsections: s.subsections?.map(sub => 
-                  sub.id === item.dbId 
+                subsections: s.subsections?.map(sub =>
+                  sub.id === item.dbId
                     ? { ...sub, name: data.subsection.name, startBlockIndex: data.subsection.startBlockIndex, endBlockIndex: data.subsection.endBlockIndex }
                     : sub
                 ) || []
               }));
             });
-            
+
             // Update display item
             setDisplayItems(prev => prev.map(i =>
               i.id === id ? { ...i, isEditing: false, title: trimmedTitle } : i
@@ -1679,12 +1724,12 @@ export default function Sessions() {
               if (!isSubsection) {
                 return [...prev, { ...data.section, subsections: [] }];
               }
-              return prev.map(s => s.id === item.parentSectionId 
-                ? { ...s, subsections: [...(s.subsections || []), data.subsection] } 
+              return prev.map(s => s.id === item.parentSectionId
+                ? { ...s, subsections: [...(s.subsections || []), data.subsection] }
                 : s
               );
             });
-            
+
             // Update with database ID
             setDisplayItems(prev => prev.map(i =>
               i.id === id ? { ...i, isEditing: false, dbId: isSubsection ? data.subsection?.id : data.section?.id } : i
@@ -1702,13 +1747,13 @@ export default function Sessions() {
         setDisplayItems(prev => prev.filter(i => i.id !== id));
       }
     }
-    
+
     // Fallback: just close editing mode (for demo/non-db mode)
     setDisplayItems(prev => prev.map(i =>
       i.id === id ? { ...i, isEditing: false } : i
     ));
   };
-  
+
   // Close a section/subsection (set the endBlockIndex)
   const closeSectionOrSubsection = async (id: string, targetDisplayIndex: number) => {
     const itemIndex = displayItems.findIndex(i => i.id === id);
@@ -1720,7 +1765,7 @@ export default function Sessions() {
       showToast(`Cannot close a ${item.type} before its start point.`, "error");
       return;
     }
-    
+
     // Find the original block index for this position
     // The section ends at the block immediately preceding the insertion point
     let blockIndex = 0;
@@ -1730,7 +1775,35 @@ export default function Sessions() {
         break;
       }
     }
-    
+
+    // ❌ Rule: Subsection cannot extend beyond its parent Section.
+    // ❌ Rule: Subsection cannot extend beyond its parent Section.
+    if (item.type === 'subsection') {
+      const parentSection = displayItems.find(i => i.type === 'section' && (i.id === item.parentSectionId || (i.dbId && i.dbId === item.parentSectionId)));
+      if (parentSection && parentSection.isClosed && parentSection.endBlockIndex !== null && parentSection.endBlockIndex !== undefined) {
+        if (blockIndex > parentSection.endBlockIndex) {
+          showToast("Subsection cannot be closed outside of its parent Section range.", "error");
+          return;
+        }
+      }
+    }
+
+    // ❌ Rule: Section cannot be closed before its Subsections end.
+    if (item.type === 'section') {
+      const subsections = displayItems.filter(i => i.type === 'subsection' && (i.parentSectionId === item.id || (item.dbId && i.parentSectionId === item.dbId)));
+      for (const sub of subsections) {
+        if (sub.isClosed && sub.endBlockIndex !== null && sub.endBlockIndex !== undefined) {
+          if (sub.endBlockIndex > blockIndex) {
+            showToast(`Cannot close Section before its Subsection "${sub.title}" ends.`, "error");
+            return;
+          }
+        } else if (!sub.isClosed) {
+          showToast(`Please close the open Subsection "${sub.title}" first.`, "error");
+          return;
+        }
+      }
+    }
+
     // Update in database if we have dbId
     if (item.dbId && transcriptId) {
       try {
@@ -1747,7 +1820,7 @@ export default function Sessions() {
         console.error("Failed to close section/subsection:", error);
       }
     }
-    
+
     // Update dbSections so it persists through displayItems refresh
     setDbSections(prev => prev.map(s => {
       if (item.type === 'section' && s.id === item.dbId) {
@@ -1756,14 +1829,14 @@ export default function Sessions() {
       if (item.type === 'subsection' && s.subsections) {
         return {
           ...s,
-          subsections: s.subsections.map(sub => 
+          subsections: s.subsections.map(sub =>
             sub.id === item.dbId ? { ...sub, endBlockIndex: blockIndex } : sub
           )
         };
       }
       return s;
     }));
-    
+
     // Update local state: 
     // 1. Update the original header item
     // 2. Insert a closing marker at targetDisplayIndex
@@ -1771,7 +1844,7 @@ export default function Sessions() {
       const updated = prev.map(i =>
         i.id === id ? { ...i, endBlockIndex: blockIndex, isClosed: true } : i
       );
-      
+
       const closeMarker: DisplayItem = {
         id: `${id}-close`,
         dbId: item.dbId,
@@ -1782,13 +1855,13 @@ export default function Sessions() {
         isClosed: true,
         isEditing: false
       };
-      
+
       // Insert EXACTLY where the user clicked (this shifts the item at this index down)
       updated.splice(targetDisplayIndex, 0, closeMarker);
       return updated;
     });
   };
-  
+
   // Handler for closing at a specific position
   const handleCloseSection = (displayIndex: number) => {
     const openItem = findLastOpenSection();
@@ -1797,10 +1870,10 @@ export default function Sessions() {
     // Rule: LIFO Order - Close Subsection → then close Section
     // If we are trying to close a section but a subsection is open, we must block it.
     // findLastOpenSection already finds the innermost open item (LIFO).
-    
+
     // Check if there's an open subsection BEFORE this section closure point
     // This is handled by findLastOpenSection returning the SUBSECTION if one is open.
-    
+
     closeSectionOrSubsection(openItem.item.id, displayIndex);
   };
 
@@ -1844,7 +1917,7 @@ export default function Sessions() {
         if (openItem?.type === 'subsection' && s.subsections) {
           return {
             ...s,
-            subsections: s.subsections.map(sub => 
+            subsections: s.subsections.map(sub =>
               sub.id === openItem.dbId ? { ...sub, endBlockIndex: null } : sub
             )
           };
@@ -1863,12 +1936,12 @@ export default function Sessions() {
     // If it's an opening marker, delete the whole thing (including close marker)
     // ❌ Rule: Hierarchy is a contract. If a Section is deleted, its Subsections must be handled.
     // To maintain "A Subsection can only exist inside a Section", we delete nested items.
-    
+
     if (item.dbId && transcriptId) {
       try {
         const endpoint = item.type === 'section' ? '/api/sections' : '/api/subsections';
         await fetch(`${endpoint}?id=${item.dbId}`, { method: 'DELETE' });
-        
+
         // If deleting a section, also delete all its subsections in the DB
         if (item.type === 'section') {
           const section = dbSections.find(s => s.id === item.dbId);
@@ -1900,7 +1973,7 @@ export default function Sessions() {
         const itemsToRemove = new Set<string>();
         itemsToRemove.add(id);
         itemsToRemove.add(`${id}-close`);
-        
+
         // Find all subsections that had this section as parent
         prev.forEach(i => {
           if (i.parentSectionId === (item.dbId || item.id)) {
@@ -1908,7 +1981,7 @@ export default function Sessions() {
             itemsToRemove.add(`${i.id}-close`);
           }
         });
-        
+
         return prev.filter(i => !itemsToRemove.has(i.id));
       }
       return prev.filter(i => i.id !== id && i.id !== `${id}-close`);
@@ -1927,6 +2000,12 @@ export default function Sessions() {
     const text = selection?.toString()?.trim();
     if (!text || !selection) return;
 
+    // Reset cancelled state if a new selection is made
+    if (masterCancelled) {
+      setMasterCancelled(false);
+      setMasterConfirmed(false);
+    }
+
     const exists = pending.some((p) => p.messageIndex === messageIndex && p.text === text);
     if (exists) {
       window.getSelection()?.removeAllRanges();
@@ -1936,16 +2015,16 @@ export default function Sessions() {
     // Calculate selection offsets within the block text
     let startOffset = 0;
     let endOffset = text.length;
-    
+
     // Try to get the actual offsets from the selection range
     if (selection.rangeCount > 0) {
       const range = selection.getRangeAt(0);
       const blockElement = range.commonAncestorContainer.parentElement?.closest('[data-block-text]');
-      
+
       if (blockElement) {
         const blockText = blockElement.getAttribute('data-block-text') || '';
         const selectedText = text;
-        
+
         // Find the position of the selected text within the block
         // We need to reconstruct the position by walking through the text nodes
         const treeWalker = document.createTreeWalker(
@@ -1953,29 +2032,29 @@ export default function Sessions() {
           NodeFilter.SHOW_TEXT,
           null
         );
-        
+
         let charCount = 0;
         let foundStart = false;
         let calculatedStart = 0;
-        
+
         while (treeWalker.nextNode()) {
           const node = treeWalker.currentNode;
-          
+
           if (node === range.startContainer) {
             calculatedStart = charCount + range.startOffset;
             foundStart = true;
           }
-          
+
           if (node === range.endContainer && foundStart) {
             const calculatedEnd = charCount + range.endOffset;
             startOffset = calculatedStart;
             endOffset = calculatedEnd;
             break;
           }
-          
+
           charCount += node.textContent?.length || 0;
         }
-        
+
         // Fallback: find the first occurrence of selected text in block
         if (!foundStart && blockText) {
           const idx = blockText.indexOf(selectedText);
@@ -2029,12 +2108,12 @@ export default function Sessions() {
 
     setPending((prev) => [...prev, newEntry]);
     setHighlightedTexts((prev) => [...prev, text]);
-    
+
     // Also track highlighted block IDs
     if (blockId) {
       setHighlightedBlockIds(prev => new Set([...prev, blockId]));
     }
-    
+
     window.getSelection()?.removeAllRanges();
   };
 
@@ -2062,9 +2141,9 @@ export default function Sessions() {
 
         return {
           ...p,
-          primaryList: [...p.primaryList, { 
+          primaryList: [...p.primaryList, {
             id: instance.id,
-            value: instance.name, 
+            value: instance.name,
             displayName: instance.displayName,
             secondaryTags: (instance.secondaryTags || []).map(s => ({ id: s.id, value: s.name }))
           }],
@@ -2089,8 +2168,8 @@ export default function Sessions() {
 
         return {
           ...p,
-          primaryList: [...p.primaryList, { 
-            value: trimmed, 
+          primaryList: [...p.primaryList, {
+            value: trimmed,
           }],
           primaryInput: "",
           primaryInputClosed: true,
@@ -2120,12 +2199,7 @@ export default function Sessions() {
     const tag = tags.find(t => t.id === entryId);
     if (tag) {
       const primary = tag.primaryList[primaryIndex];
-      if (primary && primary.secondaryTags && primary.secondaryTags.length >= 1) {
-        showToast("Only one secondary tag is allowed per primary tag.", "info");
-        setSecondaryInput(null);
-        return;
-      }
-      
+
       const primaryTagId = primary?.id;
       if (primaryTagId) {
         try {
@@ -2141,10 +2215,12 @@ export default function Sessions() {
               const newList = [...t.primaryList];
               newList[primaryIndex] = {
                 ...newList[primaryIndex],
-                secondaryTags: [{ id: data.secondaryTag.id, value: trimmed }] // Enforce only 1
+                secondaryTags: [...(newList[primaryIndex].secondaryTags || []), { id: data.secondaryTag.id, value: trimmed }] // Append new secondary tag
               };
               return { ...t, primaryList: newList };
             }));
+            // Clear input value but keep it open
+            setSecondaryInput({ entryId, primaryIndex, value: '' });
           }
         } catch (error) {
           console.error("Error adding secondary tag:", error);
@@ -2155,22 +2231,20 @@ export default function Sessions() {
     // 2. Handle pending tag (state update only)
     setPending(prev => prev.map(p => {
       if (p.id !== entryId) return p;
-      
+
       const newPrimaryList = [...p.primaryList];
       const primary = newPrimaryList[primaryIndex];
       if (primary) {
-        if (primary.secondaryTags && primary.secondaryTags.length >= 1) {
-          return p;
-        }
         newPrimaryList[primaryIndex] = {
           ...primary,
-          secondaryTags: [{ value: trimmed }] // Enforce only 1
+          secondaryTags: [...(primary.secondaryTags || []), { value: trimmed }] // Append new secondary tag
         };
       }
       return { ...p, primaryList: newPrimaryList };
     }));
 
-    setSecondaryInput(null);
+    // Clear input value but keep it open for adding more tags
+    setSecondaryInput({ entryId, primaryIndex, value: '' });
   };
 
   const removeSecondaryTag = async (entryId: string, primaryIndex: number, secondaryIndex: number) => {
@@ -2185,14 +2259,14 @@ export default function Sessions() {
           console.error("Error deleting secondary tag:", error);
         }
       }
-      
+
       setTags(prev => prev.map(t => {
         if (t.id !== entryId) return t;
         const newList = [...t.primaryList];
         if (newList[primaryIndex]?.secondaryTags) {
-          newList[primaryIndex] = { 
-            ...newList[primaryIndex], 
-            secondaryTags: newList[primaryIndex].secondaryTags!.filter((_, idx) => idx !== secondaryIndex) 
+          newList[primaryIndex] = {
+            ...newList[primaryIndex],
+            secondaryTags: newList[primaryIndex].secondaryTags!.filter((_, idx) => idx !== secondaryIndex)
           };
         }
         return { ...t, primaryList: newList };
@@ -2202,7 +2276,7 @@ export default function Sessions() {
     // 2. Handle pending tag
     setPending(prev => prev.map(p => {
       if (p.id !== entryId) return p;
-      
+
       const newPrimaryList = [...p.primaryList];
       const primary = newPrimaryList[primaryIndex];
       if (primary?.secondaryTags) {
@@ -2230,11 +2304,6 @@ export default function Sessions() {
     // 1. Handle saved tag (database update)
     const tag = tags.find(t => t.id === tagId);
     if (tag) {
-      if (tag.branchTags && tag.branchTags.length >= 1) {
-        showToast("Only one branch tag is allowed per master tag.", "info");
-        setBranchInput(null);
-        return;
-      }
       const masterTagId = tag?.masterTagId;
 
       if (masterTagId) {
@@ -2250,9 +2319,11 @@ export default function Sessions() {
               if (t.id !== tagId) return t;
               return {
                 ...t,
-                branchTags: [{ id: data.branchTag.id, name: trimmed }] // Enforce only 1
+                branchTags: [...(t.branchTags || []), { id: data.branchTag.id, name: trimmed }] // Append new branch tag
               };
             }));
+            // Clear input value but keep it open
+            setBranchInput({ tagId, value: '' });
           } else {
             const err = await res.json();
             showToast(err.error || "Failed to add branch tag", "error");
@@ -2266,14 +2337,14 @@ export default function Sessions() {
     // 2. Handle pending tag (state update only)
     setPending(prev => prev.map(p => {
       if (p.id !== tagId) return p;
-      if (p.branchTags && p.branchTags.length >= 1) return p;
       return {
         ...p,
-        branchTags: [{ value: trimmed }] // Enforce only 1
+        branchTags: [...(p.branchTags || []), { value: trimmed }] // Append new branch tag
       };
     }));
 
-    setBranchInput(null);
+    // Clear input value but keep it open for adding more tags
+    setBranchInput({ tagId, value: '' });
   };
 
   const removeBranchTag = async (tagId: string, branchId?: string, branchIdx?: number) => {
@@ -2302,6 +2373,71 @@ export default function Sessions() {
     }));
   };
 
+  const addPrimaryToSavedTag = async (tagId: string, value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+
+    const tag = tags.find(t => t.id === tagId);
+    if (!tag || !tag.masterTagId || tag.blockIds.length === 0) return;
+
+    try {
+      const res = await fetch('/api/tags/impressions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transcriptId,
+          blockIds: tag.blockIds,
+          masterTagName: tag.master,
+          primaryTags: [{
+            name: trimmed,
+            blockId: tag.blockIds[0],
+            selectionRange: tag.selectionRanges?.[0],
+            selectedText: tag.allText?.[0]
+          }],
+          selectionRanges: tag.selectionRanges,
+          selectedText: tag.allText?.join(' ')
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const imp = data.impressions?.[0];
+        if (imp) {
+          setTags(prev => prev.map(t => {
+            if (t.id !== tagId) return t;
+            return {
+              ...t,
+              primaryList: [...t.primaryList, {
+                id: imp.primaryTagId,
+                value: imp.primaryTagName,
+                displayName: imp.displayName,
+                instanceIndex: imp.instanceIndex,
+                impressionId: imp.id,
+                messageIndex: displayItems.find(d => d.id === imp.blockIds[0])?.originalIndex ?? 0,
+                blockId: imp.blockIds[0],
+                selectedText: imp.selectedText,
+                selectionRange: imp.selectionRanges?.[0]
+              }]
+            };
+          }));
+          setSavedPrimaryInput(null);
+          showToast("Primary tag added!", "success");
+        }
+      }
+    } catch (error) {
+      console.error("Error adding primary to saved tag:", error);
+      showToast("Failed to add primary tag", "error");
+    }
+  };
+
+  const togglePrimaryInput = (tagId: string) => {
+    if (savedPrimaryInput?.tagId === tagId) {
+      setSavedPrimaryInput(null);
+    } else {
+      setSavedPrimaryInput({ tagId, value: '' });
+    }
+  };
+
   // ------------------------------------------------------------------
   // --- MASTER TAG: POPUP & ADD LOGIC ---
   // ------------------------------------------------------------------
@@ -2327,15 +2463,15 @@ export default function Sessions() {
     const firstPendingEntry = pending[0];
     if (firstPendingEntry && editingMasterName !== trimmed) {
       const currentScope = findSectionContext(firstPendingEntry.messageIndex);
-      
+
       const isDuplicate = tags.some(tag => {
         if (!tag.master || tag.master.toLowerCase() !== trimmed.toLowerCase()) return false;
-        
+
         // Find the scope of this existing tag
         const firstPrimary = tag.primaryList[0];
         if (!firstPrimary) return false;
         const tagScope = findSectionContext(firstPrimary.messageIndex);
-        
+
         // ❌ Rule: A Master Tag name used anywhere within a Section or its Subsections cannot be reused again in that Section.
         if (currentScope.sectionId) {
           // We are inside a section. Check if the existing tag is in the SAME section.
@@ -2374,11 +2510,11 @@ export default function Sessions() {
     // Get all pending block IDs before clearing
     const pendingBlockIds = pending.map(p => p.blockId).filter((id): id is string => !!id);
     const pendingTexts = pending.map(p => p.text);
-    
+
     // Get block IDs and texts that are still in saved tags
     const taggedBlockIds = new Set(tags.flatMap(t => t.blockIds || []));
     const taggedTexts = new Set(tags.flatMap(t => t.allText || []));
-    
+
     // Remove only the highlights that aren't in saved tags
     setHighlightedTexts(prev => prev.filter(t => taggedTexts.has(t) || !pendingTexts.includes(t)));
     setHighlightedBlockIds(prev => {
@@ -2390,7 +2526,7 @@ export default function Sessions() {
       });
       return newSet;
     });
-    
+
     // Clear all pending entries and master state
     setPending([]);
     setMasterInput("");
@@ -2414,32 +2550,36 @@ export default function Sessions() {
   const handleOverallAdd = async () => {
     // Always clear editing mode when finishing
     setEditingMasterName(null);
-    
-    if (pending.length === 0) return;
-    const entriesWithPrimaries = pending.filter((p) => p.primaryList.length > 0);
-
-    if (entriesWithPrimaries.length === 0) return;
 
     const masterToApply = masterCancelled
       ? null
-      : masterConfirmed
+      : (masterConfirmed || masterInput.trim())
         ? masterInput.trim() || null
-        : masterInput.trim() || null;
+        : null;
 
-    // Collect all block IDs from pending entries
-    const blockIds = entriesWithPrimaries
+    // Allow saving if we have a master tag confirmed, OR if we have primary tags
+    const hasPrimaryTags = pending.some(p => p.primaryList.length > 0);
+    const hasMasterTag = masterToApply !== null;
+
+    if (!hasPrimaryTags && !hasMasterTag) return;
+
+    // Use all pending entries if we are saving a master tag independently
+    const activeEntries = hasPrimaryTags ? pending.filter(p => p.primaryList.length > 0) : pending;
+
+    // Collect all block IDs from active entries
+    const blockIds = activeEntries
       .filter((p) => p.blockId)
       .map((p) => p.blockId!);
 
     // Collect all selection ranges for precise highlight persistence
-    const selectionRanges: SelectionRange[] = entriesWithPrimaries
+    const selectionRanges: SelectionRange[] = activeEntries
       .filter((p) => p.selectionRange)
       .map((p) => p.selectionRange!);
 
     // Combine all selected texts for the API
-    const combinedSelectedText = entriesWithPrimaries.map((p) => p.selectedText).join(' ');
+    const combinedSelectedText = activeEntries.map((p) => p.selectedText).join(' ');
 
-    const allPrimaries: PrimaryTagDetail[] = entriesWithPrimaries.flatMap((p) =>
+    const allPrimaries: PrimaryTagDetail[] = activeEntries.flatMap((p) =>
       p.primaryList.map(val => ({
         id: val.id, // Database primary tag ID if reusing
         value: val.value,
@@ -2452,25 +2592,23 @@ export default function Sessions() {
       }))
     );
 
-    const allTexts = entriesWithPrimaries.map((p) => p.selectedText);
-    
     // Collect branch tags from the first entry (branch tags belong to the master tag)
-    const branchNamesToApply = entriesWithPrimaries[0]?.branchTags?.map(b => b.value) || [];
-    
+    const branchNamesToApply = activeEntries[0]?.branchTags?.map(b => b.value) || [];
+
     // Find section context for the first block (tags span the same context)
-    const firstEntry = entriesWithPrimaries[0];
+    const firstEntry = activeEntries[0];
     const sectionContext = firstEntry ? findSectionContext(firstEntry.messageIndex) : {};
-    
+
     // Save to database if we have transcriptId and a master tag
     let savedMasterTagId: string | undefined;
-    const savedImpressions: Array<{ 
-      impressionId: string; 
+    const savedImpressions: Array<{
+      impressionId: string;
       primaryTagName: string;
       instanceIndex?: number;
       displayName?: string;
       blockIds: string[];
     }> = [];
-    
+
     if (transcriptId && masterToApply && blockIds.length > 0) {
       setSavingTags(true);
       try {
@@ -2500,16 +2638,16 @@ export default function Sessions() {
             subsectionId: sectionContext.subsectionId,
           }),
         });
-        
+
         if (response.ok) {
           const data = await response.json();
           savedMasterTagId = data.masterTag?.id;
-          
+
           // Update dbMasterTags for autocomplete
           if (data.masterTag && !dbMasterTags.find(t => t.id === data.masterTag.id)) {
             setDbMasterTags(prev => [...prev, { id: data.masterTag.id, name: data.masterTag.name }]);
           }
-          
+
           // Track impressions
           if (data.impressions) {
             for (const imp of data.impressions) {
@@ -2522,7 +2660,7 @@ export default function Sessions() {
               });
             }
           }
-          
+
           showToast("Tags saved successfully!", "success");
           console.log("Tags saved to database:", data);
         } else {
@@ -2540,10 +2678,12 @@ export default function Sessions() {
 
     // Use the first impression ID as the unique ID for this tag group
     // Create SEPARATE TagItems for DIFFERENT selections to allow independent positioning
-    const newTags: TagItem[] = entriesWithPrimaries.map((p, pIdx) => {
-      const savedImp = savedImpressions.find(imp => imp.primaryTagName === p.primaryList[0]?.value && imp.blockIds.includes(p.blockId!));
+    const newTags: TagItem[] = activeEntries.map((p, pIdx) => {
+      const savedImp = p.primaryList.length > 0
+        ? savedImpressions.find(imp => imp.primaryTagName === p.primaryList[0]?.value && imp.blockIds.includes(p.blockId!))
+        : null;
       const tagId = savedImp?.impressionId || Date.now().toString() + Math.random().toString(36).slice(2, 6) + pIdx;
-      
+
       return {
         id: tagId,
         master: masterToApply,
@@ -2575,8 +2715,8 @@ export default function Sessions() {
     });
 
     setTags((prev) => [...prev, ...newTags]);
-    setHighlightedTexts((prev) => [...prev, ...allTexts]);
-    
+    setHighlightedTexts((prev) => [...prev, ...activeEntries.map(p => p.selectedText)]);
+
     // Track highlighted block IDs
     setHighlightedBlockIds(prev => {
       const newSet = new Set(prev);
@@ -2593,9 +2733,9 @@ export default function Sessions() {
   };
 
   // Get selection ranges for a specific block from all tags
-  const getSelectionRangesForBlock = useCallback((blockId: string): Array<{start: number; end: number}> => {
-    const ranges: Array<{start: number; end: number}> = [];
-    
+  const getSelectionRangesForBlock = useCallback((blockId: string): Array<{ start: number; end: number }> => {
+    const ranges: Array<{ start: number; end: number }> = [];
+
     // Check pending entries
     pending.forEach(entry => {
       if (entry.selectionRange?.blockId === blockId) {
@@ -2605,7 +2745,7 @@ export default function Sessions() {
         });
       }
     });
-    
+
     // Check saved tags
     tags.forEach(tag => {
       tag.selectionRanges?.forEach(sr => {
@@ -2626,14 +2766,14 @@ export default function Sessions() {
         }
       });
     });
-    
+
     // Sort and merge overlapping ranges
     if (ranges.length === 0) return [];
-    
+
     ranges.sort((a, b) => a.start - b.start);
-    const merged: Array<{start: number; end: number}> = [];
+    const merged: Array<{ start: number; end: number }> = [];
     let current = ranges[0];
-    
+
     for (let i = 1; i < ranges.length; i++) {
       if (ranges[i].start <= current.end) {
         current.end = Math.max(current.end, ranges[i].end);
@@ -2643,7 +2783,7 @@ export default function Sessions() {
       }
     }
     merged.push(current);
-    
+
     return merged;
   }, [pending, tags]);
 
@@ -2655,47 +2795,46 @@ export default function Sessions() {
       if (ranges.length > 0) {
         const parts: Array<{ text: string; highlighted: boolean; isHovered?: boolean; hoverColor?: string }> = [];
         let lastEnd = 0;
-        
+
         ranges.forEach(range => {
           // Add non-highlighted text before this range
           if (range.start > lastEnd) {
             parts.push({ text: text.slice(lastEnd, range.start), highlighted: false });
           }
-          
+
           // Check if this specific range belongs to the currently hovered tag
-          const hoveredTag = tags.find(t => 
-            t.id === hoveredTagId && 
+          const hoveredTag = tags.find(t =>
+            t.id === hoveredTagId &&
             (t.selectionRanges?.some(sr => sr.blockId === blockId && sr.startOffset === range.start) ||
-             t.primaryList.some(p => p.selectionRange?.blockId === blockId && p.selectionRange?.startOffset === range.start))
+              t.primaryList.some(p => p.selectionRange?.blockId === blockId && p.selectionRange?.startOffset === range.start))
           );
 
           // Add highlighted text
-          parts.push({ 
-            text: text.slice(range.start, range.end), 
+          parts.push({
+            text: text.slice(range.start, range.end),
             highlighted: true,
             isHovered: !!hoveredTag,
             hoverColor: hoveredTag ? (hoveredTag.masterColor || getMasterTagColor(hoveredTag.masterTagId || hoveredTag.id || hoveredTag.master || '')) : undefined
           });
           lastEnd = range.end;
         });
-        
+
         // Add remaining non-highlighted text
         if (lastEnd < text.length) {
           parts.push({ text: text.slice(lastEnd), highlighted: false });
         }
-        
+
         return (
           <>
             {parts.map((part, i) =>
               part.highlighted ? (
-                <span 
-                  key={i} 
-                  className={`transition-all duration-200 ${
-                    part.isHovered 
-                      ? "shadow-sm ring-1 z-10 relative px-0.5 rounded-sm" 
-                      : "bg-[#BFE8EB]"
-                  }`}
-                  style={part.isHovered ? { 
+                <span
+                  key={i}
+                  className={`transition-all duration-200 ${part.isHovered
+                    ? "shadow-sm ring-1 z-10 relative px-0.5 rounded-sm"
+                    : "bg-[#BFE8EB]"
+                    }`}
+                  style={part.isHovered ? {
                     backgroundColor: part.hoverColor,
                     boxShadow: `0 0 0 1px ${part.hoverColor}66`,
                     color: '#fff',
@@ -2712,7 +2851,7 @@ export default function Sessions() {
         );
       }
     }
-    
+
     // Fall back to text-based highlighting
     if (!highlightedTexts || highlightedTexts.length === 0) {
       return <>{text}</>;
@@ -2743,21 +2882,22 @@ export default function Sessions() {
       </>
     );
   }, [highlightedTexts, getSelectionRangesForBlock]);
-  
+
   // Legacy function for backward compatibility (text-only highlighting)
   const highlightTextJSX = (text: string) => {
     return highlightTextWithRanges(text, undefined);
   };
 
-  const startEditing = (id: string, type: 'master' | 'primary' | 'master_comment' | 'primary_comment' | 'pending_master_comment' | 'pending_primary' | 'pending_primary_comment', currentValue: string, index: number | null = null) => {
-    // Check if the master tag is in edit mode
-    if (type === 'master' || type === 'primary' || type === 'master_comment' || type === 'primary_comment') {
-      const tag = tags.find(t => t.id === id);
-      if (editingMasterName !== tag?.master) {
-        showToast("Enter Edit mode on the Master Tag first to make changes.", "info");
-        return;
-      }
-    }
+  const startEditing = (id: string, type: 'master' | 'primary' | 'master_branch' | 'secondary' | 'master_comment' | 'primary_comment' | 'pending_master_comment' | 'pending_primary' | 'pending_primary_comment', currentValue: string, index: number | null = null) => {
+    // Allow master tag name editing to start immediately
+    // Also allow independent editing of primary/secondary tags without master edit mode
+    // if (type !== 'master' && (type === 'primary' || type === 'master_comment' || type === 'primary_comment' || type === 'master_branch' || type === 'secondary')) {
+    //   const tag = tags.find(t => t.id === id);
+    //   if (editingMasterName !== tag?.master) {
+    //     showToast("Enter Edit mode on the Master Tag first to make changes.", "info");
+    //     return;
+    //   }
+    // }
     setEditingItem({ id, type, index, tempValue: currentValue });
   };
 
@@ -2852,6 +2992,44 @@ export default function Sessions() {
           return { ...p, primaryList: newList };
         }));
       }
+      else if (type === 'master_branch' && index !== null) {
+        const tag = tags.find(t => t.id === id);
+        const branchTagId = tag?.branchTags?.[index]?.id;
+        if (branchTagId) {
+          await fetch('/api/tags/branch', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: branchTagId, name: trimmedVal })
+          });
+        }
+        setTags(prev => prev.map(t => {
+          if (t.id !== id || !t.branchTags) return t;
+          const newList = [...t.branchTags];
+          newList[index] = { ...newList[index], name: trimmedVal };
+          return { ...t, branchTags: newList };
+        }));
+      }
+      else if (type === 'secondary' && index !== null) {
+        const primaryIdx = Math.floor(index / 100);
+        const secIdx = index % 100;
+        const tag = tags.find(t => t.id === id);
+        const secTagId = tag?.primaryList[primaryIdx]?.secondaryTags?.[secIdx]?.id;
+        if (secTagId) {
+          await fetch('/api/tags/secondary', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: secTagId, name: trimmedVal })
+          });
+        }
+        setTags(prev => prev.map(t => {
+          if (t.id !== id) return t;
+          const newPrimaryList = [...t.primaryList];
+          const newSecTags = [...(newPrimaryList[primaryIdx].secondaryTags || [])];
+          newSecTags[secIdx] = { ...newSecTags[secIdx], value: trimmedVal };
+          newPrimaryList[primaryIdx] = { ...newPrimaryList[primaryIdx], secondaryTags: newSecTags };
+          return { ...t, primaryList: newPrimaryList };
+        }));
+      }
     } catch (error) {
       console.error("Save editing error:", error);
       showToast("Failed to save changes", "error");
@@ -2896,20 +3074,20 @@ export default function Sessions() {
         console.error("Failed to delete tag impression from database:", error);
       }
     }
-    
+
     if (deleteState.type === 'master') {
       // Get the tag being deleted to extract its block IDs
       const deletedTag = tags.find(t => t.id === deleteState.tagId);
       const deletedBlockIds = new Set(deletedTag?.blockIds || []);
       const deletedTexts = new Set(deletedTag?.allText || []);
-      
+
       const updatedTags: TagItem[] = tags.filter((t: TagItem) => t.id !== deleteState.tagId);
       setTags(updatedTags);
-      
+
       // Recalculate highlighted texts - only keep texts that are still referenced by other tags
       const remainingTexts = updatedTags.flatMap(t => t.allText);
       setHighlightedTexts(remainingTexts);
-      
+
       // Recalculate highlighted block IDs - only keep blocks that are still referenced by other tags
       const remainingBlockIds = new Set(updatedTags.flatMap(t => t.blockIds || []));
       setHighlightedBlockIds(remainingBlockIds);
@@ -2917,38 +3095,38 @@ export default function Sessions() {
     else if (deleteState.type === 'primary' && typeof deleteState.primaryIndex === 'number') {
       const updatedTags: TagItem[] = tags.map((t: TagItem) => {
         if (t.id !== deleteState.tagId) return t;
-        
+
         // Get the primary tag being deleted
         const deletedPrimary = t.primaryList[deleteState.primaryIndex!];
         const deletedBlockId = deletedPrimary?.blockId;
-        
+
         // Filter out the deleted primary tag
         const newPrimaryList = t.primaryList.filter((_, idx) => idx !== deleteState.primaryIndex);
-        
+
         // Update blockIds - remove the block if no other primary tags reference it
         const remainingBlockIds = newPrimaryList
           .map(p => p.blockId)
           .filter((id): id is string => !!id);
-        
-        return { 
-          ...t, 
+
+        return {
+          ...t,
           primaryList: newPrimaryList,
           blockIds: [...new Set(remainingBlockIds)],
           allText: t.allText // Keep text for now, could also filter
         };
       });
-      
+
       // Remove empty master tags (no primary tags left)
       const nonEmptyTags = updatedTags.filter(t => t.primaryList.length > 0);
       setTags(nonEmptyTags);
-      
+
       // Recalculate highlights
       setHighlightedTexts(nonEmptyTags.flatMap(t => t.allText));
       setHighlightedBlockIds(new Set(nonEmptyTags.flatMap(t => t.blockIds || [])));
-      }
-      setDeleteState({ ...deleteState, isOpen: false });
-      setEditingMasterName(null);
-    };
+    }
+    setDeleteState({ ...deleteState, isOpen: false });
+    setEditingMasterName(null);
+  };
 
   const handleDeletePendingPrimary = (entryId: string, primaryIndex: number) => {
     setPending((prev) =>
@@ -2962,20 +3140,20 @@ export default function Sessions() {
       )
     );
   };
-  
+
   // Remove a pending entry entirely and its highlight
   const handleRemovePendingEntry = (entryId: string) => {
     const entry = pending.find(p => p.id === entryId);
     if (entry) {
       // Remove the text from highlighted texts
       setHighlightedTexts(prev => prev.filter(t => t !== entry.text));
-      
+
       // Remove the block ID from highlighted block IDs
       if (entry.blockId) {
         // Only remove if no other pending entries or tags reference this block
         const otherPendingWithBlock = pending.filter(p => p.id !== entryId && p.blockId === entry.blockId);
         const tagsWithBlock = tags.some(t => t.blockIds?.includes(entry.blockId!));
-        
+
         if (otherPendingWithBlock.length === 0 && !tagsWithBlock) {
           setHighlightedBlockIds(prev => {
             const newSet = new Set(prev);
@@ -3000,12 +3178,11 @@ export default function Sessions() {
 
       {/* --- TOAST NOTIFICATION --- */}
       {toast && (
-        <div 
-          className={`fixed top-4 right-4 z-[100] px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 animate-slide-in ${
-            toast.type === 'success' ? 'bg-emerald-500 text-white' :
+        <div
+          className={`fixed top-4 right-4 z-[100] px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 animate-slide-in ${toast.type === 'success' ? 'bg-emerald-500 text-white' :
             toast.type === 'error' ? 'bg-rose-500 text-white' :
-            'bg-gray-800 text-white'
-          }`}
+              'bg-gray-800 text-white'
+            }`}
         >
           {toast.type === 'success' && (
             <CheckIcon className="w-5 h-5" />
@@ -3014,7 +3191,7 @@ export default function Sessions() {
             <XMarkIcon className="w-5 h-5" />
           )}
           <span className="text-sm font-medium">{toast.message}</span>
-          <button 
+          <button
             onClick={() => setToast(null)}
             className="ml-2 hover:opacity-70"
           >
@@ -3026,13 +3203,13 @@ export default function Sessions() {
       {/* --- CUSTOM CONTEXT MENU --- */}
       {contextMenu && (() => {
         const { activeSection, activeSubsection, hasOpenSection, hasOpenSubsection } = getHierarchyStateAt(contextMenu.displayIndex);
-        
+
         // canAddSection: NOT inside any section AND no unclosed section exists globally
         const canAddSection = !activeSection && !hasOpenSection;
-        
+
         // canAddSubsection: INSIDE a section AND NOT inside any subsection AND no unclosed subsection exists globally
         const canAddSubsection = activeSection && !activeSubsection && !hasOpenSubsection;
-        
+
         const lastOpen = findLastOpenSection();
         const canClose = lastOpen && contextMenu.displayIndex > lastOpen.index;
 
@@ -3044,15 +3221,14 @@ export default function Sessions() {
             <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
               Insert
             </div>
-            
+
             <button
               disabled={!canAddSection}
               onClick={() => handleAddDivider('section')}
-              className={`w-full text-left px-4 py-2 flex items-center gap-3 transition-colors ${
-                canAddSection 
-                  ? 'hover:bg-[#00A3AF]/10 text-gray-700' 
-                  : 'opacity-50 cursor-not-allowed bg-gray-50'
-              }`}
+              className={`w-full text-left px-4 py-2 flex items-center gap-3 transition-colors ${canAddSection
+                ? 'hover:bg-[#00A3AF]/10 text-gray-700'
+                : 'opacity-50 cursor-not-allowed bg-gray-50'
+                }`}
             >
               <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${canAddSection ? 'bg-[#00A3AF]' : 'bg-gray-300'}`} />
               <div className="flex flex-col min-w-0">
@@ -3068,27 +3244,26 @@ export default function Sessions() {
             <button
               disabled={!canAddSubsection}
               onClick={() => handleAddDivider('subsection')}
-              className={`w-full text-left px-4 py-2 flex items-center gap-3 transition-colors ${
-                canAddSubsection 
-                  ? 'hover:bg-amber-50 text-gray-700' 
-                  : 'opacity-50 cursor-not-allowed bg-gray-50'
-              }`}
+              className={`w-full text-left px-4 py-2 flex items-center gap-3 transition-colors ${canAddSubsection
+                ? 'hover:bg-amber-50 text-gray-700'
+                : 'opacity-50 cursor-not-allowed bg-gray-50'
+                }`}
             >
               <div className={`w-2 h-2 rounded-full shrink-0 ml-0.5 ${canAddSubsection ? 'bg-amber-500' : 'bg-gray-300'}`} />
               <div className="flex flex-col min-w-0">
                 <span className="text-sm font-medium">Sub Section</span>
                 {!canAddSubsection && (
                   <span className="text-[9px] text-rose-500 font-bold uppercase tracking-tighter">
-                    {!activeSection 
-                      ? 'Requires Section' 
-                      : activeSubsection 
-                        ? `Forbidden: Inside ${activeSubsection.title || 'Subsection'}` 
+                    {!activeSection
+                      ? 'Requires Section'
+                      : activeSubsection
+                        ? `Forbidden: Inside ${activeSubsection.title || 'Subsection'}`
                         : 'Close Open Subsection First'}
                   </span>
                 )}
               </div>
             </button>
-            
+
             {lastOpen && (
               <>
                 <div className="h-px bg-gray-100 my-1"></div>
@@ -3103,11 +3278,10 @@ export default function Sessions() {
                       setContextMenu(null);
                     }
                   }}
-                  className={`w-full text-left px-4 py-2.5 flex items-center gap-3 transition-colors ${
-                    canClose 
-                      ? 'hover:bg-rose-50 text-gray-700' 
-                      : 'opacity-50 cursor-not-allowed bg-gray-50'
-                  }`}
+                  className={`w-full text-left px-4 py-2.5 flex items-center gap-3 transition-colors ${canClose
+                    ? 'hover:bg-rose-50 text-gray-700'
+                    : 'opacity-50 cursor-not-allowed bg-gray-50'
+                    }`}
                 >
                   <StopIcon className={`w-3.5 h-3.5 shrink-0 ${!canClose ? 'text-gray-300' : lastOpen.item.type === 'subsection' ? 'text-amber-500' : 'text-rose-500'}`} />
                   <div className="flex flex-col min-w-0">
@@ -3165,7 +3339,7 @@ export default function Sessions() {
                       className="text-xs text-gray-700 px-2 py-0.5 border border-[#00A3AF] rounded focus:outline-none w-[200px]"
                       placeholder="Session name..."
                     />
-                    <button 
+                    <button
                       onClick={saveSessionName}
                       className="p-0.5 bg-[#E0F7FA] rounded hover:bg-[#B2EBF2]"
                     >
@@ -3189,6 +3363,66 @@ export default function Sessions() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {/* Context Panel: Persistent Context Header */}
+            {(() => {
+              // Only show if we are in an editing/pending context
+              if ((pending.length > 0 || editingMasterName)) {
+                let referenceBlockIndex = -1;
+
+                if (pending.length > 0) {
+                  referenceBlockIndex = pending[0].messageIndex;
+                } else if (editingMasterName) {
+                  // Find the first tag with this master name to determine context
+                  const tag = tags.find(t => t.master === editingMasterName);
+                  if (tag && tag.blockIds.length > 0) {
+                    const blockItem = displayItems.find(d => d.type === 'data' && d.id === tag.blockIds[0]);
+                    if (blockItem && blockItem.originalIndex !== undefined) {
+                      referenceBlockIndex = blockItem.originalIndex;
+                    }
+                  }
+                }
+
+                let currentSectionName: string | undefined;
+                let currentSubSectionName: string | undefined;
+
+                if (referenceBlockIndex !== -1) {
+                  // Use the existing helper to find section/subsection IDs
+                  const ctx = findSectionContext(referenceBlockIndex);
+
+                  if (ctx.sectionId) {
+                    const sectionItem = displayItems.find(d => d.type === 'section' && d.dbId === ctx.sectionId);
+                    // Explicitly cast or check value, as TS thinks value might not exist on DisplayItem union
+                    currentSectionName = (sectionItem as any)?.value;
+                  }
+
+                  if (ctx.subsectionId) {
+                    const subsectionItem = displayItems.find(d => d.type === 'subsection' && d.dbId === ctx.subsectionId);
+                    currentSubSectionName = (subsectionItem as any)?.value;
+                  }
+                }
+
+                // Determine current master tag name
+                let currentMasterTagName: string | undefined = undefined;
+                if (editingMasterName) {
+                  currentMasterTagName = editingMasterName;
+                } else if (pending.length > 0) {
+                  // If pending master confirmed
+                  if (masterConfirmed) {
+                    currentMasterTagName = masterInput;
+                  }
+                }
+
+                return (
+                  <TagContextHeader
+                    sectionName={currentSectionName}
+                    subSectionName={currentSubSectionName}
+                    masterTagName={currentMasterTagName}
+                    className="mr-2"
+                  />
+                );
+              }
+              return null;
+            })()}
             {loadingTranscript && (
               <div className="flex items-center gap-2 text-gray-500 text-sm">
                 <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
@@ -3202,13 +3436,12 @@ export default function Sessions() {
               <button
                 onClick={pending.length > 0 ? handleOverallAdd : () => setEditingMasterName(null)}
                 disabled={savingTags}
-                className={`px-4 py-2 text-white rounded-lg shadow-sm text-sm transition-all duration-200 flex items-center gap-2 ${
-                  savingTags 
-                    ? 'bg-gray-400 cursor-not-allowed' 
-                    : editingMasterName && pending.length === 0
-                      ? 'bg-gray-800 hover:bg-black'
-                      : 'bg-[#00A3AF] hover:bg-[#008C97] hover:shadow-md'
-                }`}
+                className={`px-4 py-2 text-white rounded-lg shadow-sm text-sm transition-all duration-200 flex items-center gap-2 ${savingTags
+                  ? 'bg-gray-400 cursor-not-allowed'
+                  : editingMasterName && pending.length === 0
+                    ? 'bg-gray-800 hover:bg-black'
+                    : 'bg-[#00A3AF] hover:bg-[#008C97] hover:shadow-md'
+                  }`}
               >
                 {savingTags ? (
                   <>
@@ -3239,7 +3472,7 @@ export default function Sessions() {
                     {sessionData.length} blocks
                   </span>
                 )}
-                
+
                 {/* Filter Controls */}
                 <div className="flex items-center gap-2">
                   {/* Hide Untagged Toggle */}
@@ -3252,7 +3485,7 @@ export default function Sessions() {
                     />
                     Hide Untagged
                   </label>
-                  
+
                   {/* Section Filter */}
                   {availableSections.length > 0 && (
                     <select
@@ -3266,7 +3499,7 @@ export default function Sessions() {
                       ))}
                     </select>
                   )}
-                  
+
                   {/* Master Tag Filter */}
                   {tags.length > 0 && (
                     <select
@@ -3285,7 +3518,7 @@ export default function Sessions() {
                             uniqueMasterTags.set(name, t.masterTagId || name);
                           }
                         });
-                        
+
                         return Array.from(uniqueMasterTags.entries())
                           .sort((a, b) => a[0].localeCompare(b[0]))
                           .map(([name, val]) => (
@@ -3294,7 +3527,7 @@ export default function Sessions() {
                       })()}
                     </select>
                   )}
-                  
+
                   {/* Clear Filters */}
                   {(hideUntagged || filterSection || filterMaster) && (
                     <button
@@ -3326,7 +3559,7 @@ export default function Sessions() {
                   </div>
                 </div>
               )}
-              
+
               {/* Show message when filtering results in empty list */}
               {filteredDisplayItems.length === 0 && displayItems.length > 0 && (
                 <div className="text-center py-8 text-gray-500">
@@ -3343,7 +3576,7 @@ export default function Sessions() {
                   </button>
                 </div>
               )}
-              
+
               {filteredDisplayItems.map((item, index) => {
                 // Find the original index for context menu operations
                 const originalIndex = displayItems.findIndex(d => d.id === item.id);
@@ -3362,6 +3595,13 @@ export default function Sessions() {
                           <span className="text-[10px] text-gray-500 font-bold uppercase text-sm tracking-wider whitespace-nowrap">
                             END SECTION - {item.title || "Untitled"}
                           </span>
+                          <button
+                            onClick={() => deleteDisplayItem(item.id)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded ml-1"
+                            title="Delete Close Line"
+                          >
+                            <TrashIcon className="w-3 h-3 text-red-400" />
+                          </button>
                         </div>
                         <div className="h-[1px] flex-1 bg-gray-300 border-dashed border-t"></div>
                       </div>
@@ -3395,6 +3635,13 @@ export default function Sessions() {
                           <span className="text-[10px] text-amber-500 font-bold uppercase text-sm tracking-wider whitespace-nowrap">
                             END SUB SECTION - {item.title || "Untitled"}
                           </span>
+                          <button
+                            onClick={() => deleteDisplayItem(item.id)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded ml-1"
+                            title="Delete Close Line"
+                          >
+                            <TrashIcon className="w-3 h-3 text-red-400" />
+                          </button>
                         </div>
                         <div className="h-[1px] flex-1 bg-amber-100 border-dashed border-t"></div>
                       </div>
@@ -3525,13 +3772,12 @@ export default function Sessions() {
                           blockRefs.current.set(blockId, el);
                         }
                       }}
-                      className={`mb-5 cursor-context-menu transition-all duration-200 rounded-lg ${
-                        isHoveredFromTag 
-                          ? 'ring-2 ring-amber-400 bg-amber-50 scale-[1.01] shadow-lg' 
-                          : isHighlighted 
-                            ? 'ring-2 ring-[#00A3AF]/30 bg-[#00A3AF]/5' 
-                            : ''
-                      }`}
+                      className={`mb-5 cursor-context-menu transition-all duration-200 rounded-lg ${isHoveredFromTag
+                        ? 'ring-2 ring-amber-400 bg-amber-50 scale-[1.01] shadow-lg'
+                        : isHighlighted
+                          ? 'ring-2 ring-[#00A3AF]/30 bg-[#00A3AF]/5'
+                          : ''
+                        }`}
                       onMouseUp={() => handleTextSelection(dataIndex, blockId)}
                       onContextMenu={(e) => !isFiltered && handleContextMenu(e, originalIndex, dataIndex)}
                     >
@@ -3544,7 +3790,7 @@ export default function Sessions() {
                         </span>
                       </div>
                       <div className="rounded-[10px] p-[12px]">
-                        <p 
+                        <p
                           className="text-sm leading-relaxed text-gray-600 text-justify"
                           data-block-text={data.message}
                         >
@@ -3597,481 +3843,390 @@ export default function Sessions() {
             {activeTab === "current" && (
               <div className="relative" style={{ position: 'relative', minHeight: '100%' }}>
                 {displayItems.map((item, index) => {
-                    const LANE_WIDTH = 12;
+                  const LANE_WIDTH = 12;
 
-                    if (item.type !== 'data') {
-                      // Geometry-driven: Get position from transcript element
-                      const elementPos = elementPositions.get(index);
-                      if (!elementPos) return null; // Wait for position calculation
-                      
-                      // Collect all active master names that should pass through this section spacer
-                      const activeMasterNames = Object.entries(masterTagMetadata)
-                        .filter(([_, meta]) => index >= meta.firstItemIndex && index <= meta.lastItemIndex)
-                        .map(([name, _]) => name);
+                  if (item.type !== 'data') {
+                    // Geometry-driven: Get position from transcript element
+                    const elementPos = elementPositions.get(index);
+                    if (!elementPos) return null; // Wait for position calculation
 
-                      // Section/Subsection spacer - absolutely positioned
-                      return (
-                        <div
-                          key={item.id}
-                          style={{
-                            position: 'absolute',
-                            top: `${elementPos.top}px`,
-                            left: 0,
-                            right: 0,
-                            height: `${elementPos.height}px`,
-                            pointerEvents: 'none' // Allow clicks to pass through to tags below
-                          }}
-                          className="w-full"
-                        >
-                          {/* Show section indicator in right panel */}
-                          {item.type === 'section' && (
-                            <div className="flex items-center gap-2 px-2 py-1 pointer-events-auto">
-                              <div className="w-2 h-2 rounded-full bg-[#00A3AF]" />
-                              <span className="text-xs font-semibold text-[#00A3AF] uppercase tracking-wider">
-                                {item.title || 'Section'}
-                              </span>
-                              <div className="flex-1 h-px bg-[#00A3AF]/30" />
-                            </div>
-                          )}
-                          {item.type === 'subsection' && (
-                            <div className="flex items-center gap-2 px-2 py-1 ml-4 pointer-events-auto">
-                              <div className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                              <span className="text-xs font-medium text-amber-600 uppercase tracking-wider">
-                                {item.title || 'Subsection'}
-                              </span>
-                              <div className="flex-1 h-px bg-amber-300/50" />
-                            </div>
-                          )}
-                        </div>
-                      );
-                    }
+                    // Collect all active master names that should pass through this section spacer
+                    const activeMasterNames = Object.entries(masterTagMetadata)
+                      .filter(([_, meta]) => index >= meta.firstItemIndex && index <= meta.lastItemIndex)
+                      .map(([name, _]) => name);
 
-                    // Geometry-driven: Tags are rendered absolutely, not in rows
-                    // Return null here - tags will be rendered separately
-                    return null;
-                  })}
-                  
-                  {/* Render all tags with absolute positioning */}
-                  {tags.map((tag) => {
-                    const LANE_WIDTH = 12;
-                    const firstPrimary = tag.primaryList[0];
-                    if (!firstPrimary) return null;
-                    
-                    // Find the display item index for this tag's first primary
-                    const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === firstPrimary.messageIndex);
-                    if (itemIndex < 0) return null;
-                    
-                    // Get position from coordinate system
-                    const elementPos = elementPositions.get(itemIndex);
-                    const tagPos = tagPositions.get(tag.id);
-                    
-                    if (!elementPos || !tagPos) return null; // Wait for position calculation
-                    
-                    // Use adjusted top from collision detection
-                    const topPosition = tagPos.adjustedTop;
-                    
-                    const meta = masterTagMetadata[tag.master || 'No Master'];
-                    const masterLaneLeft = (meta?.uniqueIndex || 0) * LANE_WIDTH + 12;
-                    const tagColor = tag.masterColor || getMasterTagColor(tag.masterTagId || tag.id || tag.master || '');
-                    
-                    // Check if this is the first occurrence
-                    const isFirstRowForTag = itemIndex === meta?.firstItemIndex;
-                    const isFirstInstance = tag.id === meta?.id || tags.find(t => t.master === tag.master)?.id === tag.id;
-                    const shouldShowHeader = isFirstRowForTag && isFirstInstance;
-                    
-                    // Get all primaries for this tag
-                    const allPrimaries = tag.primaryList.map((p, i) => ({ ...p, originalIndex: i }));
-                    
+                    // Section/Subsection spacer - absolutely positioned
                     return (
                       <div
-                        key={tag.id}
-                        data-tag-id={tag.id}
+                        key={item.id}
                         style={{
                           position: 'absolute',
-                          top: `${topPosition}px`,
-                          left: '64px', // Room for tree lines
-                          right: '24px',
-                          zIndex: hoveredTagId === tag.id ? 30 : 10
+                          top: `${elementPos.top}px`,
+                          left: 0,
+                          right: 0,
+                          height: `${elementPos.height}px`,
+                          pointerEvents: 'none' // Allow clicks to pass through to tags below
                         }}
-                        className="relative"
-                        data-spine-item={tag.master}
-                        data-is-root={shouldShowHeader}
+                        className="w-full"
                       >
-                        {/* Vertical Spine - Anchored to Root Card Context */}
-                        {shouldShowHeader && spineOffsets[tag.master!] && (
-                          <div 
-                            className="absolute w-[1.5px] transition-all duration-300 pointer-events-none z-0"
-                            style={{ 
-                              left: `-${64 - masterLaneLeft}px`, 
+                        {/* Show section indicator in right panel */}
+                        {item.type === 'section' && (
+                          <div className="flex items-center gap-2 px-2 py-1 pointer-events-auto">
+                            <div className="w-2 h-2 rounded-full bg-[#00A3AF]" />
+                            <span className="text-xs font-semibold text-[#00A3AF] uppercase tracking-wider">
+                              {item.title || 'Section'}
+                            </span>
+                            <div className="flex-1 h-px bg-[#00A3AF]/30" />
+                          </div>
+                        )}
+                        {item.type === 'subsection' && (
+                          <div className="flex items-center gap-2 px-2 py-1 ml-4 pointer-events-auto">
+                            <div className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                            <span className="text-xs font-medium text-amber-600 uppercase tracking-wider">
+                              {item.title || 'Subsection'}
+                            </span>
+                            <div className="flex-1 h-px bg-amber-300/50" />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+
+                  // Geometry-driven: Tags are rendered absolutely, not in rows
+                  // Return null here - tags will be rendered separately
+                  return null;
+                })}
+
+                {/* Render all tags with absolute positioning */}
+                {tags.map((tag) => {
+                  const LANE_WIDTH = 12;
+                  // For independent master tags (no primaries), use the first block index for positioning
+                  const firstPrimary = tag.primaryList[0];
+                  let itemIndex = -1;
+
+                  if (firstPrimary) {
+                    itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === firstPrimary.messageIndex);
+                  } else if (tag.blockIds.length > 0) {
+                    // Fallback: use the first block associated with this master tag
+                    itemIndex = displayItems.findIndex(d => d.type === 'data' && d.id === tag.blockIds[0]);
+                  }
+
+                  if (itemIndex < 0) return null;
+
+                  // Get position from coordinate system
+                  const elementPos = elementPositions.get(itemIndex);
+                  const tagPos = tagPositions.get(tag.id);
+
+                  if (!elementPos || !tagPos) return null; // Wait for position calculation
+
+                  // Use adjusted top from collision detection
+                  const topPosition = tagPos.adjustedTop;
+
+                  const meta = masterTagMetadata[tag.master || 'No Master'];
+                  const masterLaneLeft = (meta?.uniqueIndex || 0) * LANE_WIDTH + 12;
+                  const tagColor = tag.masterColor || getMasterTagColor(tag.masterTagId || tag.id || tag.master || '');
+
+                  // Check if this is the first occurrence
+                  const isFirstRowForTag = itemIndex === meta?.firstItemIndex;
+                  const isFirstInstance = tag.id === meta?.id || tags.find(t => t.master === tag.master)?.id === tag.id;
+                  const shouldShowHeader = isFirstRowForTag && isFirstInstance;
+
+                  // Get all primaries for this tag
+                  const allPrimaries = tag.primaryList.map((p, i) => ({ ...p, originalIndex: i }));
+
+                  return (
+                    <div
+                      key={tag.id}
+                      data-tag-id={tag.id}
+                      style={{
+                        position: 'absolute',
+                        top: `${topPosition}px`,
+                        left: '64px', // Room for tree lines
+                        right: '24px',
+                        zIndex: hoveredTagId === tag.id ? 30 : 10
+                      }}
+                      className="relative cursor-pointer"
+                      data-spine-item={tag.master}
+                      data-is-root={shouldShowHeader}
+                      onClick={(e) => {
+                        // Prevent scroll when clicking interactive elements
+                        if ((e.target as HTMLElement).closest('button, input')) return;
+                        scrollToTagBlock(tag.blockIds);
+                      }}
+                    >
+                      {/* Vertical Spine - Anchored to Root Card Context */}
+                      {shouldShowHeader && spineOffsets[tag.master!] && (
+                        <div
+                          className="absolute w-[1.5px] transition-all duration-300 pointer-events-none z-0"
+                          style={{
+                            left: `-${64 - masterLaneLeft}px`,
+                            top: '18px',
+                            height: `${spineOffsets[tag.master!].height}px`,
+                            backgroundColor: tagColor,
+                            opacity: 0.4
+                          }}
+                        />
+                      )}
+
+                      {/* Render all primary tags for this master tag */}
+                      <div className="flex flex-col gap-0.5 bg-white rounded-lg border border-gray-100 shadow-sm overflow-hidden">
+                        {/* 1. Header Logic: Rendered ONCE per tag group if it's the root */}
+                        <React.Fragment>
+                          {/* Horizontal Stem for the card's first row */}
+                          <div
+                            className="absolute h-[1.5px] pointer-events-none"
+                            style={{
+                              left: shouldShowHeader ? `-${64 - masterLaneLeft}px` : `-${24 + (64 - masterLaneLeft)}px`,
+                              width: shouldShowHeader ? `${64 - masterLaneLeft}px` : `${24 + (64 - masterLaneLeft)}px`,
                               top: '18px',
-                              height: `${spineOffsets[tag.master!].height}px`,
                               backgroundColor: tagColor,
                               opacity: 0.4
                             }}
                           />
-                        )}
-                        
-                        {/* Render all primary tags for this master tag */}
-                        <div className="flex flex-col gap-2">
-                          {allPrimaries.map((p, i) => {
-                            const isFirstOfAll = shouldShowHeader && i === 0;
-                            
-                            return (
-                              <div 
-                                key={p.impressionId || `${p.value}-${i}`} 
-                                className={`relative ${isFirstOfAll ? 'ml-0' : 'ml-6'}`}
-                              >
-                                {/* Horizontal Stem from Master Lane */}
-                                <div 
+
+                          {shouldShowHeader && (
+                            <React.Fragment>
+                              <MasterTagRow
+                                name={tag.master || "No Master"}
+                                isEditing={editingItem.id === tag.id && editingItem.type === 'master'}
+                                isHighlighted={editingMasterName === tag.master}
+                                color={tagColor}
+                                onEdit={() => {
+                                  setEditingMasterName(tag.master);
+                                  startEditing(tag.id, 'master', tag.master || "");
+                                }}
+                                onClick={() => {
+                                  if (editingMasterName === tag.master) {
+                                    setEditingMasterName(null);
+                                  } else {
+                                    setEditingMasterName(tag.master);
+                                  }
+                                }}
+                                onDelete={() => initiateDeleteMaster(tag.id)}
+                                onAdd={() => toggleBranchInput(tag.id)}
+                                onAddPrimary={tag.primaryList.length === 0 ? () => togglePrimaryInput(tag.id) : undefined}
+                                onSave={(newName) => {
+                                  setEditingItem(prev => ({ ...prev, tempValue: newName }));
+                                  saveEditing();
+                                }}
+                                onCancel={cancelEditing}
+                              />
+
+                              {/* Branch Tags (Master level) */}
+                              {tag.branchTags && tag.branchTags.length > 0 && (
+                                <TagRowLayout level={2} className="mt-0.5">
+                                  <div className="flex flex-wrap gap-1.5 py-1">
+                                    {(() => {
+                                      const groupId = `${tag.id}-master-branches`;
+                                      const isExpanded = expandedTagGroups.has(groupId);
+                                      const visibleTags = isExpanded ? tag.branchTags : tag.branchTags.slice(0, 3);
+                                      const remainingCount = tag.branchTags.length - visibleTags.length;
+
+                                      return (
+                                        <>
+                                          {visibleTags.map((b, idx) => (
+                                            <BranchTagChip
+                                              key={b.id || idx}
+                                              name={b.name}
+                                              variant="master"
+                                              isEditing={editingItem.id === tag.id && editingItem.type === 'master_branch' && editingItem.index === idx}
+                                              onEdit={() => startEditing(tag.id, 'master_branch', b.name, idx)}
+                                              onDelete={() => removeBranchTag(tag.id, b.id)}
+                                              onSave={(newName) => {
+                                                setEditingItem(prev => ({ ...prev, tempValue: newName }));
+                                                saveEditing();
+                                              }}
+                                              onCancel={cancelEditing}
+                                            />
+                                          ))}
+                                          {tag.branchTags.length > 3 && (
+                                            <button
+                                              onClick={() => toggleTagGroupExpansion(groupId)}
+                                              className="text-[10px] text-gray-400 hover:text-[#00A3AF] font-medium px-1 py-0.5 rounded hover:bg-cyan-50 transition-colors"
+                                            >
+                                              {isExpanded ? 'Show Less' : `+${remainingCount} more`}
+                                            </button>
+                                          )}
+                                        </>
+                                      );
+                                    })()}
+                                  </div>
+                                </TagRowLayout>
+                              )}
+
+                              {/* Branch Input Slot */}
+                              {branchInput?.tagId === tag.id && (
+                                <ReservedEditSlotRow
+                                  level={2}
+                                  placeholder="Add branch tag..."
+                                  onSave={(val: string) => addBranchTag(tag.id, val)}
+                                  onCancel={() => setBranchInput(null)}
+                                />
+                              )}
+
+                              {/* Primary Input slot (for empty master) */}
+                              {tag.primaryList.length === 0 && savedPrimaryInput?.tagId === tag.id && (
+                                <ReservedEditSlotRow
+                                  level={1}
+                                  placeholder="Add primary tag..."
+                                  onSave={(val: string) => addPrimaryToSavedTag(tag.id, val)}
+                                  onCancel={() => setSavedPrimaryInput(null)}
+                                />
+                              )}
+                            </React.Fragment>
+                          )}
+                        </React.Fragment>
+
+                        {/* 2. Primaries Logic: Rendered ONLY if they exist */}
+                        {allPrimaries.map((p, i) => {
+                          return (
+                            <React.Fragment key={p.impressionId || `${p.value}-${i}`}>
+                              {/* Horizontal Stem for additional primaries in the same card (except the first one if it's the header) */}
+                              {!(shouldShowHeader && i === 0) && (
+                                <div
                                   className="absolute h-[1.5px] pointer-events-none"
-                                  style={{ 
-                                    left: isFirstOfAll ? `-${64 - masterLaneLeft}px` : `-${24 + (64 - masterLaneLeft)}px`, 
-                                    width: isFirstOfAll ? `${64 - masterLaneLeft}px` : `${24 + (64 - masterLaneLeft)}px`, 
-                                    top: '18px', 
-                                    backgroundColor: tagColor, 
-                                    opacity: 0.4 
+                                  style={{
+                                    left: `-${24 + (64 - masterLaneLeft)}px`,
+                                    width: `${24 + (64 - masterLaneLeft)}px`,
+                                    top: `${18 + (i * (shouldShowHeader ? 40 : 32))}px`, // Rough estimate
+                                    backgroundColor: tagColor,
+                                    opacity: 0.4
                                   }}
                                 />
-                                
-                                <div 
-                                  className={`bg-white rounded-lg border shadow-sm overflow-hidden cursor-pointer group/item transition-all ${
-                                    hoveredTagId === tag.id
-                                      ? 'z-30 scale-[1.02] shadow-md'
-                                      : editingMasterName === tag.master 
-                                        ? 'border-blue-200 ring-1 ring-blue-100 bg-blue-50/5' 
-                                        : 'border-gray-100 hover:border-gray-200'
-                                  }`} 
-                                  style={{ 
-                                    borderLeftColor: tagColor, 
-                                    borderLeftWidth: isFirstOfAll ? '4px' : '2px',
-                                    borderColor: hoveredTagId === tag.id ? tagColor : undefined,
-                                    boxShadow: hoveredTagId === tag.id ? `0 0 0 3px ${tagColor}44` : undefined
-                                  }}
-                                  onMouseEnter={() => handleTagHover(tag.id, tag.blockIds || [])}
-                                  onMouseLeave={() => handleTagHover(null)}
-                                  onClick={() => scrollToTagBlock(tag.blockIds || [])}
-                                >
-                                  {/* Master Header - Integrated into the first primary tag card */}
-                                  {isFirstOfAll && (
-                                    <div className="px-3 py-1.5 bg-gradient-to-r from-gray-50 to-white border-b border-gray-100 flex items-center justify-between">
-                                      <div className="flex items-center gap-2 min-w-0 flex-1">
-                                        <div className="flex items-center gap-2 min-w-0">
-                                          <span className="text-[11px] font-black uppercase tracking-wider opacity-70" style={{ color: tagColor }}>
-                                            {tag.master || "No Master"}
-                                          </span>
-                                          {tag.isClosed && (
-                                            <span className="text-[9px] text-gray-500 bg-gray-100 px-1 py-0.5 rounded border border-gray-200 uppercase font-bold">
-                                              Closed
-                                            </span>
-                                          )}
+                              )}
 
-                                          {/* Branch Tags Display */}
-                                          {tag.branchTags && tag.branchTags.length > 0 && (
-                                            <div className="flex items-center gap-1">
-                                              {tag.branchTags.map((b) => (
-                                                <span key={b.id} className="text-[9px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded border border-gray-200 flex items-center gap-1 group/branch">
-                                                  {b.name}
-                                                  {editingMasterName === tag.master && (
-                                                    <button 
-                                                      onClick={(e) => { e.stopPropagation(); removeBranchTag(tag.id, b.id); }}
-                                                      className="text-red-400 opacity-0 group-hover/branch:opacity-100 transition-opacity"
-                                                    >
-                                                      <XMarkIcon className="w-2.5 h-2.5" />
-                                                    </button>
-                                                  )}
-                                                </span>
-                                              ))}
-                                            </div>
-                                          )}
+                              {/* Primary Row */}
+                              {(() => {
+                                const isEditingPrimary = editingItem.id === tag.id && editingItem.type === 'primary' && editingItem.index === p.originalIndex;
+                                return (
+                                  <PrimaryTagRow
+                                    name={p.value}
+                                    isEditing={isEditingPrimary}
+                                    onEdit={() => startEditing(tag.id, 'primary', p.value, p.originalIndex)}
+                                    onDelete={() => initiateDeletePrimary(tag.id, p.originalIndex, p.impressionId)}
+                                    onComment={() => startEditing(tag.id, 'primary_comment', p.comment || "", p.originalIndex)}
+                                    onAdd={isEditingPrimary ? () => toggleSecondaryInput(tag.id, p.originalIndex) : undefined}
+                                    onSave={(newName) => {
+                                      setEditingItem(prev => ({ ...prev, tempValue: newName }));
+                                      saveEditing();
+                                    }}
+                                    onCancel={cancelEditing}
+                                  />
+                                );
+                              })()}
 
-                                          {/* Add Branch Button - Limit to 1 branch tag */}
-                                          {editingMasterName === tag.master && (!tag.branchTags || tag.branchTags.length === 0) && (
-                                            <button 
-                                              onClick={(e) => { e.stopPropagation(); toggleBranchInput(tag.id); }}
-                                              className="p-0.5 bg-gray-100 hover:bg-gray-200 rounded text-gray-500 transition-colors"
-                                              title="Add branch tag"
-                                            >
-                                              <PlusIcon className="w-3 h-3" />
-                                            </button>
-                                          )}
-                                        </div>
-
-                                        {/* Branch Tag Input */}
-                                        {branchInput?.tagId === tag.id && (
-                                          <div className="flex items-center gap-2 ml-2" onClick={(e) => e.stopPropagation()}>
-                                            <input
-                                              autoFocus
-                                              type="text"
-                                              placeholder="Branch tag..."
-                                              value={branchInput.value}
-                                              onChange={(e) => setBranchInput({ ...branchInput, value: e.target.value })}
-                                              onKeyDown={(e) => {
-                                                if (e.key === 'Enter') addBranchTag(tag.id, branchInput.value);
-                                                if (e.key === 'Escape') setBranchInput(null);
-                                              }}
-                                              className="px-2 py-0.5 text-[10px] border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-[#00A3AF] w-24"
-                                            />
-                                            <button onClick={() => addBranchTag(tag.id, branchInput.value)} className="p-0.5 hover:bg-emerald-50 rounded">
-                                              <CheckIcon className="w-3 h-3 text-emerald-500" />
-                                            </button>
-                                            <button onClick={() => setBranchInput(null)} className="p-0.5 hover:bg-gray-100 rounded">
-                                              <XMarkIcon className="w-3 h-3 text-gray-400" />
-                                            </button>
-                                          </div>
-                                        )}
-
-                                        {/* Master Comment UI */}
-                                        {editingItem.id === tag.id && editingItem.type === 'master_comment' ? (
-                                          <div className="flex items-center gap-2 flex-1 ml-2" onClick={(e) => e.stopPropagation()}>
-                                            <input
-                                              autoFocus
-                                              type="text"
-                                              placeholder="Master comment..."
-                                              value={editingItem.tempValue}
-                                              onChange={(e) => setEditingItem({ ...editingItem, tempValue: e.target.value })}
-                                              onKeyDown={(e) => {
-                                                if (e.key === 'Enter') saveEditing();
-                                                if (e.key === 'Escape') cancelEditing();
-                                              }}
-                                              className="flex-1 px-2 py-0.5 text-[10px] border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-[#00A3AF]"
-                                            />
-                                            <button onClick={saveEditing} className="p-0.5 hover:bg-emerald-50 rounded">
-                                              <CheckIcon className="w-3 h-3 text-emerald-500" />
-                                            </button>
-                                            <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded">
-                                              <XMarkIcon className="w-3 h-3 text-gray-400" />
-                                            </button>
-                                          </div>
-                                        ) : (
-                                          <div className="relative group/mcomment ml-1">
-                                            <button 
-                                              onClick={(e) => { e.stopPropagation(); startEditing(tag.id, 'master_comment', tag.masterComment || ""); }}
-                                              className={`p-1 rounded transition-colors ${editingMasterName === tag.master ? 'hover:bg-gray-100 opacity-100' : 'opacity-0 group-hover/item:opacity-100'}`}
-                                            >
-                                              <ChatBubbleBottomCenterTextIcon 
-                                                className={`w-3.5 h-3.5 ${tag.masterComment ? 'text-[#00A3AF]' : 'text-gray-300'}`} 
-                                              />
-                                            </button>
-                                            {tag.masterComment && (
-                                              <div className="absolute top-full left-0 mt-1 w-max max-w-[200px] hidden group-hover/mcomment:block z-50">
-                                                <div className="bg-gray-800 text-white text-[10px] rounded py-1 px-2 shadow-lg">
-                                                  {tag.masterComment}
-                                                </div>
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
-                                      </div>
-                                      <div className="flex items-center gap-1 opacity-0 group-hover/item:opacity-100 transition-opacity">
-                                        {editingMasterName !== tag.master ? (
-                                          <button 
-                                            onClick={(e) => { e.stopPropagation(); setEditingMasterName(tag.master); }} 
-                                            className="p-1 text-[#00A3AF] hover:bg-[#00A3AF]/10 rounded transition-colors"
-                                            title="Edit Master"
-                                          >
-                                            <PencilSquareIcon className="w-4 h-4" />
-                                          </button>
-                                        ) : (
-                                          <button 
-                                            onClick={(e) => { e.stopPropagation(); setEditingMasterName(null); }} 
-                                            className="p-1 text-gray-500 hover:bg-gray-100 rounded transition-colors"
-                                            title="Exit Edit Mode"
-                                          >
-                                            <XMarkIcon className="w-4 h-4" />
-                                          </button>
-                                        )}
-                                      </div>
-                                    </div>
-                                  )}
-
-                                    <div className="p-2">
-                                      <div className="flex items-center justify-between gap-2">
-                                        <div className="flex items-center gap-2 flex-1 min-w-0">
-                                          <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: tagColor }} />
-                                          {editingItem.id === tag.id && editingItem.type === 'primary' && editingItem.index === p.originalIndex ? (
-                                            <div className="flex items-center gap-1 flex-1" onClick={(e) => e.stopPropagation()}>
-                                              <input
-                                                autoFocus
-                                                type="text"
-                                                value={editingItem.tempValue}
-                                                onChange={(e) => setEditingItem({ ...editingItem, tempValue: e.target.value })}
-                                                onKeyDown={(e) => {
-                                                  if (e.key === 'Enter') saveEditing();
-                                                  if (e.key === 'Escape') cancelEditing();
-                                                }}
-                                                className="flex-1 px-2 py-0.5 text-xs font-semibold border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-[#00A3AF] min-w-0"
-                                              />
-                                              <button onClick={saveEditing} className="p-0.5 hover:bg-emerald-50 rounded flex-shrink-0">
-                                                <CheckIcon className="w-3.5 h-3.5 text-emerald-500" />
-                                              </button>
-                                              <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0">
-                                                <XMarkIcon className="w-3.5 h-3.5 text-gray-400" />
-                                              </button>
-                                            </div>
-                                          ) : (
-                                            <div className="flex items-center gap-2 overflow-hidden">
-                                              <span className={`text-xs font-semibold text-gray-700 truncate ${isFirstOfAll ? 'text-sm' : ''}`}>
-                                                {p.value}
-                                              </span>
-                                              
-                                              {/* Inline Secondary Tags Display */}
-                                              {p.secondaryTags && p.secondaryTags.length > 0 && (
-                                                <div className="flex items-center gap-1 flex-shrink-0">
-                                                  {p.secondaryTags.map((sec, secIdx) => (
-                                                    <span key={secIdx} className="text-[9px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100 flex items-center gap-1 group/sec">
-                                                      {sec.value}
-                                                      {editingMasterName === tag.master && (
-                                                        <button 
-                                                          onClick={(e) => { e.stopPropagation(); removeSecondaryTag(tag.id, p.originalIndex, secIdx); }}
-                                                          className="text-red-400 opacity-0 group-hover/sec:opacity-100 transition-opacity"
-                                                        >
-                                                          <XMarkIcon className="w-2.5 h-2.5" />
-                                                        </button>
-                                                      )}
-                                                    </span>
-                                                  ))}
-                                                </div>
-                                              )}
-                                            </div>
-                                          )}
-                                        </div>
-                                        
-                                        <div className="flex items-center gap-1">
-                                          {editingMasterName === tag.master ? (
-                                            editingItem.id === tag.id && editingItem.type === 'primary' && editingItem.index === p.originalIndex ? null : (
-                                              <>
-                                                {/* Add Secondary Tag Button - Limit to 1 */}
-                                                {(!p.secondaryTags || p.secondaryTags.length === 0) && (
-                                                  <button 
-                                                    onClick={(e) => { e.stopPropagation(); toggleSecondaryInput(tag.id, p.originalIndex); }}
-                                                    className="p-0.5 hover:bg-gray-200 rounded text-gray-400"
-                                                    title="Add secondary tag"
-                                                  >
-                                                    <PlusIcon className="w-3 h-3" />
-                                                  </button>
-                                                )}
-
-                                                {/* Primary Comment Button */}
-                                                <button 
-                                                  onClick={(e) => { e.stopPropagation(); startEditing(tag.id, 'primary_comment', p.comment || "", p.originalIndex); }}
-                                                  className="p-0.5 hover:bg-gray-200 rounded text-gray-400"
-                                                  title="Add/Edit comment"
-                                                >
-                                                  <ChatBubbleBottomCenterTextIcon className={`w-3 h-3 ${p.comment ? 'text-[#00A3AF]' : 'text-gray-300'}`} />
-                                                </button>
-
-                                                <button onClick={(e) => { e.stopPropagation(); startEditing(tag.id, 'primary', p.value, p.originalIndex); }} className="p-0.5 hover:bg-gray-200 rounded text-gray-400">
-                                                  <PencilIcon className="w-3 h-3" />
-                                                </button>
-                                                <button onClick={(e) => { e.stopPropagation(); initiateDeletePrimary(tag.id, p.originalIndex, p.impressionId); }} className="p-0.5 hover:bg-red-50 rounded text-red-300">
-                                                  <TrashIcon className="w-3 h-3" />
-                                                </button>
-                                              </>
-                                            )
-                                          ) : null}
-                                        </div>
-                                      </div>
-
-                                      {/* Inline Primary Comment Editor */}
-                                      {editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex && (
-                                        <div className="mt-1 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                          <input
-                                            autoFocus
-                                            type="text"
-                                            placeholder="Add comment..."
-                                            value={editingItem.tempValue}
-                                            onChange={(e) => setEditingItem({ ...editingItem, tempValue: e.target.value })}
-                                            onKeyDown={(e) => {
-                                              if (e.key === 'Enter') saveEditing();
-                                              if (e.key === 'Escape') cancelEditing();
-                                            }}
-                                            className="flex-1 px-2 py-0.5 text-[10px] border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-[#00A3AF]"
-                                          />
-                                          <button onClick={saveEditing} className="p-0.5 hover:bg-emerald-50 rounded">
-                                            <CheckIcon className="w-3 h-3 text-emerald-500" />
-                                          </button>
-                                          <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded">
-                                            <XMarkIcon className="w-3 h-3 text-gray-400" />
-                                          </button>
-                                        </div>
-                                      )}
-
-                                      {p.comment && !(editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex) && (
-                                        <p className="text-[10px] text-[#00A3AF] mt-0.5 ml-3 italic truncate">
-                                          "{p.comment}"
-                                        </p>
-                                      )}
-                                      
-                                      {p.selectedText && (
-                                        <p className="text-[10px] text-gray-400 italic mt-1 line-clamp-1 border-l border-gray-200 pl-2 ml-1">
-                                          "{p.selectedText}"
-                                        </p>
-                                      )}
-
-                                      {/* Secondary Tag Input */}
-                                      {secondaryInput?.entryId === tag.id && secondaryInput?.primaryIndex === p.originalIndex && (
-                                        <div className="ml-10 mt-2 flex items-center gap-2">
-                                          <input
-                                            type="text"
-                                            placeholder="Secondary tag name..."
-                                            value={secondaryInput.value}
-                                            onChange={(e) => setSecondaryInput({ ...secondaryInput, value: e.target.value })}
-                                            onKeyDown={(e) => {
-                                              if (e.key === 'Enter') {
-                                                addSecondaryTag(tag.id, p.originalIndex, secondaryInput.value);
-                                              } else if (e.key === 'Escape') {
-                                                setSecondaryInput(null);
-                                              }
-                                            }}
-                                            autoFocus
-                                            className="flex-1 text-xs px-2 py-1 border border-purple-200 rounded focus:outline-none focus:ring-1 focus:ring-purple-300"
-                                          />
-                                          <button onClick={() => addSecondaryTag(tag.id, p.originalIndex, secondaryInput.value)} className="p-0.5 hover:bg-emerald-50 rounded">
-                                            <CheckIcon className="w-3.5 h-3.5 text-emerald-500" />
-                                          </button>
-                                          <button onClick={() => setSecondaryInput(null)} className="p-0.5 hover:bg-gray-100 rounded">
-                                            <XMarkIcon className="w-3.5 h-3.5 text-gray-400" />
-                                          </button>
-                                        </div>
-                                      )}
-                                    </div>
+                              {/* Primary Comment (if exists and not editing) */}
+                              {p.comment && !(editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex) && (
+                                <div className="pl-6 pr-2 py-1 bg-blue-50/30 border-l-2 border-blue-200">
+                                  <p className="text-[10px] text-blue-600 italic truncate">
+                                    "{p.comment}"
+                                  </p>
                                 </div>
-                              </div>
-                            );
-                          })}
-                        </div>
+                              )}
+
+                              {/* Secondary Tags (Primary level) - Horizontal Wrap */}
+                              {p.secondaryTags && p.secondaryTags.length > 0 && (
+                                <TagRowLayout level={2}>
+                                  <div className="flex flex-wrap gap-1.5 py-1">
+                                    {(() => {
+                                      const groupId = `${tag.id}-${p.originalIndex}-secondary-branches`;
+                                      const isExpanded = expandedTagGroups.has(groupId);
+                                      const visibleTags = isExpanded ? p.secondaryTags : p.secondaryTags.slice(0, 3);
+                                      const remainingCount = p.secondaryTags.length - visibleTags.length;
+
+                                      return (
+                                        <>
+                                          {visibleTags.map((sec, secIdx) => (
+                                            <BranchTagChip
+                                              key={sec.id || secIdx}
+                                              name={sec.value}
+                                              variant="primary"
+                                              isEditing={editingItem.id === tag.id && editingItem.type === 'secondary' && editingItem.index === (p.originalIndex * 100 + secIdx)}
+                                              onEdit={() => startEditing(tag.id, 'secondary', sec.value, p.originalIndex * 100 + secIdx)}
+                                              onDelete={() => removeSecondaryTag(tag.id, p.originalIndex, secIdx)}
+                                              onSave={(newName) => {
+                                                setEditingItem(prev => ({ ...prev, tempValue: newName }));
+                                                saveEditing();
+                                              }}
+                                              onCancel={cancelEditing}
+                                            />
+                                          ))}
+                                          {p.secondaryTags.length > 3 && (
+                                            <button
+                                              onClick={() => toggleTagGroupExpansion(groupId)}
+                                              className="text-[10px] text-gray-400 hover:text-[#00A3AF] font-medium px-1 py-0.5 rounded hover:bg-cyan-50 transition-colors"
+                                            >
+                                              {isExpanded ? 'Show Less' : `+${remainingCount} more`}
+                                            </button>
+                                          )}
+                                        </>
+                                      );
+                                    })()}
+                                  </div>
+                                </TagRowLayout>
+                              )}
+
+                              {/* Secondary Tag Input Slot */}
+                              {secondaryInput?.entryId === tag.id && secondaryInput?.primaryIndex === p.originalIndex && (
+                                <ReservedEditSlotRow
+                                  level={2}
+                                  placeholder="Add secondary tag..."
+                                  onSave={(val: string) => addSecondaryTag(tag.id, p.originalIndex, val)}
+                                  onCancel={() => setSecondaryInput(null)}
+                                />
+                              )}
+
+                              {/* Primary Comment Input Slot */}
+                              {editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex && (
+                                <ReservedEditSlotRow
+                                  level={1}
+                                  isComment={true}
+                                  placeholder="Primary tag comment..."
+                                  initialValue={editingItem.tempValue}
+                                  onSave={(val: string) => {
+                                    setEditingItem(prev => ({ ...prev, tempValue: val }));
+                                    saveEditing();
+                                  }}
+                                  onCancel={cancelEditing}
+                                />
+                              )}
+
+                            </React.Fragment>
+                          );
+                        })}
                       </div>
-                    );
-                  })}
-                  
-                  {/* Render pending entries with absolute positioning */}
-                  {pending.map((entry) => {
-                    const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === entry.messageIndex);
-                    if (itemIndex < 0) return null;
-                    
-                    const elementPos = elementPositions.get(itemIndex);
-                    if (!elementPos) return null;
-                    
-                    // Use selection top if available, otherwise element top
-                    const topPosition = elementPos.selectionTop ?? elementPos.top;
-                    
-                    return (
-                      <div
-                        key={entry.id}
-                        style={{
-                          position: 'absolute',
-                          top: `${topPosition}px`,
-                          left: '64px',
-                          right: '24px',
-                          zIndex: 20
-                        }}
-                        className="relative"
-                      >
-                        {/* PENDING ENTRY FORM */}
-                        {entry && (
+                    </div>
+                  );
+                })}
+
+                {/* Render pending entries with absolute positioning */}
+                {pending.map((entry) => {
+                  const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === entry.messageIndex);
+                  if (itemIndex < 0) return null;
+
+                  const elementPos = elementPositions.get(itemIndex);
+                  if (!elementPos) return null;
+
+                  // Use selection top if available, otherwise element top
+                  const topPosition = elementPos.selectionTop ?? elementPos.top;
+
+                  return (
+                    <div
+                      key={entry.id}
+                      style={{
+                        position: 'absolute',
+                        top: `${topPosition}px`,
+                        left: '64px',
+                        right: '24px',
+                        zIndex: 20
+                      }}
+                      className="relative"
+                    >
+                      {/* PENDING ENTRY FORM */}
+                      {entry && (
                         <div className="p-4 rounded-xl bg-white border-2 border-[#E0F7FA] shadow-md relative z-30 mt-2">
                           {/* Remove Entry Button */}
-                          <button 
+                          <button
                             onClick={() => handleRemovePendingEntry(entry.id)}
                             className="absolute -top-2 -right-2 p-1.5 bg-white border border-gray-200 shadow-md hover:bg-red-50 rounded-full transition-all duration-200 group z-40 hover:scale-110"
                             title="Remove selection"
@@ -4087,7 +4242,7 @@ export default function Sessions() {
                                   <div className="relative flex-1">
                                     <input
                                       type="text"
-                                      placeholder="Master (optional)"
+                                      placeholder="Master"
                                       value={masterInput}
                                       onChange={(e) => {
                                         setMasterInput(e.target.value);
@@ -4112,65 +4267,63 @@ export default function Sessions() {
                               </div>
                             )}
 
-                            {/* --- CONFIRMED MASTER DISPLAY --- */}
-                            {pending[0]?.id === entry.id && masterConfirmed && !masterCancelled && (
-                              <div className="flex items-center justify-between bg-[#F0FDFA] px-3 py-2 rounded border border-[#CCFBF1] mb-2">
-                                <div className="flex items-center gap-2 flex-1 flex-wrap">
-                                  <div className="text-sm font-bold text-[#0F766E]">{masterInput || "Master (empty)"}</div>
-                                  
-                                  {/* Branch Tags Display for Pending */}
-                                  {entry.branchTags && entry.branchTags.length > 0 && (
-                                    <div className="flex items-center gap-1">
-                                      {entry.branchTags.map((b, bIdx) => (
-                                        <span key={bIdx} className="text-[9px] bg-[#00A3AF]/10 text-[#00A3AF] px-1.5 py-0.5 rounded border border-[#00A3AF]/20 flex items-center gap-1 group/pbranch">
-                                          {b.value}
-                                          <button 
-                                            onClick={(e) => { e.stopPropagation(); removeBranchTag(entry.id, undefined, bIdx); }}
-                                            className="text-red-400 opacity-0 group-hover/pbranch:opacity-100 transition-opacity"
-                                          >
-                                            <XMarkIcon className="w-2.5 h-2.5" />
-                                          </button>
-                                        </span>
-                                      ))}
-                                    </div>
-                                  )}
+                          {/* --- CONFIRMED MASTER DISPLAY --- */}
+                          {pending[0]?.id === entry.id && masterConfirmed && !masterCancelled && (
+                            <div className="flex items-center justify-between bg-[#F0FDFA] px-3 py-2 rounded border border-[#CCFBF1] mb-2">
+                              <div className="flex items-center gap-2 flex-1 flex-wrap">
+                                <div className="text-sm font-bold text-[#0F766E]">{masterInput || "Master (empty)"}</div>
 
-                                  {/* Add Branch Button for Pending - Limit to 1 */}
-                                  {(!entry.branchTags || entry.branchTags.length === 0) && (
-                                    <button 
-                                      onClick={(e) => { e.stopPropagation(); toggleBranchInput(entry.id); }}
-                                      className="p-0.5 bg-white/50 hover:bg-white rounded text-[#00A3AF] transition-colors"
-                                      title="Add branch tag"
-                                    >
-                                      <PlusIcon className="w-3 h-3" />
+                                {/* Branch Tags Display for Pending */}
+                                {entry.branchTags && entry.branchTags.length > 0 && (
+                                  <div className="flex items-center gap-1">
+                                    {entry.branchTags.map((b, bIdx) => (
+                                      <span key={bIdx} className="text-[9px] bg-[#00A3AF]/10 text-[#00A3AF] px-1.5 py-0.5 rounded border border-[#00A3AF]/20 flex items-center gap-1 group/pbranch">
+                                        {b.value}
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); removeBranchTag(entry.id, undefined, bIdx); }}
+                                          className="text-red-400 opacity-0 group-hover/pbranch:opacity-100 transition-opacity"
+                                        >
+                                          <XMarkIcon className="w-2.5 h-2.5" />
+                                        </button>
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Add Branch Button for Pending - Support multiple */}
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); toggleBranchInput(entry.id); }}
+                                  className="p-0.5 bg-white/50 hover:bg-white rounded text-[#00A3AF] transition-colors"
+                                  title={entry.branchTags && entry.branchTags.length > 0 ? "Add another branch tag" : "Add branch tag"}
+                                >
+                                  <PlusIcon className="w-3 h-3" />
+                                </button>
+
+                                {/* Branch Tag Input for Pending */}
+                                {branchInput?.tagId === entry.id && (
+                                  <div className="flex items-center gap-1 ml-1" onClick={(e) => e.stopPropagation()}>
+                                    <input
+                                      autoFocus
+                                      type="text"
+                                      placeholder="Branch..."
+                                      value={branchInput.value}
+                                      onChange={(e) => setBranchInput({ ...branchInput, value: e.target.value })}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') addBranchTag(entry.id, branchInput.value);
+                                        if (e.key === 'Escape') setBranchInput(null);
+                                      }}
+                                      className="px-2 py-0.5 text-[10px] border border-[#00A3AF] rounded focus:outline-none w-20"
+                                    />
+                                    <button onClick={() => addBranchTag(entry.id, branchInput.value)} className="p-0.5 hover:bg-[#E0F7FA] rounded">
+                                      <CheckIcon className="w-3.5 h-3.5 text-[#00A3AF]" />
                                     </button>
-                                  )}
+                                    <button onClick={() => setBranchInput(null)} className="p-0.5 hover:bg-gray-100 rounded">
+                                      <XMarkIcon className="w-3.5 h-3.5 text-gray-400" />
+                                    </button>
+                                  </div>
+                                )}
 
-                                  {/* Branch Tag Input for Pending */}
-                                  {branchInput?.tagId === entry.id && (
-                                    <div className="flex items-center gap-1 ml-1" onClick={(e) => e.stopPropagation()}>
-                                      <input
-                                        autoFocus
-                                        type="text"
-                                        placeholder="Branch..."
-                                        value={branchInput.value}
-                                        onChange={(e) => setBranchInput({ ...branchInput, value: e.target.value })}
-                                        onKeyDown={(e) => {
-                                          if (e.key === 'Enter') addBranchTag(entry.id, branchInput.value);
-                                          if (e.key === 'Escape') setBranchInput(null);
-                                        }}
-                                        className="px-2 py-0.5 text-[10px] border border-[#00A3AF] rounded focus:outline-none w-20"
-                                      />
-                                      <button onClick={() => addBranchTag(entry.id, branchInput.value)} className="p-0.5 hover:bg-[#E0F7FA] rounded">
-                                        <CheckIcon className="w-3.5 h-3.5 text-[#00A3AF]" />
-                                      </button>
-                                      <button onClick={() => setBranchInput(null)} className="p-0.5 hover:bg-gray-100 rounded">
-                                        <XMarkIcon className="w-3.5 h-3.5 text-gray-400" />
-                                      </button>
-                                    </div>
-                                  )}
-
-                                  {editingItem.id === entry.id && editingItem.type === 'pending_master_comment' ? (
+                                {editingItem.id === entry.id && editingItem.type === 'pending_master_comment' ? (
                                   <div className="flex items-center gap-2 flex-1" onClick={(e) => e.stopPropagation()}>
                                     <input
                                       autoFocus
@@ -4193,12 +4346,12 @@ export default function Sessions() {
                                   </div>
                                 ) : (
                                   <div className="relative group/tooltip">
-                                    <button 
+                                    <button
                                       onClick={() => startEditing(entry.id, 'pending_master_comment', masterComment || "")}
                                       className="p-1 hover:bg-[#E0F7FA] rounded"
                                     >
-                                      <ChatBubbleBottomCenterTextIcon 
-                                        className={`w-4 h-4 cursor-pointer ${masterComment ? 'text-[#00A3AF]' : 'text-gray-300'}`} 
+                                      <ChatBubbleBottomCenterTextIcon
+                                        className={`w-4 h-4 cursor-pointer ${masterComment ? 'text-[#00A3AF]' : 'text-gray-300'}`}
                                       />
                                     </button>
                                     {masterComment && (
@@ -4212,13 +4365,13 @@ export default function Sessions() {
                                   </div>
                                 )}
                               </div>
-                                <button 
-                                  onClick={handleEditMaster} 
-                                  className="p-1 text-gray-400 hover:text-[#0F766E] hover:bg-[#0F766E]/10 rounded transition-colors"
-                                  title="Edit Master"
-                                >
-                                  <PencilSquareIcon className="w-3.5 h-3.5" />
-                                </button>
+                              <button
+                                onClick={handleEditMaster}
+                                className="p-1 text-gray-400 hover:text-[#0F766E] hover:bg-[#0F766E]/10 rounded transition-colors"
+                                title="Edit Master"
+                              >
+                                <PencilSquareIcon className="w-3.5 h-3.5" />
+                              </button>
                             </div>
                           )}
 
@@ -4228,7 +4381,7 @@ export default function Sessions() {
                                 <div className="relative flex-1">
                                   <input
                                     type="text"
-                                    placeholder={`Primary tag...`}
+                                    placeholder={`Primary tag (optional)...`}
                                     value={entry.primaryInput}
                                     onFocus={() => {
                                       setShowPrimarySuggestions(entry.id);
@@ -4245,11 +4398,11 @@ export default function Sessions() {
                                       <div className="px-3 py-1.5 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-gray-50 border-b border-gray-100 sticky top-0 z-10">
                                         <span>Primary Tags under "{masterInput}"</span>
                                       </div>
-                                      
+
                                       {/* Existing Instances */}
                                       {getPrimarySuggestions(entry.id).map((p) => (
-                                        <div 
-                                          key={p.id} 
+                                        <div
+                                          key={p.id}
                                           className="px-4 py-2 text-sm cursor-pointer hover:bg-[#E7FAFC] hover:text-[#00A3AF] flex justify-between items-center group/sugg transition-colors border-b border-gray-50 last:border-0"
                                           onClick={() => handleSelectPrimaryInstance(entry.id, p)}
                                         >
@@ -4258,10 +4411,10 @@ export default function Sessions() {
                                           </div>
                                         </div>
                                       ))}
-                                      
+
                                       {/* Create New Option - Always show if there is input, or if no suggestions */}
                                       {(entry.primaryInput.trim() || getPrimarySuggestions(entry.id).length === 0) && (
-                                        <div 
+                                        <div
                                           className="px-4 py-3 text-sm cursor-pointer hover:bg-[#E7FAFC] hover:text-[#00A3AF] border-t border-gray-100 font-medium text-[#00A3AF] flex items-center gap-2 group/new transition-colors"
                                           onClick={() => handleInitiateAddPrimary(entry.id)}
                                         >
@@ -4324,14 +4477,14 @@ export default function Sessions() {
                                           ) : (
                                             <div className="flex items-center gap-2 overflow-hidden">
                                               <span className="font-semibold text-gray-700 truncate">{p.displayName || p.value}</span>
-                                              
+
                                               {/* Inline Secondary Tags Display for Pending */}
                                               {p.secondaryTags && p.secondaryTags.length > 0 && (
                                                 <div className="flex items-center gap-1 flex-shrink-0">
                                                   {p.secondaryTags.map((sec, secIdx) => (
                                                     <span key={secIdx} className="text-[9px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100 flex items-center gap-1 group/sec">
                                                       {sec.value}
-                                                      <button 
+                                                      <button
                                                         onClick={(e) => { e.stopPropagation(); removeSecondaryTag(entry.id, pIndex, secIdx); }}
                                                         className="text-red-400 opacity-0 group-hover/sec:opacity-100 transition-opacity"
                                                       >
@@ -4350,7 +4503,7 @@ export default function Sessions() {
                                             <>
                                               {/* Add Secondary Tag Button - Limit to 1 */}
                                               {(!p.secondaryTags || p.secondaryTags.length === 0) && (
-                                                <button 
+                                                <button
                                                   onClick={() => toggleSecondaryInput(entry.id, pIndex)}
                                                   className="p-1 hover:bg-gray-100 rounded text-gray-400"
                                                   title="Add secondary tag"
@@ -4359,7 +4512,7 @@ export default function Sessions() {
                                                 </button>
                                               )}
 
-                                              <button 
+                                              <button
                                                 onClick={() => startEditing(entry.id, 'pending_primary', p.value, pIndex)}
                                                 className="p-1 hover:bg-gray-100 rounded"
                                                 title="Edit primary tag"
@@ -4367,18 +4520,18 @@ export default function Sessions() {
                                                 <PencilIcon className="w-3.5 h-3.5 text-gray-400" />
                                               </button>
 
-                                              <button 
+                                              <button
                                                 onClick={() => startEditing(entry.id, 'pending_primary_comment', p.comment || "", pIndex)}
                                                 className="p-1 hover:bg-gray-100 rounded"
                                               >
-                                                <ChatBubbleBottomCenterTextIcon 
-                                                  className={`w-3.5 h-3.5 cursor-pointer ${p.comment ? 'text-[#00A3AF]' : 'text-gray-300'}`} 
+                                                <ChatBubbleBottomCenterTextIcon
+                                                  className={`w-3.5 h-3.5 cursor-pointer ${p.comment ? 'text-[#00A3AF]' : 'text-gray-300'}`}
                                                 />
                                               </button>
                                             </>
                                           )}
                                         </div>
-                                        
+
                                         {p.comment && !(editingItem.id === entry.id && editingItem.type === 'pending_primary_comment' && editingItem.index === pIndex) && (
                                           <span className="text-[10px] text-gray-400 mt-0.5 italic truncate max-w-[150px]">"{p.comment}"</span>
                                         )}
@@ -4540,6 +4693,6 @@ export default function Sessions() {
           </div>
         </div>
       </main>
-    </div>
+    </div >
   );
 }

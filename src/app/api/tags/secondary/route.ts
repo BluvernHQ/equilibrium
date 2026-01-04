@@ -79,3 +79,48 @@ export async function DELETE(req: NextRequest) {
     }
 }
 
+// PATCH - Update a secondary tag
+export async function PATCH(req: NextRequest) {
+    try {
+        const body = await req.json();
+        const { id, name } = body;
+
+        if (!id) {
+            return NextResponse.json(
+                { error: "Secondary Tag ID is required" },
+                { status: 400 }
+            );
+        }
+
+        // @ts-ignore
+        const secondaryTag = await prisma.secondaryTag.update({
+            where: { id },
+            data: {
+                name: name !== undefined ? name.trim() : undefined,
+            }
+        });
+
+        return NextResponse.json({
+            success: true,
+            secondaryTag: {
+                id: secondaryTag.id,
+                primaryTagId: secondaryTag.primary_tag_id,
+                name: secondaryTag.name,
+            },
+        });
+    } catch (error: any) {
+        console.error("Update secondary tag error:", error);
+
+        if (error.code === 'P2025') {
+            return NextResponse.json(
+                { error: "Secondary tag not found" },
+                { status: 404 }
+            );
+        }
+
+        return NextResponse.json(
+            { error: error.message || "Failed to update secondary tag" },
+            { status: 500 }
+        );
+    }
+}

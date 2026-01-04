@@ -112,7 +112,7 @@ export async function POST(req: NextRequest) {
         });
     } catch (error: any) {
         console.error("Create branch tag error:", error);
-        
+
         // Handle unique constraint violation
         if (error.code === 'P2002') {
             return NextResponse.json(
@@ -120,7 +120,7 @@ export async function POST(req: NextRequest) {
                 { status: 400 }
             );
         }
-        
+
         return NextResponse.json(
             { error: error.message || "Failed to create branch tag" },
             { status: 500 }
@@ -152,14 +152,14 @@ export async function DELETE(req: NextRequest) {
         });
     } catch (error: any) {
         console.error("Delete branch tag error:", error);
-        
+
         if (error.code === 'P2025') {
             return NextResponse.json(
                 { error: "Branch tag not found" },
                 { status: 404 }
             );
         }
-        
+
         return NextResponse.json(
             { error: error.message || "Failed to delete branch tag" },
             { status: 500 }
@@ -167,3 +167,51 @@ export async function DELETE(req: NextRequest) {
     }
 }
 
+// PATCH - Update a branch tag
+export async function PATCH(req: NextRequest) {
+    try {
+        const body = await req.json();
+        const { id, name, description } = body;
+
+        if (!id) {
+            return NextResponse.json(
+                { error: "Branch Tag ID is required" },
+                { status: 400 }
+            );
+        }
+
+        // @ts-ignore
+        const branchTag = await prisma.branchTag.update({
+            where: { id },
+            data: {
+                name: name !== undefined ? name.trim() : undefined,
+                description: description !== undefined ? description : undefined,
+            }
+        });
+
+        return NextResponse.json({
+            success: true,
+            branchTag: {
+                id: branchTag.id,
+                masterTagId: branchTag.master_tag_id,
+                name: branchTag.name,
+                description: branchTag.description,
+                createdAt: branchTag.created_at,
+            },
+        });
+    } catch (error: any) {
+        console.error("Update branch tag error:", error);
+
+        if (error.code === 'P2025') {
+            return NextResponse.json(
+                { error: "Branch tag not found" },
+                { status: 404 }
+            );
+        }
+
+        return NextResponse.json(
+            { error: error.message || "Failed to update branch tag" },
+            { status: 500 }
+        );
+    }
+}

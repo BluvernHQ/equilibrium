@@ -59,12 +59,12 @@ export async function GET(
             // Cast to any to access all fields including new ones
             const imp = impression as any;
             const masterTagId = imp.master_tag.id;
-            
+
             // Use masterTagId + selection_ranges as grouping key to keep distinct selections separate
             // even if they use the same master tag
             const selectionKey = JSON.stringify(imp.selection_ranges || imp.block_ids);
             const groupingKey = `${masterTagId}-${selectionKey}`;
-            
+
             if (!tagGroups[groupingKey]) {
                 tagGroups[groupingKey] = {
                     id: imp.id, // Use the first impression ID as the group ID
