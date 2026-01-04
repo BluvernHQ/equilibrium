@@ -2505,6 +2505,8 @@ export default function Sessions() {
     }
   };
 
+
+
   const handleMasterCancelAction = () => {
     // This is the "Cancel" button next to "Add" (not the popup cancel)
     // Get all pending block IDs before clearing
@@ -2527,20 +2529,19 @@ export default function Sessions() {
       return newSet;
     });
 
-    // Clear all pending entries and master state
-    setPending([]);
     setMasterInput("");
     setMasterComment("");
     setMasterConfirmed(false);
     setMasterCancelled(true);
     setDbPrimaryTags([]); // Clear suggestions
+    setEditingMasterName(null); // Clear editing context
   };
 
   const handleEditMaster = () => {
     setMasterConfirmed(false);
     setDbPrimaryTags([]); // Clear suggestions when editing master
-    // Note: We keep the masterComment in state so if they add again, they can edit it
-    // or we could clear it: setMasterComment(""); 
+    // We do NOT assume we are renaming the tag name here. 
+    // This function sets up the "Workspace" for adding primaries/branches to this master tag.
   };
 
   // ------------------------------------------------------------------
@@ -2888,6 +2889,23 @@ export default function Sessions() {
     return highlightTextWithRanges(text, undefined);
   };
 
+  // When user clicks the "Edit" button on a Master Tag row
+  const handleMasterEditClick = (tag: TagItem) => {
+    // 1. Enter Workspace Mode: Enable text selection for this Master Tag
+    setEditingMasterName(tag.master);
+    setMasterInput(tag.master || "");
+    setMasterComment(tag.masterComment || "");
+    setMasterConfirmed(true); // Treat as confirmed so we can add primaries
+    setMasterCancelled(false);
+
+    // 2. Set UI State to 'editing' to show tool buttons (Add Branch, Add Primary, etc.)
+    // Note: MasterTagRow will see this but keep the name READ-ONLY until the explicit rename pencil is clicked.
+    startEditing(tag.id, 'master', tag.master || "");
+
+    // Clear any previous selection
+    window.getSelection()?.removeAllRanges();
+  };
+
   const startEditing = (id: string, type: 'master' | 'primary' | 'master_branch' | 'secondary' | 'master_comment' | 'primary_comment' | 'pending_master_comment' | 'pending_primary' | 'pending_primary_comment', currentValue: string, index: number | null = null) => {
     // Allow master tag name editing to start immediately
     // Also allow independent editing of primary/secondary tags without master edit mode
@@ -2924,6 +2942,9 @@ export default function Sessions() {
         }
         // 2. Update local state
         setTags(prev => prev.map(t => t.id === id ? { ...t, master: trimmedVal } : t));
+
+        // 3. Exit Master Workspace Mode (Close Master)
+        setEditingMasterName(null);
       }
       else if (type === 'master_comment') {
         const masterTagId = tags.find(t => t.id === id)?.masterTagId;
@@ -3039,23 +3060,33 @@ export default function Sessions() {
 
   const initiateDeleteMaster = (id: string) => {
     const tagToDelete = tags.find(t => t.id === id);
-    if (editingMasterName !== tagToDelete?.master) {
-      showToast("Enter Edit mode on the Master Tag first to delete it.", "info");
-      return;
+    if (!tagToDelete) return;
+
+    // Find all TagItems that refer to the same Master Tag (by ID or exact name)
+    const masterTagId = tagToDelete.masterTagId;
+    let relatedTags = [tagToDelete];
+
+    if (masterTagId) {
+      relatedTags = tags.filter(t => t.masterTagId === masterTagId);
+    } else if (tagToDelete.master) {
+      relatedTags = tags.filter(t => t.master === tagToDelete.master);
     }
-    // Find all impression IDs for this master tag
-    const impressionIds = tagToDelete?.primaryList
-      .map(p => p.impressionId)
-      .filter((id): id is string => !!id) || [];
-    setDeleteState({ isOpen: true, type: 'master', tagId: id, impressionId: impressionIds.join(',') });
+
+    // Collect ALL impression IDs from all related distinct UI items
+    const impressionIds = relatedTags.flatMap(t =>
+      t.primaryList
+        .map(p => p.impressionId)
+        .filter((impId): impId is string => !!impId)
+    );
+
+    // Deduplicate IDs
+    const uniqueImpressionIds = Array.from(new Set(impressionIds));
+
+    setDeleteState({ isOpen: true, type: 'master', tagId: id, impressionId: uniqueImpressionIds.join(',') });
   };
 
   const initiateDeletePrimary = (tagId: string, index: number, impressionId?: string) => {
     const tag = tags.find(t => t.id === tagId);
-    if (editingMasterName !== tag?.master) {
-      showToast("Enter Edit mode on the Master Tag first to delete primary tags.", "info");
-      return;
-    }
     setDeleteState({ isOpen: true, type: 'primary', tagId: tagId, primaryIndex: index, impressionId });
   };
 
@@ -3063,25 +3094,44 @@ export default function Sessions() {
     // Delete from database first
     if (deleteState.impressionId && transcriptId) {
       try {
-        // For master tag deletion, there may be multiple impression IDs
-        const impressionIds = deleteState.impressionId.split(',');
-        for (const impId of impressionIds) {
-          if (impId) {
-            await fetch(`/api/tags/impressions?id=${impId}`, { method: 'DELETE' });
-          }
-        }
+        const impressionIds = deleteState.impressionId.split(',').filter(Boolean);
+        // Execute deletions in parallel for speed
+        await Promise.all(impressionIds.map(impId =>
+          fetch(`/api/tags/impressions?id=${impId}`, { method: 'DELETE' })
+        ));
       } catch (error) {
         console.error("Failed to delete tag impression from database:", error);
       }
     }
 
     if (deleteState.type === 'master') {
-      // Get the tag being deleted to extract its block IDs
+      // Get the tag being deleted
       const deletedTag = tags.find(t => t.id === deleteState.tagId);
-      const deletedBlockIds = new Set(deletedTag?.blockIds || []);
-      const deletedTexts = new Set(deletedTag?.allText || []);
 
-      const updatedTags: TagItem[] = tags.filter((t: TagItem) => t.id !== deleteState.tagId);
+      // 1. Delete Master Tag from DB
+      if (deletedTag?.masterTagId) {
+        try {
+          await fetch(`/api/tags/master?id=${deletedTag.masterTagId}`, { method: 'DELETE' });
+        } catch (err) {
+          console.error("Failed to delete master tag record:", err);
+        }
+      }
+
+      // 2. Remove ALL TagItems that match this Master Tag from local state
+      const masterTagIdToDelete = deletedTag?.masterTagId;
+      const masterNameToDelete = deletedTag?.master;
+
+      const updatedTags = tags.filter((t: TagItem) => {
+        // If IDs match, exclude it
+        if (masterTagIdToDelete && t.masterTagId === masterTagIdToDelete) return false;
+        // If no IDs but names match (legacy/unsaved), exclude it
+        if (masterNameToDelete && t.master === masterNameToDelete) return false;
+        // Fallback: exclude the specific ID clicked
+        if (t.id === deleteState.tagId) return false;
+
+        return true;
+      });
+
       setTags(updatedTags);
 
       // Recalculate highlighted texts - only keep texts that are still referenced by other tags
@@ -3991,10 +4041,7 @@ export default function Sessions() {
                                 isEditing={editingItem.id === tag.id && editingItem.type === 'master'}
                                 isHighlighted={editingMasterName === tag.master}
                                 color={tagColor}
-                                onEdit={() => {
-                                  setEditingMasterName(tag.master);
-                                  startEditing(tag.id, 'master', tag.master || "");
-                                }}
+                                onEdit={() => handleMasterEditClick(tag)}
                                 onClick={() => {
                                   if (editingMasterName === tag.master) {
                                     setEditingMasterName(null);
@@ -4009,7 +4056,7 @@ export default function Sessions() {
                                   setEditingItem(prev => ({ ...prev, tempValue: newName }));
                                   saveEditing();
                                 }}
-                                onCancel={cancelEditing}
+                                onCancel={undefined}
                               />
 
                               {/* Branch Tags (Master level) */}

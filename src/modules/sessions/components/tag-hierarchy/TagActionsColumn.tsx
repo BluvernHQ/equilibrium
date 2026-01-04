@@ -40,6 +40,17 @@ export const TagActionsColumn: React.FC<TagActionsColumnProps> = ({
     if (isEditing) {
         return (
             <div className="flex items-center justify-end gap-1 w-full">
+                {/* Persistent Edit Button (Active State indication) */}
+                {onEdit && (
+                    <button
+                        onClick={onEdit}
+                        className="p-1 text-[#00A3AF] bg-cyan-50 rounded transition-colors"
+                        title="Master Workspace Active"
+                    >
+                        <PencilSquareIcon className="w-3.5 h-3.5" />
+                    </button>
+                )}
+
                 {onAdd && (
                     <button
                         onClick={(e) => { e.stopPropagation(); onAdd(); }}
@@ -60,18 +71,21 @@ export const TagActionsColumn: React.FC<TagActionsColumnProps> = ({
                 )}
                 <button
                     onClick={onSave}
-                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded transition-colors"
-                    title="Save changes"
+                    className="p-1 text-white bg-emerald-500 hover:bg-emerald-600 rounded transition-colors shadow-sm"
+                    title="Close Master (Auto-Saves)"
                 >
-                    <CheckIcon className="w-4 h-4" />
+                    <CheckIcon className="w-4 h-4 stroke-2" />
                 </button>
-                <button
-                    onClick={onCancel}
-                    className="p-1 text-gray-400 hover:bg-gray-100 rounded transition-colors"
-                    title="Cancel"
-                >
-                    <XMarkIcon className="w-4 h-4" />
-                </button>
+                {/* Only show Cancel if explicitly provided and separate from Close logic */}
+                {onCancel && (
+                    <button
+                        onClick={onCancel}
+                        className="p-1 text-gray-400 hover:bg-gray-100 rounded transition-colors"
+                        title="Cancel"
+                    >
+                        <XMarkIcon className="w-4 h-4" />
+                    </button>
+                )}
             </div>
         );
     }

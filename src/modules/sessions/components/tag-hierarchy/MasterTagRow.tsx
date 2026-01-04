@@ -17,7 +17,7 @@ interface MasterTagRowProps {
     onAdd?: () => void;
     onAddPrimary?: () => void;
     onSave: (newName: string) => void;
-    onCancel: () => void;
+    onCancel?: () => void;
 }
 
 export const MasterTagRow: React.FC<MasterTagRowProps> = ({
@@ -25,7 +25,7 @@ export const MasterTagRow: React.FC<MasterTagRowProps> = ({
     isEditing,
     isHighlighted = false,
     color = '#00A3AF',
-    onEdit,
+    onEdit, // Triggers workspace/edit mode
     onClick,
     onDelete,
     onComment,
@@ -35,19 +35,41 @@ export const MasterTagRow: React.FC<MasterTagRowProps> = ({
     onCancel,
 }) => {
     const [tempName, setTempName] = useState(name);
+    const [isRenaming, setIsRenaming] = useState(false);
 
     // Sync tempName when name changes externally (if not editing)
     React.useEffect(() => {
         if (!isEditing) {
             setTempName(name);
+            setIsRenaming(false);
         }
     }, [name, isEditing]);
 
     const handleSave = () => {
         if (tempName.trim()) {
-            onSave(tempName.trim());
+            if (isRenaming) {
+                onSave(tempName.trim());
+                setIsRenaming(false);
+            } else {
+                // Determine what 'Save' means in Workspace Mode effectively commits the session/state? 
+                // Or maybe just exits Workspace Mode without renaming?
+                // The parent `saveEditing` likely closes the edit state.
+                onSave(name); // Save with current name (no change) to allow parent to close
+            }
         } else {
-            onCancel();
+            // If user cleared name, revert
+            setTempName(name);
+            setIsRenaming(false);
+            // Don't close workspace mode necessarily? Or treat as cancel?
+        }
+    };
+
+    const handleCancel = () => {
+        if (isRenaming) {
+            setIsRenaming(false);
+            setTempName(name);
+        } else {
+            if (onCancel) onCancel();
         }
     };
 
@@ -55,7 +77,7 @@ export const MasterTagRow: React.FC<MasterTagRowProps> = ({
         <TagRowLayout
             level={0}
             isHighlighed={isHighlighted}
-            className="border-b border-gray-100 mb-1"
+            className={`border-b border-gray-100 mb-1 ${isEditing ? 'ring-1 ring-[#00A3AF] rounded-sm bg-[#F0FDFA]' : ''}`}
             actions={
                 <TagActionsColumn
                     isEditing={isEditing}
@@ -65,17 +87,17 @@ export const MasterTagRow: React.FC<MasterTagRowProps> = ({
                     onAdd={onAdd}
                     onAddPrimary={onAddPrimary}
                     onSave={handleSave}
-                    onCancel={onCancel}
+                    onCancel={handleCancel}
                     hideComment={!onComment}
                 />
             }
         >
-            {isEditing ? (
+            {isEditing && isRenaming ? (
                 <InlineEditSlot
                     value={tempName}
                     onChange={setTempName}
                     onSave={handleSave}
-                    onCancel={onCancel}
+                    onCancel={() => setIsRenaming(false)}
                     placeholder="New Master Tag name..."
                 />
             ) : (
@@ -95,6 +117,22 @@ export const MasterTagRow: React.FC<MasterTagRowProps> = ({
                     <span className="text-sm font-bold text-gray-800 truncate" title={name}>
                         {name}
                     </span>
+
+                    {/* Explicit Rename Pencil - Only acts to rename, separate from main Edit Mode */}
+                    {isEditing && !isRenaming && (
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setIsRenaming(true);
+                            }}
+                            className="p-1 text-gray-400 hover:text-[#00A3AF] hover:bg-cyan-50 rounded-full transition-colors ml-1"
+                            title="Rename Master Tag"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-3 h-3">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
+                            </svg>
+                        </button>
+                    )}
                 </div>
             )}
         </TagRowLayout>
