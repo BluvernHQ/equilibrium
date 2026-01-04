@@ -14,6 +14,8 @@ interface VideoItem {
   lastModified: string;
   id?: string; // Database video ID
   hasTranscription?: boolean; // Whether transcription exists
+  transcriptionType?: 'auto' | 'manual'; // Type of transcription
+  hasSession?: boolean; // Whether session (tagging) exists
 }
 
 export default function Recordings() {
@@ -31,20 +33,20 @@ export default function Recordings() {
       // Fetch from Spaces
       const spacesResponse = await fetch("/api/videos");
       const spacesData = spacesResponse.ok ? await spacesResponse.json() : { videos: [] };
-      
+
       // Fetch from Database
       const dbResponse = await fetch("/api/videos/db");
       const dbData = dbResponse.ok ? await dbResponse.json() : { videos: [] };
-      
+
       // Merge data: use Spaces as source of truth, enrich with DB data
       const spacesVideos = spacesData.videos || [];
       const dbVideos = dbData.videos || [];
-      
+
       // Create multiple lookup maps for matching
       const dbVideosByKey = new Map(
         dbVideos.filter((v: any) => v.fileKey).map((v: any) => [v.fileKey, v])
       );
-      
+
       // Also match by source_url containing the video filename
       const findDbVideo = (spacesVideo: VideoItem) => {
         // First try by fileKey
@@ -53,21 +55,30 @@ export default function Recordings() {
         }
         // Then try matching by source_url containing the filename
         const filename = spacesVideo.fileName || spacesVideo.key.split('/').pop();
-        return dbVideos.find((v: any) => 
-          v.source_url?.includes(filename) || 
+        return dbVideos.find((v: any) =>
+          v.source_url?.includes(filename) ||
           v.fileUrl?.includes(filename)
         );
       };
-      
+
       const mergedVideos: VideoItem[] = spacesVideos.map((video: VideoItem) => {
-        const dbVideo = findDbVideo(video) as { id?: string; hasTranscript?: boolean } | undefined;
+        const dbVideo = findDbVideo(video) as {
+          id?: string;
+          hasTranscript?: boolean;
+          latestTranscript?: {
+            transcription_type?: 'auto' | 'manual';
+          };
+          hasSession?: boolean;
+        } | undefined;
         return {
           ...video,
           id: dbVideo?.id,
           hasTranscription: dbVideo?.hasTranscript || false,
+          transcriptionType: dbVideo?.latestTranscript?.transcription_type,
+          hasSession: dbVideo?.hasSession || false,
         };
       });
-      
+
       setVideos(mergedVideos);
     } catch (error) {
       console.error("Failed to fetch videos:", error);
@@ -235,50 +246,74 @@ export default function Recordings() {
                   <span>{formatFileSize(video.size)}</span>
                 </div>
                 <div className="mt-3 space-y-2 pt-3 border-t border-gray-100">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (video.id) {
-                          setVideoUrl(video.url, video.id);
-                        } else {
-                          setVideoUrl(video.url);
-                        }
-                        router.push("/auto-transcription");
-                      }}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-[#00A3AF] rounded hover:bg-[#008C97] transition-colors"
-                    >
-                      <SparklesIcon className="w-4 h-4" />
-                      {video.hasTranscription ? "Re-transcribe" : "Auto Transcribe"}
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (video.id) {
-                          setVideoUrl(video.url, video.id);
-                        } else {
-                          setVideoUrl(video.url);
-                        }
-                        router.push("/manual-transcription");
-                      }}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-[#111827] rounded hover:bg-black transition-colors"
-                    >
-                      <PencilSquareIcon className="w-4 h-4" />
-                      Manual Transcribe
-                    </button>
-                  </div>
+                  {/* PRIMARY ACTIONS: View Transcription & View Session (when they exist) */}
                   {video.hasTranscription && video.id && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        router.push(`/sessions?videoId=${video.id}`);
-                      }}
-                      className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-white bg-emerald-600 rounded hover:bg-emerald-700 transition-colors"
-                    >
-                      <DocumentTextIcon className="w-4 h-4" />
-                      View Session
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {/* View Transcription - ALWAYS shown when transcription exists */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          router.push(`/transcription/${video.id}`);
+                        }}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-[#00A3AF] rounded hover:bg-[#008C97] transition-colors"
+                      >
+                        <DocumentTextIcon className="w-4 h-4" />
+                        View Transcription
+                      </button>
+
+                      {/* View Session - ALWAYS shown when transcription exists (session is available) */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          router.push(`/sessions?videoId=${video.id}`);
+                        }}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-emerald-600 rounded hover:bg-emerald-700 transition-colors"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+                        </svg>
+                        View Session
+                      </button>
+                    </div>
                   )}
+
+                  {/* NEW TRANSCRIPTION ACTIONS: Only shown when NO transcription exists */}
+                  {!video.hasTranscription && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (video.id) {
+                            setVideoUrl(video.url, video.id);
+                          } else {
+                            setVideoUrl(video.url);
+                          }
+                          router.push("/auto-transcription");
+                        }}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-[#00A3AF] rounded hover:bg-[#008C97] transition-colors"
+                      >
+                        <SparklesIcon className="w-4 h-4" />
+                        Auto Transcribe
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (video.id) {
+                            setVideoUrl(video.url, video.id);
+                          } else {
+                            setVideoUrl(video.url);
+                          }
+                          router.push("/manual-transcription");
+                        }}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-[#111827] rounded hover:bg-black transition-colors"
+                      >
+                        <PencilSquareIcon className="w-4 h-4" />
+                        Manual Transcribe
+                      </button>
+                    </div>
+                  )}
+
+                  {/* UTILITY ACTIONS */}
                   <div className="flex items-center gap-2">
                     <a
                       href={video.url}
@@ -287,7 +322,7 @@ export default function Recordings() {
                       onClick={(e) => e.stopPropagation()}
                       className="flex-1 text-center px-3 py-1.5 text-xs font-medium text-[#00A3AF] bg-[#E0F7FA] rounded hover:bg-[#BFE8EB] transition-colors"
                     >
-                      View
+                      View Video
                     </a>
                     <button
                       onClick={(e) => {
