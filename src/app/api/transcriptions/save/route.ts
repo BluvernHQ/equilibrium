@@ -21,7 +21,8 @@ export async function POST(req: NextRequest) {
             videoMetadata, // Optional - video info to create if videoId not provided
             transcriptData, // Can be array of blocks or AssemblyAI format
             transcriptionType = "auto",
-            language = "en"
+            language = "en",
+            speakerData // Optional - array of speaker information with avatars
         } = body;
 
         if (!transcriptData) {
@@ -48,6 +49,42 @@ export async function POST(req: NextRequest) {
                     { status: 404 }
                 );
             }
+            
+            // If video exists and we have videoMetadata, update it to ensure video URL is current
+            if (body.videoMetadata && video) {
+                const { source_url, fileUrl, fileKey, source_type, fileName } = body.videoMetadata;
+                const urlToSave = source_url || fileUrl;
+                
+                // Build update data - only include fields that are provided
+                const updateData: any = {};
+                if (urlToSave) {
+                    updateData.source_url = urlToSave;
+                }
+                if (source_type) {
+                    updateData.source_type = source_type;
+                } else if (fileKey && !(video as any).source_type) {
+                    updateData.source_type = "s3";
+                }
+                if (fileUrl) {
+                    updateData.fileUrl = fileUrl;
+                }
+                if (fileKey) {
+                    updateData.fileKey = fileKey;
+                }
+                if (fileName) {
+                    updateData.fileName = fileName;
+                }
+                
+                // Only update if we have something to update
+                if (Object.keys(updateData).length > 0) {
+                    // @ts-ignore
+                    video = await prisma.video.update({
+                        where: { id: videoId },
+                        data: updateData,
+                    });
+                }
+            }
+            
             finalVideoId = videoId;
         } else if (videoMetadata) {
             // Create video from metadata
@@ -217,6 +254,94 @@ export async function POST(req: NextRequest) {
                     })
                 )
             );
+
+            // Save speaker data with avatars if provided
+            if (speakerData && Array.isArray(speakerData) && speakerData.length > 0) {
+                try {
+                    // Check if Speaker model exists in Prisma client
+                    // Prisma converts model names: Speaker -> speaker (lowercase first letter)
+                    const prismaClient = tx as any;
+                    
+                    // Try different possible model name variations
+                    let SpeakerModel = prismaClient.speaker;
+                    if (!SpeakerModel) {
+                        // Try capitalized version
+                        SpeakerModel = prismaClient.Speaker;
+                    }
+                    if (!SpeakerModel) {
+                        // Try accessing via $dmmf (Data Model Meta Format) to find the actual name
+                        const dmmf = (prismaClient as any).$dmmf;
+                        if (dmmf && dmmf.datamodel) {
+                            const speakerModel = dmmf.datamodel.models.find((m: any) => 
+                                m.name.toLowerCase() === 'speaker'
+                            );
+                            if (speakerModel) {
+                                SpeakerModel = prismaClient[speakerModel.name.charAt(0).toLowerCase() + speakerModel.name.slice(1)];
+                            }
+                        }
+                    }
+                    
+                    if (!SpeakerModel) {
+                        // Fallback: Use raw SQL to insert/update speakers
+                        console.warn("Speaker model not available in Prisma client. Using raw SQL fallback.");
+                        await Promise.all(
+                            speakerData.map(async (speaker: any) => {
+                                const speakerLabel = speaker.speaker_label || speaker.name;
+                                // Use raw SQL to upsert speaker
+                                await tx.$executeRaw`
+                                    INSERT INTO "Speaker" (id, video_id, name, speaker_label, avatar_url, avatar_key, is_moderator, created_at, updated_at)
+                                    VALUES (gen_random_uuid(), ${finalVideoId}::uuid, ${speaker.name}, ${speakerLabel}, ${speaker.avatar_url || null}, ${speaker.avatar_key || null}, ${speaker.is_moderator || false}, NOW(), NOW())
+                                    ON CONFLICT (video_id, speaker_label) 
+                                    DO UPDATE SET 
+                                        name = EXCLUDED.name,
+                                        avatar_url = EXCLUDED.avatar_url,
+                                        avatar_key = EXCLUDED.avatar_key,
+                                        is_moderator = EXCLUDED.is_moderator,
+                                        updated_at = NOW()
+                                `;
+                            })
+                        );
+                        console.log(`Successfully saved ${speakerData.length} speaker(s) using raw SQL, including ${speakerData.filter((s: any) => s.is_moderator).length} moderator(s)`);
+                    } else {
+                        await Promise.all(
+                            speakerData.map((speaker: any) => {
+                                const speakerLabel = speaker.speaker_label || speaker.name;
+                                // Upsert speaker (create or update)
+                                return SpeakerModel.upsert({
+                                    where: {
+                                        video_id_speaker_label: {
+                                            video_id: finalVideoId,
+                                            speaker_label: speakerLabel,
+                                        },
+                                    },
+                                    create: {
+                                        video_id: finalVideoId,
+                                        name: speaker.name,
+                                        speaker_label: speakerLabel,
+                                        avatar_url: speaker.avatar_url || null,
+                                        avatar_key: speaker.avatar_key || null,
+                                        is_moderator: speaker.is_moderator || false,
+                                    },
+                                    update: {
+                                        name: speaker.name,
+                                        avatar_url: speaker.avatar_url !== undefined ? speaker.avatar_url : undefined,
+                                        avatar_key: speaker.avatar_key !== undefined ? speaker.avatar_key : undefined,
+                                        is_moderator: speaker.is_moderator !== undefined ? speaker.is_moderator : undefined,
+                                    },
+                                });
+                            })
+                        );
+                        console.log(`Successfully saved ${speakerData.length} speaker(s) including ${speakerData.filter((s: any) => s.is_moderator).length} moderator(s)`);
+                    }
+                } catch (speakerError: any) {
+                    // If Speaker table doesn't exist yet, log warning but don't fail the save
+                    console.error("Could not save speakers:", speakerError.message);
+                    console.error("Speaker error details:", {
+                        error: speakerError,
+                        stack: speakerError.stack,
+                    });
+                }
+            }
 
             return {
                 ...newTranscript,

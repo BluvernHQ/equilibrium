@@ -38,7 +38,7 @@ export default function Sidebar() {
   };
 
   return (
-    <aside className="w-[72px] h-screen bg-[#111827] flex flex-col justify-between items-center py-5">
+    <aside className="fixed left-0 top-0 w-[72px] h-screen bg-[#111827] flex flex-col justify-between items-center py-5 z-40">
 
       {/* Top logo */}
       <div className="flex flex-col items-center gap-6">

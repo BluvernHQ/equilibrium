@@ -25,7 +25,7 @@ export default function SpeakersCarousel({
   onUpload, 
   onUpdateAvatar,
   onUpdateSpeaker,
-  onDeleteSpeaker 
+  onDeleteSpeaker
 }: SpeakersCarouselProps) {
   
   const [showAddMenu, setShowAddMenu] = useState(false);
@@ -174,7 +174,7 @@ useEffect(() => {
                   }
                 `}
               >
-                <span>Add Coordinator</span>
+                <span>Add Moderator</span>
                 {hasCoordinator && <span className="text-[10px] bg-gray-200 px-2 py-0.5 rounded text-gray-500">Done</span>}
               </button>
 
@@ -209,7 +209,7 @@ useEffect(() => {
                 <div className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center mb-2">
                     <UserIcon className="w-7 h-7 text-gray-300" />
                 </div>
-                Add a Coordinator to start...
+                Add a Moderator to start...
              </div>
           )}
 
@@ -217,17 +217,25 @@ useEffect(() => {
             <div key={speaker.id} className="mt-[10px] speaker-item flex flex-col items-center w-[120px] group relative shrink-0">
               
               <div className="relative w-25 h-25 mb-3">
-                <img 
-                  src={speaker.avatar} 
-                  alt={speaker.name} 
-                  className={`w-full h-full rounded-full object-cover shadow-sm transition-transform group-hover:scale-105 border-4
+                {speaker.avatar && speaker.avatar.trim() ? (
+                  <img 
+                    src={speaker.avatar} 
+                    alt={speaker.name} 
+                    className={`w-full h-full rounded-full object-cover shadow-sm transition-transform group-hover:scale-105 border-4
+                      ${speaker.role === 'coordinator' ? "border-[#FFF4C0]" : "border-white"}
+                    `}
+                  />
+                ) : (
+                  <div className={`w-full h-full rounded-full flex items-center justify-center shadow-sm transition-transform group-hover:scale-105 border-4 bg-gray-200
                     ${speaker.role === 'coordinator' ? "border-[#FFF4C0]" : "border-white"}
-                  `}
-                />
+                  `}>
+                    <UserIcon className="w-7 h-7 text-gray-400" />
+                  </div>
+                )}
                 
                 {speaker.role === 'coordinator' && (
-                  <span className="absolute -top-1 -right-1 bg-[#FFF4C0] text-black text-[9px] font-bold px-2 py-0.5 rounded-full shadow-sm z-10 border-2 border-white">
-                    COORD
+                  <span className="absolute -top-1 -right-1 bg-[#FFF4C0] text-black text-[8px] font-bold px-2 py-0.5 rounded-full shadow-sm z-10 border-2 border-white">
+                    MODERATOR
                   </span>
                 )}
 

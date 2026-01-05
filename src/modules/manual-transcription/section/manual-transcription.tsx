@@ -553,7 +553,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
                     className="flex gap-2 overflow-x-auto scrollbar-hide flex-1 w-full sm:w-auto pb-1 sm:pb-0 cursor-ew-resize"
                   >
                     {speakers.length === 0 ? (
-                      <span className="text-xs text-gray-400 italic py-1">Add a Coordinator to start...</span>
+                                            <span className="text-xs text-gray-400 italic py-1">Add a Moderator to start...</span>
                     ) : (
                       speakers.map((spk, idx) => {
                         const speakerIdStr = String(spk.id);

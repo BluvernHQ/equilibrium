@@ -6,7 +6,7 @@ import { InlineEditSlot } from './InlineEditSlot';
 import { TagActionsColumn } from './TagActionsColumn';
 
 interface ReservedEditSlotRowProps {
-    level: 1 | 2;
+    level: 1 | 2; // 1 = Master level (for branch tags), 2 = Primary level (for primary/secondary tags)
     placeholder?: string;
     initialValue?: string;
     isComment?: boolean;

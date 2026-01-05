@@ -12,7 +12,8 @@ import {
   ChatBubbleBottomCenterTextIcon,
   StopIcon,
   ArrowDownIcon,
-  PencilSquareIcon
+  PencilSquareIcon,
+  UserIcon
 } from "@heroicons/react/24/outline";
 import { DeleteModal } from "../components/action-modals";
 import {
@@ -21,7 +22,8 @@ import {
   ReservedEditSlotRow,
   BranchTagChip,
   TagRowLayout,
-  TagContextHeader
+  TagContextHeader,
+  ActiveContextBar
 } from '../components/tag-hierarchy';
 import RecentTags from "../components/RecentTags";
 import Link from "next/link";
@@ -407,6 +409,8 @@ export default function Sessions() {
     if (!container) return;
 
     const updateSpines = () => {
+      // Access tags from the component scope
+      const currentTags = tags;
       const containerRect = container.getBoundingClientRect();
       const newOffsets: Record<string, { top: number; height: number }> = {};
 
@@ -424,11 +428,37 @@ export default function Sessions() {
 
           if (item.getAttribute('data-is-root') === 'true') {
             rootTop = relativeTop + 18; // Spine starts at stem level (18px from top of card)
-          }
+            
+            // For root card, use the actual card's bottom position to extend spine to the end
+            // This accounts for all content: master tag, branch tags, primary tags, secondary tags, comments, etc.
+            // Using Array.from to avoid CSS selector issues with dots in Tailwind classes (like gap-0.5)
+            const cardElement = Array.from(item.children).find((child) => {
+              if (child instanceof HTMLElement) {
+                return child.classList.contains('flex') && 
+                       child.classList.contains('flex-col') && 
+                       child.classList.contains('bg-white');
+              }
+              return false;
+            }) as HTMLElement | undefined;
 
-          // Every item's horizontal stem level is a potential end point for the spine
-          const stemLevel = relativeTop + 18;
-          if (stemLevel > maxBottom) maxBottom = stemLevel;
+            if (cardElement) {
+              const cardRect = cardElement.getBoundingClientRect();
+              const cardBottom = cardRect.bottom - containerRect.top + container.scrollTop;
+              
+              // Use the card's bottom as the spine end point
+              if (cardBottom > maxBottom) {
+                maxBottom = cardBottom;
+              }
+            } else {
+              // Fallback: use item's bottom
+              const itemBottom = rect.bottom - containerRect.top + container.scrollTop;
+              if (itemBottom > maxBottom) maxBottom = itemBottom;
+            }
+          } else {
+            // For non-root items, use their stem level
+            const stemLevel = relativeTop + 18;
+            if (stemLevel > maxBottom) maxBottom = stemLevel;
+          }
         });
 
         if (maxBottom > -Infinity) {
@@ -525,7 +555,8 @@ export default function Sessions() {
   const [leftRowHeights, setLeftRowHeights] = useState<number[]>([]);
   const leftListRef = useRef<HTMLDivElement | null>(null);
   const rightListRef = useRef<HTMLDivElement | null>(null);
-  const leftRowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const rightContentRef = useRef<HTMLDivElement | null>(null);
+  const leftRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const sharedScrollRootRef = useRef<HTMLDivElement | null>(null); // Shared scroll container for both panes
 
   // Geometry-driven alignment system
@@ -583,6 +614,68 @@ export default function Sessions() {
 
     return { sectionId, subsectionId };
   }, [displayItems]);
+
+  // --- Active Context State (Single Source of Truth) ---
+  // Tracks the current active context for persistent display
+  // Computed reactively based on editing state and block positions
+  const activeContext = useMemo(() => {
+    // Only compute context when in editing mode
+    if (!(pending.length > 0 || editingMasterName)) {
+      return { sectionName: undefined, subSectionName: undefined, masterTagName: undefined };
+    }
+
+    let referenceBlockIndex = -1;
+
+    if (pending.length > 0) {
+      referenceBlockIndex = pending[0].messageIndex;
+    } else if (editingMasterName) {
+      // Find the first tag with this master name to determine context
+      const tag = tags.find(t => t.master === editingMasterName);
+      if (tag && tag.blockIds.length > 0) {
+        const blockItem = displayItems.find(d => d.type === 'data' && d.id === tag.blockIds[0]);
+        if (blockItem && blockItem.originalIndex !== undefined) {
+          referenceBlockIndex = blockItem.originalIndex;
+        }
+      }
+    }
+
+    let currentSectionName: string | undefined;
+    let currentSubSectionName: string | undefined;
+
+    if (referenceBlockIndex !== -1) {
+      // Use the existing helper to find section/subsection IDs
+      const ctx = findSectionContext(referenceBlockIndex);
+
+      if (ctx.sectionId) {
+        const sectionItem = displayItems.find(d => d.type === 'section' && d.dbId === ctx.sectionId);
+        // Use title property for section name
+        currentSectionName = (sectionItem as any)?.title || (sectionItem as any)?.name;
+      }
+
+      if (ctx.subsectionId) {
+        const subsectionItem = displayItems.find(d => d.type === 'subsection' && d.dbId === ctx.subsectionId);
+        // Use title property for subsection name
+        currentSubSectionName = (subsectionItem as any)?.title || (subsectionItem as any)?.name;
+      }
+    }
+
+    // Determine current master tag name
+    let currentMasterTagName: string | undefined = undefined;
+    if (editingMasterName) {
+      currentMasterTagName = editingMasterName;
+    } else if (pending.length > 0) {
+      // If pending master confirmed
+      if (masterConfirmed) {
+        currentMasterTagName = masterInput;
+      }
+    }
+
+    return {
+      sectionName: currentSectionName,
+      subSectionName: currentSubSectionName,
+      masterTagName: currentMasterTagName,
+    };
+  }, [pending, editingMasterName, tags, displayItems, findSectionContext, masterConfirmed, masterInput]);
 
   // Handle tag hover - highlight corresponding blocks in transcript
   const handleTagHover = useCallback((tagId: string | null, blockIds: string[] = []) => {
@@ -755,9 +848,20 @@ export default function Sessions() {
           setTranscriptId(data.transcription.id);
           setTranscriptBlocks(data.transcription.blocks);
 
-          // Build speaker color map
+          // Build speaker color map and avatar map from database
           const speakerColorMap = new Map<string, string>();
+          const speakerAvatarMap = new Map<string, string>();
           let colorIndex = 0;
+
+          // Load speaker avatars from API response
+          if (data.speakers && Array.isArray(data.speakers)) {
+            data.speakers.forEach((speaker: any) => {
+              const speakerLabel = speaker.speaker_label || speaker.name;
+              if (speaker.avatar_url) {
+                speakerAvatarMap.set(speakerLabel, speaker.avatar_url);
+              }
+            });
+          }
 
           // Convert transcript blocks to session data format with block IDs
           const convertedData: SessionDataItem[] = data.transcription.blocks.map((block: TranscriptBlock) => {
@@ -769,11 +873,14 @@ export default function Sessions() {
               colorIndex++;
             }
 
+            // Get avatar URL from map, or use empty string (will show placeholder)
+            const avatarUrl = speakerAvatarMap.get(speakerLabel) || "";
+
             return {
               name: getSpeakerName(speakerLabel),
               time: formatTime(block.start_time_seconds),
               message: block.text,
-              image: `/images/personImage${((speakerLabel.charCodeAt(0) - 64) % 4) + 1}.png`,
+              image: avatarUrl, // Use avatar from database if available
               blockId: block.id, // Store block ID for database linking
             };
           });
@@ -825,39 +932,61 @@ export default function Sessions() {
         const loadedTags: TagItem[] = [];
 
         data.tagGroups.forEach((group: DbTagGroup) => {
-          // Each primary tag (impression) should be its own TagItem for independent positioning
-          group.primaryTags.forEach((pt) => {
-            const allSelectionRanges = pt.selectionRanges || (pt.blockIds[0] ? [{ blockId: pt.blockIds[0], startOffset: 0, endOffset: 0 }] : []);
+          // Check if this group has primary tags
+          if (group.primaryTags && group.primaryTags.length > 0) {
+            // Each primary tag (impression) should be its own TagItem for independent positioning
+            group.primaryTags.forEach((pt) => {
+              const allSelectionRanges = pt.selectionRanges || (pt.blockIds[0] ? [{ blockId: pt.blockIds[0], startOffset: 0, endOffset: 0 }] : []);
 
-            // Calculate vertical offset if possible (requires DOM access, might need to be deferred)
-            // For now, we'll store the selection data and calculate offset during render or via a helper
+              // Calculate vertical offset if possible (requires DOM access, might need to be deferred)
+              // For now, we'll store the selection data and calculate offset during render or via a helper
+
+              loadedTags.push({
+                id: pt.impressionId || pt.id,
+                master: group.masterTag.name,
+                masterTagId: group.masterTag.id,
+                masterComment: group.masterTag.description || undefined,
+                masterColor: group.masterTag.color || getMasterTagColor(group.masterTag.id),
+                isClosed: group.masterTag.is_closed,
+                branchTags: group.branchTags,
+                primaryList: [{
+                  id: pt.id,
+                  value: pt.name,
+                  displayName: pt.displayName,
+                  instanceIndex: pt.instanceIndex,
+                  messageIndex: blockIdToIndex.get(pt.blockIds[0]) ?? -1,
+                  blockId: pt.blockIds[0],
+                  impressionId: pt.impressionId,
+                  comment: pt.comment,
+                  secondaryTags: pt.secondaryTags?.map(s => ({ id: s.id, value: s.name })),
+                  selectedText: pt.selectedText,
+                  selectionRange: pt.selectionRanges?.[0],
+                }],
+                allText: [pt.selectedText || ""],
+                blockIds: pt.blockIds,
+                selectionRanges: pt.selectionRanges,
+              });
+            });
+          } else {
+            // Master tag without primary tags - create a TagItem with empty primaryList
+            // Use the first block ID for messageIndex lookup
+            const firstBlockId = group.blockIds && group.blockIds.length > 0 ? group.blockIds[0] : null;
+            const messageIndex = firstBlockId ? (blockIdToIndex.get(firstBlockId) ?? -1) : -1;
 
             loadedTags.push({
-              id: pt.impressionId || pt.id,
+              id: group.id || `master-${group.masterTag.id}`,
               master: group.masterTag.name,
               masterTagId: group.masterTag.id,
               masterComment: group.masterTag.description || undefined,
               masterColor: group.masterTag.color || getMasterTagColor(group.masterTag.id),
               isClosed: group.masterTag.is_closed,
               branchTags: group.branchTags,
-              primaryList: [{
-                id: pt.id,
-                value: pt.name,
-                displayName: pt.displayName,
-                instanceIndex: pt.instanceIndex,
-                messageIndex: blockIdToIndex.get(pt.blockIds[0]) ?? -1,
-                blockId: pt.blockIds[0],
-                impressionId: pt.impressionId,
-                comment: pt.comment,
-                secondaryTags: pt.secondaryTags?.map(s => ({ id: s.id, value: s.name })),
-                selectedText: pt.selectedText,
-                selectionRange: pt.selectionRanges?.[0],
-              }],
-              allText: [pt.selectedText || ""],
-              blockIds: pt.blockIds,
-              selectionRanges: pt.selectionRanges,
+              primaryList: [], // Empty primary list for master-only tags
+              allText: [""], // No selected text for master-only tags
+              blockIds: group.blockIds || [],
+              selectionRanges: [],
             });
-          });
+          }
         });
 
         setTags(loadedTags);
@@ -1040,7 +1169,7 @@ export default function Sessions() {
   };
 
   useEffect(() => {
-    const heights = leftRowRefs.current.map((el) => el?.offsetHeight || 0);
+    const heights = displayItems.map((item) => leftRowRefs.current.get(item.id)?.offsetHeight || 0);
     setLeftRowHeights(heights);
   }, [pending, tags, displayItems]);
 
@@ -1066,24 +1195,24 @@ export default function Sessions() {
   const calculateElementPositions = useCallback(() => {
     const transcriptContainer = leftListRef.current;
     const sidebarContainer = rightListRef.current;
+    const sidebarContent = rightContentRef.current;
     const sharedScrollRoot = sharedScrollRootRef.current;
 
-    if (!transcriptContainer || !sidebarContainer || !sharedScrollRoot) return;
+    if (!transcriptContainer || !sidebarContainer || !sidebarContent || !sharedScrollRoot) return;
 
     // CRITICAL: Use shared scroll root as the SINGLE coordinate origin
-    // Both transcript and sidebar elements must be measured relative to this
     const scrollRootRect = sharedScrollRoot.getBoundingClientRect();
 
-    // Calculate sidebar container's offset within scroll root
-    // This accounts for padding and any offset between containers
-    const sidebarContainerRect = sidebarContainer.getBoundingClientRect();
-    const sidebarOffsetInScrollRoot = sidebarContainerRect.top - scrollRootRect.top + sharedScrollRoot.scrollTop;
+    // Use the actual content container in the sidebar as the target coordinate origin
+    // This ensures that 'top: 0' in the sidebar matches the top of the scrollable content
+    const sidebarContentRect = sidebarContent.getBoundingClientRect();
+    const sidebarOffsetInScrollRoot = sidebarContentRect.top - scrollRootRect.top + sharedScrollRoot.scrollTop;
 
     const newPositions = new Map<number, { top: number; height: number; selectionTop?: number }>();
 
     // Calculate positions for each display item using CURRENT DOM state
     displayItems.forEach((item, index) => {
-      const element = leftRowRefs.current[index];
+      const element = leftRowRefs.current.get(item.id);
       if (!element) {
         // Element not yet rendered - skip but don't break
         return;
@@ -1247,9 +1376,10 @@ export default function Sessions() {
   useLayoutEffect(() => {
     const transcriptContainer = leftListRef.current;
     const sidebarContainer = rightListRef.current;
+    const sidebarContent = rightContentRef.current;
     const sharedScrollRoot = sharedScrollRootRef.current;
 
-    if (!transcriptContainer || !sidebarContainer || !sharedScrollRoot) return;
+    if (!transcriptContainer || !sidebarContainer || !sidebarContent || !sharedScrollRoot) return;
 
     // Debounced calculation to batch rapid updates
     let rafId: number | null = null;
@@ -1281,6 +1411,7 @@ export default function Sessions() {
     // ResizeObserver for sidebar container (width changes affect layout)
     const sidebarResizer = new ResizeObserver(scheduleCalculation);
     sidebarResizer.observe(sidebarContainer);
+    sidebarResizer.observe(sidebarContent);
 
     // ResizeObserver for individual transcript elements (text reflow)
     const elementResizers = new ResizeObserver(scheduleCalculation);
@@ -2551,6 +2682,7 @@ export default function Sessions() {
   const handleOverallAdd = async () => {
     // Always clear editing mode when finishing
     setEditingMasterName(null);
+    cancelEditing();
 
     const masterToApply = masterCancelled
       ? null
@@ -3371,11 +3503,11 @@ export default function Sessions() {
             <Link href={videoId ? "/recordings" : "/"}>
               <img src="/icons/arrow-left.png" alt="Back" className="w-[24px] h-[24px] cursor-pointer" />
             </Link>
-            <div className="flex flex-col">
-              <h1 className="text-[24px] font-medium text-[#111827]">Sessions</h1>
+            <div className="flex flex-col justify-center">
+              <h1 className="text-[24px] font-medium text-[#111827] leading-tight">Sessions</h1>
               {loadedVideo && (
                 isEditingSessionName ? (
-                  <div className="flex items-center gap-1 -mt-1">
+                  <div className="flex items-center gap-1.5 mt-0.5">
                     <input
                       autoFocus
                       type="text"
@@ -3386,12 +3518,12 @@ export default function Sessions() {
                         if (e.key === 'Escape') setIsEditingSessionName(false);
                       }}
                       onBlur={saveSessionName}
-                      className="text-xs text-gray-700 px-2 py-0.5 border border-[#00A3AF] rounded focus:outline-none w-[200px]"
+                      className="text-xs text-gray-700 px-2 py-1 border border-[#00A3AF] rounded focus:outline-none w-[200px] leading-tight"
                       placeholder="Session name..."
                     />
                     <button
                       onClick={saveSessionName}
-                      className="p-0.5 bg-[#E0F7FA] rounded hover:bg-[#B2EBF2]"
+                      className="p-1 bg-[#E0F7FA] rounded hover:bg-[#B2EBF2] flex items-center justify-center"
                     >
                       <CheckIcon className="w-3 h-3 text-[#00A3AF]" />
                     </button>
@@ -3402,10 +3534,10 @@ export default function Sessions() {
                       setSessionNameInput(loadedVideo.fileName || '');
                       setIsEditingSessionName(true);
                     }}
-                    className="flex items-center gap-1 text-xs text-gray-500 -mt-1 truncate max-w-[300px] hover:text-[#00A3AF] group"
+                    className="flex items-center gap-1.5 text-xs text-gray-500 mt-0.5 truncate max-w-[300px] hover:text-[#00A3AF] group"
                     title="Click to rename session"
                   >
-                    <span className="truncate">{loadedVideo.fileName || 'Untitled Session'}</span>
+                    <span className="truncate leading-tight">{loadedVideo.fileName || 'Untitled Session'}</span>
                     <PencilIcon className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
                   </button>
                 )
@@ -3414,65 +3546,14 @@ export default function Sessions() {
           </div>
           <div className="flex items-center gap-3">
             {/* Context Panel: Persistent Context Header */}
-            {(() => {
-              // Only show if we are in an editing/pending context
-              if ((pending.length > 0 || editingMasterName)) {
-                let referenceBlockIndex = -1;
-
-                if (pending.length > 0) {
-                  referenceBlockIndex = pending[0].messageIndex;
-                } else if (editingMasterName) {
-                  // Find the first tag with this master name to determine context
-                  const tag = tags.find(t => t.master === editingMasterName);
-                  if (tag && tag.blockIds.length > 0) {
-                    const blockItem = displayItems.find(d => d.type === 'data' && d.id === tag.blockIds[0]);
-                    if (blockItem && blockItem.originalIndex !== undefined) {
-                      referenceBlockIndex = blockItem.originalIndex;
-                    }
-                  }
-                }
-
-                let currentSectionName: string | undefined;
-                let currentSubSectionName: string | undefined;
-
-                if (referenceBlockIndex !== -1) {
-                  // Use the existing helper to find section/subsection IDs
-                  const ctx = findSectionContext(referenceBlockIndex);
-
-                  if (ctx.sectionId) {
-                    const sectionItem = displayItems.find(d => d.type === 'section' && d.dbId === ctx.sectionId);
-                    // Explicitly cast or check value, as TS thinks value might not exist on DisplayItem union
-                    currentSectionName = (sectionItem as any)?.value;
-                  }
-
-                  if (ctx.subsectionId) {
-                    const subsectionItem = displayItems.find(d => d.type === 'subsection' && d.dbId === ctx.subsectionId);
-                    currentSubSectionName = (subsectionItem as any)?.value;
-                  }
-                }
-
-                // Determine current master tag name
-                let currentMasterTagName: string | undefined = undefined;
-                if (editingMasterName) {
-                  currentMasterTagName = editingMasterName;
-                } else if (pending.length > 0) {
-                  // If pending master confirmed
-                  if (masterConfirmed) {
-                    currentMasterTagName = masterInput;
-                  }
-                }
-
-                return (
-                  <TagContextHeader
-                    sectionName={currentSectionName}
-                    subSectionName={currentSubSectionName}
-                    masterTagName={currentMasterTagName}
-                    className="mr-2"
-                  />
-                );
-              }
-              return null;
-            })()}
+            {/* Single source of truth - computed reactively via useMemo */}
+            <ActiveContextBar
+              sectionName={activeContext.sectionName}
+              subSectionName={activeContext.subSectionName}
+              masterTagName={activeContext.masterTagName}
+              mode="edit"
+              className="mr-2"
+            />
             {loadingTranscript && (
               <div className="flex items-center gap-2 text-gray-500 text-sm">
                 <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
@@ -3484,7 +3565,7 @@ export default function Sessions() {
             )}
             {(pending.length > 0 || editingMasterName) && (
               <button
-                onClick={pending.length > 0 ? handleOverallAdd : () => setEditingMasterName(null)}
+                onClick={pending.length > 0 ? handleOverallAdd : () => { setEditingMasterName(null); cancelEditing(); }}
                 disabled={savingTags}
                 className={`px-4 py-2 text-white rounded-lg shadow-sm text-sm transition-all duration-200 flex items-center gap-2 ${savingTags
                   ? 'bg-gray-400 cursor-not-allowed'
@@ -3510,8 +3591,14 @@ export default function Sessions() {
         </header>
 
         <div className="flex flex-1 overflow-y-auto" ref={sharedScrollRootRef} data-transcript-scroll-root>
-          {/* Left Side: Transcript */}
-          <div className="flex-1 p-6" ref={leftListRef}>
+          {/* Senior Layout Engineer Fix: 
+              Wrap both panes in a 'flex min-h-full w-full items-stretch' container.
+              By using 'flex' on the scroll root and 'min-h-full' + 'items-stretch' on this wrapper,
+              both the Transcript and Right Sidebar are forced to match the height of the tallest 
+              content (the Transcript), ensuring the sidebar border and background persist to the bottom. */}
+          <div className="flex min-h-full w-full items-stretch">
+            {/* Left Side: Transcript */}
+            <div className="flex-1 p-6" ref={leftListRef}>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-[#111827] text-lg font-semibold">
                 {loadedVideo ? "Transcription" : "Auto Transcription"}
@@ -3531,9 +3618,9 @@ export default function Sessions() {
                       type="checkbox"
                       checked={hideUntagged}
                       onChange={(e) => setHideUntagged(e.target.checked)}
-                      className="w-4 h-4 rounded border-gray-300 text-[#00A3AF] focus:ring-[#00A3AF]"
+                      className="w-4 h-4 rounded border-gray-300 text-[#00A3AF] focus:ring-[#00A3AF] flex-shrink-0"
                     />
-                    Hide Untagged
+                    <span className="leading-tight">Hide Untagged</span>
                   </label>
 
                   {/* Section Filter */}
@@ -3637,23 +3724,21 @@ export default function Sessions() {
                   return (
                     <div key={item.id} className="relative group/wrapper">
                       <div
-                        ref={(el) => { leftRowRefs.current[index] = el; }}
-                        className="my-4 flex items-center gap-4 animate-fade-in group relative"
+                        ref={(el) => { if (el) leftRowRefs.current.set(item.id, el); else leftRowRefs.current.delete(item.id); }}
+                        className="my-4 flex items-center gap-2 animate-fade-in group relative"
                       >
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 bg-gray-300 rounded-full" />
-                          <span className="text-[10px] text-gray-500 font-bold uppercase text-sm tracking-wider whitespace-nowrap">
-                            END SECTION - {item.title || "Untitled"}
-                          </span>
-                          <button
-                            onClick={() => deleteDisplayItem(item.id)}
-                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded ml-1"
-                            title="Delete Close Line"
-                          >
-                            <TrashIcon className="w-3 h-3 text-red-400" />
-                          </button>
-                        </div>
-                        <div className="h-[1px] flex-1 bg-gray-300 border-dashed border-t"></div>
+                        <div className="w-2 h-2 bg-gray-300 rounded-full flex-shrink-0" />
+                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider leading-tight">
+                          {item.title || 'Section'}
+                        </span>
+                        <div className="flex-1 h-px bg-gray-300 border-dashed border-t" />
+                        <button
+                          onClick={() => deleteDisplayItem(item.id)}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded flex items-center justify-center flex-shrink-0"
+                          title="Delete Close Line"
+                        >
+                          <TrashIcon className="w-3 h-3 text-red-400" />
+                        </button>
                       </div>
                       {/* Show + button after section close - hide when filtering */}
                       {!isFiltered && (
@@ -3677,23 +3762,21 @@ export default function Sessions() {
                   return (
                     <div key={item.id} className="relative group/wrapper">
                       <div
-                        ref={(el) => { leftRowRefs.current[index] = el; }}
-                        className="my-4 flex items-center gap-4 animate-fade-in group relative ml-4"
+                        ref={(el) => { if (el) leftRowRefs.current.set(item.id, el); else leftRowRefs.current.delete(item.id); }}
+                        className="my-4 flex items-center gap-2 animate-fade-in group relative ml-4"
                       >
-                        <div className="flex items-center gap-2">
-                          <div className="w-1.5 h-1.5 bg-amber-300 rounded-full" />
-                          <span className="text-[10px] text-amber-500 font-bold uppercase text-sm tracking-wider whitespace-nowrap">
-                            END SUB SECTION - {item.title || "Untitled"}
-                          </span>
-                          <button
-                            onClick={() => deleteDisplayItem(item.id)}
-                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded ml-1"
-                            title="Delete Close Line"
-                          >
-                            <TrashIcon className="w-3 h-3 text-red-400" />
-                          </button>
-                        </div>
-                        <div className="h-[1px] flex-1 bg-amber-100 border-dashed border-t"></div>
+                        <div className="w-1.5 h-1.5 bg-amber-300 rounded-full flex-shrink-0" />
+                        <span className="text-xs font-medium text-amber-500 uppercase tracking-wider leading-tight">
+                          {item.title || 'Subsection'}
+                        </span>
+                        <div className="flex-1 h-px bg-amber-100 border-dashed border-t" />
+                        <button
+                          onClick={() => deleteDisplayItem(item.id)}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded flex items-center justify-center flex-shrink-0"
+                          title="Delete Close Line"
+                        >
+                          <TrashIcon className="w-3 h-3 text-red-400" />
+                        </button>
                       </div>
                       {/* Show + button after subsection close - hide when filtering */}
                       {!isFiltered && (
@@ -3717,17 +3800,17 @@ export default function Sessions() {
                   return (
                     <div
                       key={item.id}
-                      ref={(el) => { leftRowRefs.current[index] = el; }}
-                      className={`my-4 flex items-center gap-4 animate-fade-in group relative ${item.isClosed ? 'opacity-75' : ''}`}
+                      ref={(el) => { if (el) leftRowRefs.current.set(item.id, el); else leftRowRefs.current.delete(item.id); }}
+                      className={`my-4 flex items-center gap-2 animate-fade-in group relative ${item.isClosed ? 'opacity-75' : ''}`}
                     >
                       {item.isEditing ? (
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-[#00A3AF] font-bold uppercase text-sm tracking-wider whitespace-nowrap">SECTION - </span>
+                        <div className="flex items-center gap-2 w-full">
+                          <div className="w-2 h-2 rounded-full bg-[#00A3AF] flex-shrink-0" />
                           <input
                             autoFocus
                             type="text"
                             placeholder="Enter name"
-                            className="border-b border-[#00A3AF] focus:outline-none text-sm text-gray-700 min-w-[150px]"
+                            className="border-b border-[#00A3AF] focus:outline-none text-xs font-semibold text-[#00A3AF] uppercase tracking-wider min-w-[150px]"
                             value={item.title || ""}
                             onChange={(e) => updateSectionTitle(item.id, e.target.value)}
                             onKeyDown={(e) => {
@@ -3735,26 +3818,26 @@ export default function Sessions() {
                             }}
                             onBlur={() => saveSectionTitle(item.id)}
                           />
+                          <div className="flex-1 h-px bg-[#00A3AF]/30" />
                         </div>
                       ) : (
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-[#00A3AF] font-bold uppercase text-sm tracking-wider whitespace-nowrap flex items-center gap-1">
-                            {isOpen && <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" title="Open section" />}
-                            {item.isClosed && <span className="w-2 h-2 bg-gray-400 rounded-full" title="Closed section" />}
-                            SECTION - {item.title || "Untitled"}
-                            {item.isClosed && <span className="text-[8px] text-gray-400 ml-1">(closed)</span>}
+                        <div className="flex items-center gap-2 w-full">
+                          <div className="w-2 h-2 rounded-full bg-[#00A3AF] flex-shrink-0" />
+                          <span className="text-xs font-semibold text-[#00A3AF] uppercase tracking-wider leading-tight">
+                            {item.title || 'Section'}
+                            {item.isClosed && <span className="text-[10px] text-gray-400 ml-1 font-normal">(closed)</span>}
                           </span>
-                          <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button onClick={() => toggleSectionEdit(item.id)} className="p-1 hover:bg-gray-100 rounded" title="Edit">
+                          <div className={`flex-1 h-px ${item.isClosed ? 'bg-gray-300' : 'bg-[#00A3AF]/30'}`} />
+                          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                            <button onClick={() => toggleSectionEdit(item.id)} className="p-1 hover:bg-gray-100 rounded flex items-center justify-center" title="Edit">
                               <PencilIcon className="w-3 h-3 text-gray-400" />
                             </button>
-                            <button onClick={() => deleteDisplayItem(item.id)} className="p-1 hover:bg-red-50 rounded ml-1" title="Delete">
+                            <button onClick={() => deleteDisplayItem(item.id)} className="p-1 hover:bg-red-50 rounded flex items-center justify-center" title="Delete">
                               <TrashIcon className="w-3 h-3 text-red-400" />
                             </button>
                           </div>
                         </div>
                       )}
-                      <div className={`h-[2px] flex-1 rounded-full ${item.isClosed ? 'bg-gray-300' : 'bg-[#00A3AF]'}`}></div>
                     </div>
                   );
                 }
@@ -3764,17 +3847,17 @@ export default function Sessions() {
                   return (
                     <div
                       key={item.id}
-                      ref={(el) => { leftRowRefs.current[index] = el; }}
-                      className={`my-4 flex items-center gap-4 animate-fade-in group relative ml-4 ${item.isClosed ? 'opacity-75' : ''}`}
+                      ref={(el) => { if (el) leftRowRefs.current.set(item.id, el); else leftRowRefs.current.delete(item.id); }}
+                      className={`my-4 flex items-center gap-2 animate-fade-in group relative ml-4 ${item.isClosed ? 'opacity-75' : ''}`}
                     >
                       {item.isEditing ? (
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-amber-600 font-bold uppercase text-sm tracking-wider whitespace-nowrap">SUB SECTION - </span>
+                        <div className="flex items-center gap-2 w-full">
+                          <div className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" />
                           <input
                             autoFocus
                             type="text"
                             placeholder="Enter name"
-                            className="border-b border-amber-500 focus:outline-none text-sm text-gray-700 min-w-[150px]"
+                            className="border-b border-amber-500 focus:outline-none text-xs font-medium text-amber-600 uppercase tracking-wider min-w-[150px]"
                             value={item.title || ""}
                             onChange={(e) => updateSectionTitle(item.id, e.target.value)}
                             onKeyDown={(e) => {
@@ -3782,26 +3865,26 @@ export default function Sessions() {
                             }}
                             onBlur={() => saveSectionTitle(item.id)}
                           />
+                          <div className="flex-1 h-px bg-amber-300/50" />
                         </div>
                       ) : (
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-amber-600 font-bold uppercase text-sm tracking-wider whitespace-nowrap flex items-center gap-1">
-                            {isOpen && <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse" title="Open subsection" />}
-                            {item.isClosed && <span className="w-1.5 h-1.5 bg-gray-400 rounded-full" title="Closed subsection" />}
-                            SUB SECTION - {item.title || "Untitled"}
-                            {item.isClosed && <span className="text-[8px] text-gray-400 ml-1">(closed)</span>}
+                        <div className="flex items-center gap-2 w-full">
+                          <div className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" />
+                          <span className="text-xs font-medium text-amber-600 uppercase tracking-wider leading-tight">
+                            {item.title || 'Subsection'}
+                            {item.isClosed && <span className="text-[10px] text-gray-400 ml-1 font-normal">(closed)</span>}
                           </span>
-                          <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button onClick={() => toggleSectionEdit(item.id)} className="p-1 hover:bg-gray-100 rounded" title="Edit">
+                          <div className={`flex-1 h-px ${item.isClosed ? 'bg-amber-100' : 'bg-amber-300/50'}`} />
+                          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                            <button onClick={() => toggleSectionEdit(item.id)} className="p-1 hover:bg-gray-100 rounded flex items-center justify-center" title="Edit">
                               <PencilIcon className="w-3 h-3 text-gray-400" />
                             </button>
-                            <button onClick={() => deleteDisplayItem(item.id)} className="p-1 hover:bg-red-50 rounded ml-1" title="Delete">
+                            <button onClick={() => deleteDisplayItem(item.id)} className="p-1 hover:bg-red-50 rounded flex items-center justify-center" title="Delete">
                               <TrashIcon className="w-3 h-3 text-red-400" />
                             </button>
                           </div>
                         </div>
                       )}
-                      <div className={`h-[1px] flex-1 rounded-full ${item.isClosed ? 'bg-gray-200' : 'bg-amber-400'}`}></div>
                     </div>
                   );
                 }
@@ -3816,7 +3899,8 @@ export default function Sessions() {
                   <div key={item.id} className="relative group/wrapper">
                     <div
                       ref={(el) => {
-                        leftRowRefs.current[originalIndex] = el;
+                        if (el) leftRowRefs.current.set(item.id, el);
+                        else leftRowRefs.current.delete(item.id);
                         // Also store ref for block-based scrolling
                         if (blockId && el) {
                           blockRefs.current.set(blockId, el);
@@ -3832,11 +3916,17 @@ export default function Sessions() {
                       onContextMenu={(e) => !isFiltered && handleContextMenu(e, originalIndex, dataIndex)}
                     >
                       <div className="flex items-center gap-2 mb-1">
-                        <img src={data.image} alt={data.name} className="w-[26px] h-[26px] rounded-full" />
-                        <span className="font-semibold text-sm">{data.name}</span>
-                        <span className="ml-auto flex items-center gap-1">
-                          <img src="/icons/clock-1.png" alt="Clock" className="w-[14px] h-[14px]" />
-                          <span className="text-gray-400 text-xs">{data.time}</span>
+                        {data.image && data.image.trim() ? (
+                          <img src={data.image} alt={data.name} className="w-[26px] h-[26px] rounded-full flex-shrink-0" />
+                        ) : (
+                          <div className="w-[26px] h-[26px] rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
+                            <UserIcon className="w-4 h-4 text-gray-400" />
+                          </div>
+                        )}
+                        <span className="font-semibold text-sm leading-tight">{data.name}</span>
+                        <span className="ml-auto flex items-center gap-1.5 flex-shrink-0">
+                          <img src="/icons/clock-1.png" alt="Clock" className="w-[14px] h-[14px] object-contain" />
+                          <span className="text-gray-400 text-xs leading-tight">{data.time}</span>
                         </span>
                       </div>
                       <div className="rounded-[10px] p-[12px]">
@@ -3891,7 +3981,11 @@ export default function Sessions() {
             </div>
 
             {activeTab === "current" && (
-              <div className="relative" style={{ position: 'relative', minHeight: '100%' }}>
+              <div 
+                className="relative" 
+                style={{ position: 'relative', minHeight: '100%' }}
+                ref={rightContentRef}
+              >
                 {displayItems.map((item, index) => {
                   const LANE_WIDTH = 12;
 
@@ -3984,6 +4078,11 @@ export default function Sessions() {
                   // Get all primaries for this tag
                   const allPrimaries = tag.primaryList.map((p, i) => ({ ...p, originalIndex: i }));
 
+                  // Calculate card indentation based on hierarchy
+                  // Master tags (with header) should be indented, primary-only cards should be more indented
+                  const cardIndentation = shouldShowHeader ? 20 : 40; // 20px for master, 40px for primary-only
+                  const cardLeft = 64 + cardIndentation; // Base left (64px for tree lines) + indentation
+
                   return (
                     <div
                       key={tag.id}
@@ -3991,7 +4090,7 @@ export default function Sessions() {
                       style={{
                         position: 'absolute',
                         top: `${topPosition}px`,
-                        left: '64px', // Room for tree lines
+                        left: `${cardLeft}px`, // Indent entire card based on hierarchy
                         right: '24px',
                         zIndex: hoveredTagId === tag.id ? 30 : 10
                       }}
@@ -4009,7 +4108,7 @@ export default function Sessions() {
                         <div
                           className="absolute w-[1.5px] transition-all duration-300 pointer-events-none z-0"
                           style={{
-                            left: `-${64 - masterLaneLeft}px`,
+                            left: `-${64 + cardIndentation - masterLaneLeft}px`,
                             top: '18px',
                             height: `${spineOffsets[tag.master!].height}px`,
                             backgroundColor: tagColor,
@@ -4026,8 +4125,10 @@ export default function Sessions() {
                           <div
                             className="absolute h-[1.5px] pointer-events-none"
                             style={{
-                              left: shouldShowHeader ? `-${64 - masterLaneLeft}px` : `-${24 + (64 - masterLaneLeft)}px`,
-                              width: shouldShowHeader ? `${64 - masterLaneLeft}px` : `${24 + (64 - masterLaneLeft)}px`,
+                              // Start from the right edge of the vertical spine (1.5px wide)
+                              left: `${-(64 + cardIndentation - masterLaneLeft) + 1.5}px`,
+                              // Width extends from spine to card edge (0px)
+                              width: `${64 + cardIndentation - masterLaneLeft - 1.5}px`,
                               top: '18px',
                               backgroundColor: tagColor,
                               opacity: 0.4
@@ -4056,7 +4157,10 @@ export default function Sessions() {
                                   setEditingItem(prev => ({ ...prev, tempValue: newName }));
                                   saveEditing();
                                 }}
-                                onCancel={undefined}
+                                onCancel={() => {
+                                  setEditingMasterName(null);
+                                  cancelEditing();
+                                }}
                               />
 
                               {/* Branch Tags (Master level) */}
@@ -4114,7 +4218,7 @@ export default function Sessions() {
                               {/* Primary Input slot (for empty master) */}
                               {tag.primaryList.length === 0 && savedPrimaryInput?.tagId === tag.id && (
                                 <ReservedEditSlotRow
-                                  level={1}
+                                  level={2}
                                   placeholder="Add primary tag..."
                                   onSave={(val: string) => addPrimaryToSavedTag(tag.id, val)}
                                   onCancel={() => setSavedPrimaryInput(null)}
@@ -4126,16 +4230,38 @@ export default function Sessions() {
 
                         {/* 2. Primaries Logic: Rendered ONLY if they exist */}
                         {allPrimaries.map((p, i) => {
+                          // Calculate exact vertical position for each primary tag's horizontal stem
+                          // MasterTagRow: min-h-[32px], center at ~16px from row top
+                          // Gap between rows: 2px (gap-0.5)
+                          // PrimaryTagRow: min-h-[32px], center at ~16px from row top
+                          // Formula: master height + gap + (i * (primary height + gap)) + primary center
+                          let primaryTopPosition = 18; // Default for first primary when no header
+                          if (shouldShowHeader) {
+                            // Each primary tag gets its own horizontal stem connecting to the vertical line
+                            const masterRowHeight = 32;
+                            const gap = 2;
+                            const primaryRowHeight = 32;
+                            const primaryRowCenter = 16;
+                            // Position = master row + gap + cumulative primary rows + current primary center
+                            primaryTopPosition = masterRowHeight + gap + (i * (primaryRowHeight + gap)) + primaryRowCenter;
+                          } else {
+                            // No master header, calculate from start
+                            primaryTopPosition = 18 + (i * 34); // 32px row + 2px gap, center at 16px
+                          }
+
                           return (
                             <React.Fragment key={p.impressionId || `${p.value}-${i}`}>
-                              {/* Horizontal Stem for additional primaries in the same card (except the first one if it's the header) */}
-                              {!(shouldShowHeader && i === 0) && (
+                              {/* Horizontal Stem connecting vertical spine to primary tag - L-shaped connection */}
+                              {/* Render for subsequent rows in the same card, or all primary rows if there is a master header */}
+                              {(i > 0 || shouldShowHeader) && (
                                 <div
                                   className="absolute h-[1.5px] pointer-events-none"
                                   style={{
-                                    left: `-${24 + (64 - masterLaneLeft)}px`,
-                                    width: `${24 + (64 - masterLaneLeft)}px`,
-                                    top: `${18 + (i * (shouldShowHeader ? 40 : 32))}px`, // Rough estimate
+                                    // Start from the right edge of the vertical spine (1.5px wide)
+                                    left: `${-(64 + cardIndentation - masterLaneLeft) + 1.5}px`,
+                                    // Width extends from spine to card edge (0px)
+                                    width: `${64 + cardIndentation - masterLaneLeft - 1.5}px`,
+                                    top: `${primaryTopPosition}px`,
                                     backgroundColor: tagColor,
                                     opacity: 0.4
                                   }}
@@ -4146,19 +4272,21 @@ export default function Sessions() {
                               {(() => {
                                 const isEditingPrimary = editingItem.id === tag.id && editingItem.type === 'primary' && editingItem.index === p.originalIndex;
                                 return (
-                                  <PrimaryTagRow
-                                    name={p.value}
-                                    isEditing={isEditingPrimary}
-                                    onEdit={() => startEditing(tag.id, 'primary', p.value, p.originalIndex)}
-                                    onDelete={() => initiateDeletePrimary(tag.id, p.originalIndex, p.impressionId)}
-                                    onComment={() => startEditing(tag.id, 'primary_comment', p.comment || "", p.originalIndex)}
-                                    onAdd={isEditingPrimary ? () => toggleSecondaryInput(tag.id, p.originalIndex) : undefined}
-                                    onSave={(newName) => {
-                                      setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                      saveEditing();
-                                    }}
-                                    onCancel={cancelEditing}
-                                  />
+                                  <div data-primary-row>
+                                    <PrimaryTagRow
+                                      name={p.value}
+                                      isEditing={isEditingPrimary}
+                                      onEdit={() => startEditing(tag.id, 'primary', p.value, p.originalIndex)}
+                                      onDelete={() => initiateDeletePrimary(tag.id, p.originalIndex, p.impressionId)}
+                                      onComment={() => startEditing(tag.id, 'primary_comment', p.comment || "", p.originalIndex)}
+                                      onAdd={isEditingPrimary ? () => toggleSecondaryInput(tag.id, p.originalIndex) : undefined}
+                                      onSave={(newName) => {
+                                        setEditingItem(prev => ({ ...prev, tempValue: newName }));
+                                        saveEditing();
+                                      }}
+                                      onCancel={cancelEditing}
+                                    />
+                                  </div>
                                 );
                               })()}
 
@@ -4226,7 +4354,7 @@ export default function Sessions() {
                               {/* Primary Comment Input Slot */}
                               {editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex && (
                                 <ReservedEditSlotRow
-                                  level={1}
+                                  level={2}
                                   isComment={true}
                                   placeholder="Primary tag comment..."
                                   initialValue={editingItem.tempValue}
@@ -4257,13 +4385,16 @@ export default function Sessions() {
                   // Use selection top if available, otherwise element top
                   const topPosition = elementPos.selectionTop ?? elementPos.top;
 
+                  // Pending entries are always primary-level, so indent 40px
+                  const pendingCardLeft = 64 + 40; // Base left (64px for tree lines) + 40px for primary indentation
+
                   return (
                     <div
                       key={entry.id}
                       style={{
                         position: 'absolute',
                         top: `${topPosition}px`,
-                        left: '64px',
+                        left: `${pendingCardLeft}px`,
                         right: '24px',
                         zIndex: 20
                       }}
@@ -4739,7 +4870,8 @@ export default function Sessions() {
             )}
           </div>
         </div>
-      </main>
+      </div>
+    </main>
     </div >
   );
 }

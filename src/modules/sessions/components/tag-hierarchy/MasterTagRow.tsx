@@ -110,6 +110,7 @@ export const MasterTagRow: React.FC<MasterTagRowProps> = ({
                         }
                     }}
                 >
+                    {/* Color indicator - vertical pill on the left */}
                     <div
                         className="w-2 h-4 rounded-full"
                         style={{ backgroundColor: color }}

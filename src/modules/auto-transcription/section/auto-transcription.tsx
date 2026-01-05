@@ -9,6 +9,7 @@ import { TranscriptEntry } from "../templates/types";
 import { transcriptEntries as mockEntries } from "../data/transcript-datas";
 import { useSession } from "@/context/SessionContext";
 import { SparklesIcon, ArrowRightIcon, PencilSquareIcon, CheckIcon, XMarkIcon, StopIcon } from "@heroicons/react/24/outline";
+import SpeakerHeader from "../components/speaker-header";
 
 interface AutoTranscriptionProps {
   transcriptionData?: TranscriptEntry[] | null;
@@ -31,10 +32,18 @@ export default function AutoTranscription({
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
 
   // Speaker Editing State
   const [editingSpeakerId, setEditingSpeakerId] = useState<string | null>(null);
   const [newSpeakerName, setNewSpeakerName] = useState("");
+  
+  // Moderator/Coordinator state - track which speaker is the moderator
+  const [moderatorName, setModeratorName] = useState<string | null>(null);
+  const [moderatorAvatar, setModeratorAvatar] = useState<{ url: string; key: string } | null>(null);
+  
+  // Speaker avatars state - map of speaker name to avatar data
+  const [speakerAvatars, setSpeakerAvatars] = useState<Record<string, { url: string; key: string }>>({});
 
   // Use mock only if undefined, but if null (explicit "no data"), use empty array or handle separately
   // The logic in page.tsx passes null if ready to transcribe.
@@ -62,6 +71,26 @@ export default function AutoTranscription({
     try {
       // If we have a videoId, save the transcription
       if (videoId) {
+        // Get all unique speakers from transcription data
+        const uniqueSpeakerNames = new Set<string>();
+        currentTranscriptionData.forEach(entry => {
+          if (entry.name) {
+            uniqueSpeakerNames.add(entry.name);
+          }
+        });
+        
+        // Prepare speaker data - include ALL speakers, not just those with avatars
+        const speakerData = Array.from(uniqueSpeakerNames).map((name) => {
+          const avatarData = speakerAvatars[name];
+          return {
+            name,
+            speaker_label: name,
+            avatar_url: avatarData?.url || null,
+            avatar_key: avatarData?.key || null,
+            is_moderator: moderatorName === name,
+          };
+        });
+
         const response = await fetch("/api/transcriptions/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -69,6 +98,7 @@ export default function AutoTranscription({
             videoId: videoId,
             transcriptData: currentTranscriptionData,
             transcriptionType: "auto",
+            speakerData: speakerData,
           }),
         });
 
@@ -122,6 +152,39 @@ export default function AutoTranscription({
           throw new Error("Video record created but no ID returned");
         }
 
+        // Get all unique speakers from transcription data
+        const uniqueSpeakerNames = new Set<string>();
+        currentTranscriptionData.forEach(entry => {
+          if (entry.name) {
+            uniqueSpeakerNames.add(entry.name);
+          }
+        });
+        
+        // Prepare speaker data - include ALL speakers with their avatars
+        const speakerData = Array.from(uniqueSpeakerNames).map((name) => {
+          const avatarData = speakerAvatars[name];
+          return {
+            name,
+            speaker_label: name,
+            avatar_url: avatarData?.url || null,
+            avatar_key: avatarData?.key || null,
+            is_moderator: moderatorName === name,
+          };
+        });
+
+        // Add moderator as a separate speaker if it exists and is not in transcription data
+        // This ensures standalone moderators are always saved, even if they don't appear in transcription blocks
+        if (moderatorName && !uniqueSpeakerNames.has(moderatorName)) {
+          const moderatorAvatarData = moderatorAvatar || speakerAvatars[moderatorName];
+          speakerData.push({
+            name: moderatorName,
+            speaker_label: moderatorName,
+            avatar_url: moderatorAvatarData?.url || null,
+            avatar_key: moderatorAvatarData?.key || null,
+            is_moderator: true,
+          });
+        }
+
         // Save transcription with the video ID
         const response = await fetch("/api/transcriptions/save", {
           method: "POST",
@@ -130,6 +193,7 @@ export default function AutoTranscription({
             videoId: videoIdToUse,
             transcriptData: currentTranscriptionData,
             transcriptionType: "auto",
+            speakerData: speakerData,
           }),
         });
 
@@ -165,6 +229,30 @@ export default function AutoTranscription({
     };
   }, [isVideoPlaying]);
 
+  // Auto-scroll to active segment
+  useEffect(() => {
+    if (!isVideoPlaying || !transcriptContainerRef.current) return;
+
+    // Find the active entry
+    const activeEntry = entries.find((entry: any) => {
+      if (entry.startTime === undefined || entry.endTime === undefined) return false;
+      return currentTime >= entry.startTime && currentTime < entry.endTime;
+    });
+
+    if (activeEntry) {
+      // Find the DOM element for this entry
+      const entryElements = transcriptContainerRef.current.querySelectorAll('[data-entry-id]');
+      entryElements.forEach((el) => {
+        if (el.getAttribute('data-entry-id') === String(activeEntry.id || entries.indexOf(activeEntry))) {
+          el.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center',
+          });
+        }
+      });
+    }
+  }, [currentTime, isVideoPlaying, entries]);
+
   // Speaker Edit Handlers
   const startEditing = (currentName: string) => {
     setEditingSpeakerId(currentName);
@@ -191,6 +279,110 @@ export default function AutoTranscription({
       } else {
         videoRef.current.play().catch(e => console.error("Play error:", e));
       }
+    }
+  };
+
+
+
+  // Load speaker avatars and moderator from database when videoId is available
+  useEffect(() => {
+    if (videoId) {
+      fetch(`/api/transcriptions/load/${videoId}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.success && data.speakers && Array.isArray(data.speakers)) {
+            const avatarsMap: Record<string, { url: string; key: string }> = {};
+            let foundModerator = false;
+            
+            data.speakers.forEach((speaker: any) => {
+              const speakerName = speaker.name || speaker.speaker_label;
+              
+              // Store avatar for all speakers
+              if (speaker.avatar_url && speaker.avatar_key && speakerName) {
+                avatarsMap[speakerName] = {
+                  url: speaker.avatar_url,
+                  key: speaker.avatar_key
+                };
+              }
+              
+              // Set moderator if found (only one moderator per video)
+              if (speaker.is_moderator && speakerName && !foundModerator) {
+                setModeratorName(speakerName);
+                if (speaker.avatar_url && speaker.avatar_key) {
+                  setModeratorAvatar({
+                    url: speaker.avatar_url,
+                    key: speaker.avatar_key
+                  });
+                }
+                foundModerator = true;
+              }
+            });
+            
+            setSpeakerAvatars(avatarsMap);
+          }
+        })
+        .catch(err => {
+          console.error('Failed to load speaker avatars:', err);
+        });
+    }
+  }, [videoId]);
+
+  // Handle avatar update
+  const handleUpdateAvatar = (name: string, avatarUrl: string, avatarKey: string) => {
+    setSpeakerAvatars((prev) => ({
+      ...prev,
+      [name]: { url: avatarUrl, key: avatarKey }
+    }));
+    // Mark as unsaved when avatar changes
+    setIsGlobalSaved(false);
+  };
+
+  // Handle adding a moderator (upload file and create new moderator person)
+  const handleAddModerator = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      alert('Please select an image file');
+      return;
+    }
+
+    try {
+      // Upload avatar to object storage
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('speakerName', 'Moderator');
+      if (videoId) {
+        formData.append('videoId', videoId);
+      }
+
+      const response = await fetch('/api/speakers/upload-avatar', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to upload moderator avatar');
+      }
+
+      const data = await response.json();
+      
+      // Generate a unique name for the moderator
+      const moderatorNameToUse = `Moderator ${Date.now()}`;
+      
+      // Set moderator name and avatar
+      setModeratorName(moderatorNameToUse);
+      setModeratorAvatar({ url: data.url, key: data.key });
+      
+      // Add moderator to speaker avatars
+      setSpeakerAvatars((prev) => ({
+        ...prev,
+        [moderatorNameToUse]: { url: data.url, key: data.key }
+      }));
+      
+      // Mark as unsaved when moderator is added
+      setIsGlobalSaved(false);
+    } catch (error: any) {
+      console.error('Moderator upload error:', error);
+      alert(`Failed to add moderator: ${error.message}`);
     }
   };
 
@@ -239,6 +431,20 @@ export default function AutoTranscription({
 
         {/* TRANSCRIPT FEED AREA */}
         <div className="flex-1 w-full bg-white rounded-2xl shadow-sm border border-gray-100 overflow-y-auto p-4 sm:p-5 lg:p-6 custom-scrollbar relative">
+          
+          {/* SPEAKER HEADER - Show when we have transcription data */}
+          {hasData && currentTranscriptionData && currentTranscriptionData.length > 0 && (
+            <SpeakerHeader
+              transcriptionData={currentTranscriptionData}
+              onUpdateSpeaker={updateSpeakerName}
+              onUpdateAvatar={handleUpdateAvatar}
+              onAddModerator={handleAddModerator}
+              moderatorName={moderatorName}
+              videoId={videoId}
+              speakerAvatars={speakerAvatars}
+              sectionTitle={videoId ? undefined : "Auto Transcription"}
+            />
+          )}
 
           {/* 1. EMPTY STATE (Generate Button) */}
           {showEmptyState && (
@@ -297,7 +503,7 @@ export default function AutoTranscription({
 
           {/* 3. TRANSCRIPT DATA */}
           {!showEmptyState && !showShimmer && (
-            <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-4" ref={transcriptContainerRef}>
               {entries.map(({ id, name, time, text, startTime, endTime }: TranscriptEntry, index: number) => {
                 const isActive = startTime !== undefined && endTime !== undefined
                   ? currentTime >= startTime && currentTime < endTime
@@ -306,7 +512,7 @@ export default function AutoTranscription({
                 const isEditing = editingSpeakerId === name;
 
                 return (
-                  <div key={id || index} className="flex flex-col gap-2 transition-all duration-300">
+                  <div key={id || index} data-entry-id={id || index} className="flex flex-col gap-2 transition-all duration-300">
 
                     {/* HEADER */}
                     <div className="flex items-center justify-between">

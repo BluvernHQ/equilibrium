@@ -48,7 +48,7 @@ export const PrimaryTagRow: React.FC<PrimaryTagRowProps> = ({
 
     return (
         <TagRowLayout
-            level={1}
+            level={2}
             actions={
                 <TagActionsColumn
                     isEditing={isEditing}

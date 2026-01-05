@@ -69,9 +69,26 @@ export async function GET(req: NextRequest) {
 
         const response = await s3Client.send(command);
 
+        // Filter out speaker avatars and only include video/audio files
+        const videoAudioExtensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.flv', '.wmv', '.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac', '.wma'];
+        
+        const filteredObjects = (response.Contents || []).filter((object) => {
+            const key = object.Key || "";
+            
+            // Exclude files from speakers folder
+            if (key.includes('/speakers/')) {
+                return false;
+            }
+            
+            // Only include video/audio files
+            const fileName = key.split("/").pop() || "";
+            const extension = fileName.toLowerCase().substring(fileName.lastIndexOf('.'));
+            return videoAudioExtensions.includes(extension);
+        });
+
         // Format the response and generate presigned URLs
         const videos = await Promise.all(
-            (response.Contents || []).map(async (object) => {
+            filteredObjects.map(async (object) => {
                 const key = object.Key || "";
                 const fileName = key.split("/").pop() || "";
                 

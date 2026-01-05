@@ -7,3 +7,4 @@ export * from './BranchTagRow';
 export * from './ReservedEditSlotRow';
 export * from './BranchTagChip';
 export * from './TagContextHeader';
+export * from './ActiveContextBar';

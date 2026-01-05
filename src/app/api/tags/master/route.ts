@@ -246,3 +246,64 @@ export async function PATCH(req: NextRequest) {
     }
 }
 
+// DELETE - Delete a master tag and all associated data
+export async function DELETE(req: NextRequest) {
+    try {
+        const { searchParams } = new URL(req.url);
+        const id = searchParams.get("id");
+
+        if (!id) {
+            return NextResponse.json(
+                { error: "Master tag ID is required" },
+                { status: 400 }
+            );
+        }
+
+        // Find existing master tag
+        // @ts-ignore
+        const existingTag = await prisma.masterTag.findUnique({
+            where: { id },
+            include: {
+                _count: {
+                    select: {
+                        tag_impressions: true,
+                        primary_tags: true,
+                        branch_tags: true,
+                    }
+                }
+            }
+        });
+
+        if (!existingTag) {
+            return NextResponse.json(
+                { error: "Master tag not found" },
+                { status: 404 }
+            );
+        }
+
+        // Delete the master tag (cascade will handle related records)
+        // @ts-ignore
+        await prisma.masterTag.delete({
+            where: { id }
+        });
+
+        return NextResponse.json({
+            success: true,
+            message: "Master tag and all associated data deleted successfully",
+            deletedTag: {
+                id: existingTag.id,
+                name: existingTag.name,
+                impressionCount: (existingTag as any)._count.tag_impressions,
+                primaryTagCount: (existingTag as any)._count.primary_tags,
+                branchTagCount: (existingTag as any)._count.branch_tags,
+            },
+        });
+    } catch (error: any) {
+        console.error("Delete master tag error:", error);
+        return NextResponse.json(
+            { error: error.message || "Failed to delete master tag" },
+            { status: 500 }
+        );
+    }
+}
+

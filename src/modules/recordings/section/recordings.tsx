@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSession } from "@/context/SessionContext";
-import { SparklesIcon, PencilSquareIcon, DocumentTextIcon, CloudArrowUpIcon } from "@heroicons/react/24/outline";
+import { SparklesIcon, PencilSquareIcon, DocumentTextIcon, CloudArrowUpIcon, EllipsisVerticalIcon, TrashIcon } from "@heroicons/react/24/outline";
 
 interface VideoItem {
   key: string;
@@ -22,9 +22,101 @@ export default function Recordings() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [loadingVideos, setLoadingVideos] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<VideoItem | null>(null);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const router = useRouter();
   const { setVideoUrl, uploadFile, isUploading, uploadStatus } = useSession();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const menuRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      let clickedInside = false;
+      
+      menuRefs.current.forEach((menuElement) => {
+        if (menuElement && menuElement.contains(target)) {
+          clickedInside = true;
+        }
+      });
+      
+      if (!clickedInside) {
+        setOpenMenuId(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  // Handle delete recording (video)
+  const handleDeleteRecording = async (video: VideoItem) => {
+    if (!video.id) {
+      alert("Cannot delete: Video ID not found");
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to delete the recording "${video.fileName}"? This will also delete all transcriptions and associated data.`)) {
+      return;
+    }
+
+    setDeleting(video.id);
+    try {
+      const response = await fetch(`/api/videos/delete/${video.id}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to delete recording');
+      }
+
+      // Refresh videos list
+      await fetchVideos();
+      setOpenMenuId(null);
+    } catch (error: any) {
+      console.error('Delete recording error:', error);
+      alert(`Failed to delete recording: ${error.message}`);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  // Handle delete transcription
+  const handleDeleteTranscription = async (video: VideoItem) => {
+    if (!video.id) {
+      alert("Cannot delete: Video ID not found");
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to delete the transcription for "${video.fileName}"? The recording will remain.`)) {
+      return;
+    }
+
+    setDeleting(`transcription-${video.id}`);
+    try {
+      const response = await fetch(`/api/transcriptions/${video.id}/delete`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to delete transcription');
+      }
+
+      // Refresh videos list
+      await fetchVideos();
+      setOpenMenuId(null);
+    } catch (error: any) {
+      console.error('Delete transcription error:', error);
+      alert(`Failed to delete transcription: ${error.message}`);
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   // Fetch uploaded videos from both Spaces and Database
   const fetchVideos = async () => {
@@ -213,10 +305,65 @@ export default function Recordings() {
             {videos.map((video) => (
               <div
                 key={video.key}
-                className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-lg transition-shadow cursor-pointer"
-                onClick={() => setSelectedVideo(video)}
+                className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-lg transition-shadow relative"
               >
-                <div className="relative w-full h-48 bg-[#E0F7FA] rounded-lg flex items-center justify-center mb-3 overflow-hidden group">
+                {/* Three-dot menu button */}
+                <div 
+                  className="absolute top-2 right-2 z-10" 
+                  ref={(el) => {
+                    if (el) {
+                      menuRefs.current.set(video.key, el);
+                    } else {
+                      menuRefs.current.delete(video.key);
+                    }
+                  }}
+                >
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOpenMenuId(openMenuId === video.key ? null : video.key);
+                    }}
+                    className="p-1.5 rounded-full hover:bg-gray-100 transition-colors"
+                    title="More options"
+                  >
+                    <EllipsisVerticalIcon className="w-5 h-5 text-gray-600" />
+                  </button>
+                  
+                  {/* Dropdown menu */}
+                  {openMenuId === video.key && (
+                    <div className="absolute right-0 mt-1 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-20">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteRecording(video);
+                        }}
+                        disabled={deleting === video.id}
+                        className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <TrashIcon className="w-4 h-4" />
+                        {deleting === video.id ? "Deleting..." : "Delete Recording"}
+                      </button>
+                      {video.hasTranscription && video.id && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteTranscription(video);
+                          }}
+                          disabled={deleting === `transcription-${video.id}`}
+                          className="w-full px-4 py-2 text-left text-sm text-orange-600 hover:bg-orange-50 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <TrashIcon className="w-4 h-4" />
+                          {deleting === `transcription-${video.id}` ? "Deleting..." : "Delete Transcription"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div 
+                  className="relative w-full h-48 bg-[#E0F7FA] rounded-lg flex items-center justify-center mb-3 overflow-hidden group cursor-pointer"
+                  onClick={() => setSelectedVideo(video)}
+                >
                   <svg
                     className="w-12 h-12 text-[#00A3AF] group-hover:scale-110 transition-transform"
                     fill="none"
