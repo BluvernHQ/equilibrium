@@ -44,14 +44,18 @@ interface VideoData {
     hasSession?: boolean;
 }
 
+export type SegmentState = 'inaudible' | 'overlapping' | 'no_conversation' | 'unknown' | null;
+
 // Segment format for the editor (matching manual transcription)
 interface TranscriptSegment {
     id: string;
     selectedSpeakerId: string | null;
+    state?: SegmentState;
     timestamp: string | null;
     content: string;
     startTimeSeconds?: number; // For video sync highlighting
     endTimeSeconds?: number; // For video sync highlighting
+    createdAt: number;
 }
 
 // Helper to format seconds to time string (mm:ss)
@@ -79,6 +83,12 @@ export default function TranscriptionViewPage() {
 
     const { setVideoUrl } = useSession();
 
+    // Speakers state
+    const [speakers, setSpeakers] = useState<Speaker[]>([]);
+
+    // Segments state (converted from transcript blocks)
+    const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+
     // State
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -103,12 +113,6 @@ export default function TranscriptionViewPage() {
     const [snackbar, setSnackbar] = useState({ show: false, message: "" });
     const snackbarTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-    // Speakers state
-    const [speakers, setSpeakers] = useState<Speaker[]>([]);
-
-    // Segments state (converted from transcript blocks)
-    const [segments, setSegments] = useState<TranscriptSegment[]>([]);
-
     // Scroll refs
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const bottomSpacerRef = useRef<HTMLDivElement>(null);
@@ -117,6 +121,108 @@ export default function TranscriptionViewPage() {
 
     // Retranscribe state
     const [isRetranscribing, setIsRetranscribing] = useState(false);
+
+    // Media player playback speed state
+    const [playbackSpeed, setPlaybackSpeed] = useState(1);
+
+    // Hard Behavioral Constraints States
+    const [speakerSelectionDeadline, setSpeakerSelectionDeadline] = useState<number | null>(null);
+    const [speakerCreationTriggerSegmentId, setSpeakerCreationTriggerSegmentId] = useState<string | null>(null);
+
+    // Keyboard shortcuts for media player
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // We use Shift as a modifier to avoid conflicts with typing
+            if (!e.shiftKey) return;
+
+            const video = videoRef.current;
+            if (!video) return;
+
+            // Behavioral Laws Check
+            const now = Date.now();
+            const activeSegment = segments.find(s => {
+                const start = s.startTimeSeconds || 0;
+                const end = s.endTimeSeconds || (start + 10000);
+                return video.currentTime >= start && video.currentTime <= end;
+            }) || segments[segments.length - 1];
+
+            const isAssigned = activeSegment ? (!!activeSegment.selectedSpeakerId || !!activeSegment.state) : false;
+            const isDeadlinePassed = activeSegment ? (now - activeSegment.createdAt > 10000) : false;
+
+            switch (e.code) {
+                case "Space":
+                    e.preventDefault();
+                    if (video.paused) {
+                        // Prerequisite Laws
+                        if (speakers.length === 0) {
+                            showSnackbar("Prerequisite: Add at least one speaker to begin transcription");
+                            return;
+                        }
+                        if (!isAssigned && isDeadlinePassed) {
+                            showSnackbar("Playback paused: Select a speaker or state to continue");
+                            return;
+                        }
+                        video.play().catch(console.error);
+                        setIsVideoPlaying(true);
+                    } else {
+                        video.pause();
+                        setIsVideoPlaying(false);
+                    }
+                    break;
+                case "ArrowRight":
+                    e.preventDefault();
+                    if (!isAssigned) {
+                        const MAX_FORWARD_WINDOW = 10;
+                        const blockStart = activeSegment?.startTimeSeconds || 0;
+                        const targetTime = Math.min(video.duration, video.currentTime + 5);
+                        if (targetTime > blockStart + MAX_FORWARD_WINDOW) {
+                            video.currentTime = blockStart + MAX_FORWARD_WINDOW;
+                            showSnackbar("Restriction: Complete speaker selection to continue forward");
+                            return;
+                        }
+                    }
+                    video.currentTime = Math.min(video.duration, video.currentTime + 5);
+                    break;
+                case "ArrowLeft":
+                    e.preventDefault();
+                    const blockStart = activeSegment?.startTimeSeconds || 0;
+                    const targetTime = Math.max(0, video.currentTime - 5);
+                    if (targetTime < blockStart) {
+                        video.currentTime = blockStart;
+                        showSnackbar("Rewind limited to current block.");
+                        return;
+                    }
+                    video.currentTime = Math.max(0, video.currentTime - 5);
+                    break;
+                case "ArrowUp":
+                    e.preventDefault();
+                    setPlaybackSpeed(prev => {
+                        const newSpeed = Math.min(3, prev + 0.5);
+                        video.playbackRate = newSpeed;
+                        return newSpeed;
+                    });
+                    break;
+                case "ArrowDown":
+                    e.preventDefault();
+                    setPlaybackSpeed(prev => {
+                        const newSpeed = Math.max(0.5, prev - 0.5);
+                        video.playbackRate = newSpeed;
+                        return newSpeed;
+                    });
+                    break;
+            }
+        };
+
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [isVideoPlaying, segments, speakers.length, playbackSpeed]);
+
+    // Sync playback speed when video starts playing or changes
+    useEffect(() => {
+        if (videoRef.current) {
+            videoRef.current.playbackRate = playbackSpeed;
+        }
+    }, [isVideoPlaying, playbackSpeed, videoUrlReady]);
 
     // Show snackbar helper
     const showSnackbar = (message: string) => {
@@ -127,6 +233,68 @@ export default function TranscriptionViewPage() {
         snackbarTimeoutRef.current = setTimeout(() => {
             setSnackbar({ show: false, message: "" });
         }, 2000);
+    };
+
+    const saveToLocal = (currentSegments: TranscriptSegment[], currentSpeakers?: Speaker[]) => {
+        if (typeof window !== 'undefined' && videoId) {
+            localStorage.setItem(`transcript:${videoId}`, JSON.stringify({
+                segments: currentSegments,
+                speakers: currentSpeakers || speakers,
+                lastSaved: Date.now()
+            }));
+        }
+    };
+
+    const persistSpeakersToServer = async (currentSpeakers: Speaker[]) => {
+        if (!videoId) return;
+        
+        try {
+            const speakerData = currentSpeakers.map((speaker) => {
+                let avatarKey: string | null = null;
+                if (speaker.avatar && speaker.avatar.startsWith('http')) {
+                    try {
+                        const url = new URL(speaker.avatar);
+                        // The key is the entire pathname minus the leading slash
+                        avatarKey = url.pathname.startsWith('/') ? url.pathname.substring(1) : url.pathname;
+                    } catch (e) { }
+                }
+
+                return {
+                    name: speaker.name,
+                    speaker_label: speaker.name,
+                    avatar_url: speaker.avatar || null,
+                    avatar_key: avatarKey,
+                    is_moderator: speaker.role === 'coordinator',
+                };
+            });
+
+            const transcriptData = segments
+                .filter(seg => seg.content.trim() !== "")
+                .map((seg, idx) => {
+                    const speaker = currentSpeakers.find(s => s.id === seg.selectedSpeakerId);
+                    return {
+                        id: idx,
+                        name: speaker ? speaker.name : "Unknown",
+                        time: seg.timestamp || "00:00",
+                        text: seg.content,
+                        startTime: seg.startTimeSeconds ?? parseTimeToSeconds(seg.timestamp),
+                        endTime: seg.endTimeSeconds ?? (parseTimeToSeconds(seg.timestamp) + 5),
+                    };
+                });
+
+            await fetch("/api/transcriptions/save", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    videoId: videoId,
+                    transcriptData: transcriptData,
+                    transcriptionType: transcript?.transcription_type || "auto",
+                    speakerData: speakerData,
+                }),
+            });
+        } catch (error) {
+            console.error("Failed to persist speakers to server:", error);
+        }
     };
 
     // Load transcript data and convert to segments
@@ -143,6 +311,10 @@ export default function TranscriptionViewPage() {
                 if (!response.ok) {
                     if (response.status === 404) {
                         setError("No transcription found for this video.");
+                        // Clear stale local storage if server says it's gone
+                        if (typeof window !== 'undefined') {
+                            localStorage.removeItem(`transcript:${videoId}`);
+                        }
                     } else {
                         setError("Failed to load transcription.");
                     }
@@ -174,7 +346,7 @@ export default function TranscriptionViewPage() {
                             const speakerLabel = dbSpeaker.speaker_label || dbSpeaker.name;
                             if (speakerLabel && !uniqueSpeakers.has(speakerLabel)) {
                                 uniqueSpeakers.set(speakerLabel, {
-                                    id: `speaker-${speakerLabel}`,
+                                    id: dbSpeaker.id,
                                     name: dbSpeaker.name || speakerLabel,
                                     shortName: (dbSpeaker.name || speakerLabel).length > 10 
                                         ? (dbSpeaker.name || speakerLabel).substring(0, 8) + "..." 
@@ -193,7 +365,7 @@ export default function TranscriptionViewPage() {
                         if (!uniqueSpeakers.has(speakerLabel)) {
                             const dbSpeaker = speakerMap.get(speakerLabel);
                             uniqueSpeakers.set(speakerLabel, {
-                                id: `speaker-${speakerLabel}`,
+                                id: dbSpeaker?.id || `speaker-${speakerLabel}`,
                                 name: speakerLabel,
                                 shortName: speakerLabel.length > 10 ? speakerLabel.substring(0, 8) + "..." : speakerLabel,
                                 avatar: dbSpeaker?.avatar_url || "",
@@ -202,18 +374,49 @@ export default function TranscriptionViewPage() {
                             });
                         }
                     });
-                    setSpeakers(Array.from(uniqueSpeakers.values()));
 
-                    // Convert blocks to segments
-                    const convertedSegments: TranscriptSegment[] = data.transcription.blocks.map((block: TranscriptBlock) => ({
+                    // Recovery Logic: Try Local Storage first (MANDATORY)
+                    const localDraft = localStorage.getItem(`transcript:${videoId}`);
+                    let finalSpeakers = Array.from(uniqueSpeakers.values());
+                    let finalSegments = data.transcription.blocks.map((block: TranscriptBlock) => ({
                         id: block.id,
-                        selectedSpeakerId: `speaker-${block.speaker_label || "Unknown"}`,
+                        selectedSpeakerId: uniqueSpeakers.get(block.speaker_label || "Unknown")?.id || null,
+                        state: null,
                         timestamp: formatTime(block.start_time_seconds),
                         content: block.text,
                         startTimeSeconds: block.start_time_seconds,
                         endTimeSeconds: block.end_time_seconds,
+                        createdAt: Date.now()
                     }));
-                    setSegments(convertedSegments);
+
+                    if (localDraft) {
+                        try {
+                            const parsed = JSON.parse(localDraft);
+                            if (parsed.segments && parsed.segments.length > 0) {
+                                console.log("Restoring session from local storage");
+                                finalSegments = parsed.segments;
+                                if (parsed.speakers) finalSpeakers = parsed.speakers;
+                            }
+                        } catch (e) {
+                            console.error("Failed to parse local draft:", e);
+                        }
+                    }
+
+                    // Ensure at least one segment exists if it's a new manual transcription
+                    if (finalSegments.length === 0) {
+                        finalSegments = [{
+                            id: "seg-1",
+                            selectedSpeakerId: null,
+                            state: null,
+                            timestamp: "00:00",
+                            content: "",
+                            startTimeSeconds: 0,
+                            createdAt: Date.now()
+                        }];
+                    }
+
+                    setSpeakers(finalSpeakers);
+                    setSegments(finalSegments);
                 }
 
                 if (data.video) {
@@ -464,6 +667,66 @@ export default function TranscriptionViewPage() {
         return activeSegment?.id || null;
     }, [currentVideoTime, segments]);
 
+    // Mandatory Selection Monitor (10s Timeout & Forward Restriction)
+    useEffect(() => {
+        if (!isVideoPlaying || isGlobalSaved) {
+            setSpeakerSelectionDeadline(null);
+            return;
+        }
+
+        const checkInterval = setInterval(() => {
+            const now = Date.now();
+            const video = videoRef.current;
+            if (!video) return;
+
+            // Find the segment the video is currently in
+            const currentTime = video.currentTime;
+            const activeSegment = segments.find(s => {
+                const start = s.startTimeSeconds || 0;
+                const end = s.endTimeSeconds || (start + 10000);
+                return currentTime >= start && currentTime <= end;
+            }) || segments[segments.length - 1];
+
+            if (!activeSegment) return;
+
+            const isAssigned = !!activeSegment.selectedSpeakerId || !!activeSegment.state;
+            const timeSinceCreation = now - activeSegment.createdAt;
+
+            // 1. 10-Second Selection Rule
+            if (!isAssigned) {
+                const remaining = Math.max(0, 10000 - timeSinceCreation);
+                setSpeakerSelectionDeadline(now + remaining);
+
+                if (remaining === 0 && !video.paused) {
+                    video.pause();
+                    setIsVideoPlaying(false);
+                    showSnackbar("Playback paused: Select a speaker or state to continue");
+                    
+                    // Focus the unassigned segment
+                    const element = document.querySelector(`[data-segment-id="${activeSegment.id}"] textarea`) as HTMLTextAreaElement;
+                    if (element) element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            } else {
+                setSpeakerSelectionDeadline(null);
+            }
+
+            // 2. Forward Playback Restriction
+            const MAX_FORWARD_WINDOW = 10;
+            const currentBlockStart = activeSegment.startTimeSeconds || 0;
+            
+            if (!isAssigned && currentTime > currentBlockStart + MAX_FORWARD_WINDOW) {
+                video.currentTime = currentBlockStart + MAX_FORWARD_WINDOW;
+                if (!video.paused) {
+                    video.pause();
+                    setIsVideoPlaying(false);
+                    showSnackbar("Restriction: Complete speaker selection to continue forward");
+                }
+            }
+        }, 100);
+
+        return () => clearInterval(checkInterval);
+    }, [segments, isVideoPlaying, isGlobalSaved]);
+
     // Auto-scroll to active segment
     useEffect(() => {
         if (!activeSegmentId || !scrollContainerRef.current) return;
@@ -477,6 +740,42 @@ export default function TranscriptionViewPage() {
             });
         }
     }, [activeSegmentId]);
+
+    // Behavioral Laws Enforcement (Seeking Logic)
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video || isGlobalSaved) return;
+
+        const handleSeeking = () => {
+            const currentTime = video.currentTime;
+            const activeSegment = segments.find(s => {
+                const start = s.startTimeSeconds || 0;
+                const end = s.endTimeSeconds || (start + 10000);
+                return currentTime >= start && currentTime <= end;
+            }) || segments[segments.length - 1];
+
+            if (!activeSegment) return;
+
+            const blockStart = activeSegment.startTimeSeconds || 0;
+            const isAssigned = !!activeSegment.selectedSpeakerId || !!activeSegment.state;
+            const MAX_FORWARD_WINDOW = 10;
+
+            // 1. Rewind Restriction
+            if (currentTime < blockStart) {
+                video.currentTime = blockStart;
+                showSnackbar("Rewind limited to current block.");
+            }
+
+            // 2. Forward Restriction
+            if (!isAssigned && currentTime > blockStart + MAX_FORWARD_WINDOW) {
+                video.currentTime = blockStart + MAX_FORWARD_WINDOW;
+                showSnackbar("Restriction: Complete speaker selection to continue forward");
+            }
+        };
+
+        video.addEventListener('seeking', handleSeeking);
+        return () => video.removeEventListener('seeking', handleSeeking);
+    }, [segments, isGlobalSaved]);
 
     // Initialize video player position on mount (right side)
     useEffect(() => {
@@ -586,11 +885,42 @@ export default function TranscriptionViewPage() {
                 return;
             }
 
+            // Calculate next number based on role (Moderator vs Speaker)
+            const rolePrefix = role === 'coordinator' ? 'Moderator' : 'Speaker';
+            const roleNumbers = speakers
+                .map(s => {
+                    const regex = new RegExp(`^${rolePrefix} (\\d+)$`);
+                    const match = s.name.match(regex);
+                    return match ? parseInt(match[1], 10) : 0;
+                })
+                .filter(n => !isNaN(n));
+            
+            const nextNumber = roleNumbers.length > 0 ? Math.max(...roleNumbers) + 1 : 1;
+            const speakerName = `${rolePrefix} ${nextNumber}`;
+
+            // 1. Optimistic UI Update: Add speaker immediately with a local preview
+            const tempId = `uploaded-${Date.now()}-${file.name}`;
+            const localPreviewUrl = URL.createObjectURL(file);
+            
+            const newSpeaker: Speaker = {
+                id: tempId,
+                name: speakerName,
+                shortName: speakerName,
+                avatar: localPreviewUrl,
+                isDefault: false,
+                role: role
+            };
+
+            setSpeakers((prev) => {
+                const updated = [...prev, newSpeaker];
+                saveToLocal(segments, updated);
+                return updated;
+            });
+
             try {
-                // Upload avatar to object storage
+                // 2. Background Upload
                 const formData = new FormData();
                 formData.append('file', file);
-                const speakerName = file.name.split('.')[0];
                 formData.append('speakerName', speakerName);
                 if (videoId) {
                     formData.append('videoId', videoId);
@@ -608,21 +938,21 @@ export default function TranscriptionViewPage() {
 
                 const data = await response.json();
                 
-                const newSpeaker: Speaker = {
-                    id: `uploaded-${Date.now()}-${file.name}`,
-                    name: speakerName,
-                    shortName: speakerName.length > 10 ? speakerName.substring(0, 8) + "..." : speakerName,
-                    avatar: data.url,
-                    isDefault: false,
-                    role: role
-                };
-                setSpeakers((prev) => [...prev, newSpeaker]);
+                // 3. Finalize: Replace local preview with permanent server URL
+                setSpeakers((prev) => {
+                    const updated = prev.map(s => s.id === tempId ? { ...s, avatar: data.url } : s);
+                    saveToLocal(segments, updated);
+                    persistSpeakersToServer(updated);
+                    return updated;
+                });
                 
                 // Mark as unsaved when new speaker with avatar is added
                 setIsGlobalSaved(false);
             } catch (error: any) {
                 console.error('Avatar upload error:', error);
                 showSnackbar(`Failed to upload avatar: ${error.message}`);
+                // Remove the optimistic speaker if upload failed
+                setSpeakers((prev) => prev.filter(s => s.id !== tempId));
             } finally {
                 e.target.value = "";
             }
@@ -630,8 +960,16 @@ export default function TranscriptionViewPage() {
     };
 
     const handleUpdateAvatar = async (id: string, file: File) => {
+        // 1. Optimistic UI Update
+        const localPreviewUrl = URL.createObjectURL(file);
+        setSpeakers((prev) => {
+            const updated = prev.map(s => s.id === id ? { ...s, avatar: localPreviewUrl } : s);
+            saveToLocal(segments, updated);
+            return updated;
+        });
+
         try {
-            // Upload avatar to object storage
+            // 2. Background Upload
             const formData = new FormData();
             formData.append('file', file);
             const speaker = speakers.find(s => s.id === id);
@@ -654,10 +992,13 @@ export default function TranscriptionViewPage() {
 
             const data = await response.json();
             
-            // Update speaker with uploaded avatar URL
-            setSpeakers((prev) =>
-                prev.map(s => s.id === id ? { ...s, avatar: data.url } : s)
-            );
+            // 3. Finalize
+            setSpeakers((prev) => {
+                const updated = prev.map(s => s.id === id ? { ...s, avatar: data.url } : s);
+                saveToLocal(segments, updated);
+                persistSpeakersToServer(updated);
+                return updated;
+            });
             
             // Mark as unsaved when avatar changes
             setIsGlobalSaved(false);
@@ -668,8 +1009,8 @@ export default function TranscriptionViewPage() {
     };
 
     const handleUpdateSpeaker = (id: string | number, newName: string) => {
-        setSpeakers((prevSpeakers) =>
-            prevSpeakers.map((spk) => {
+        setSpeakers((prevSpeakers) => {
+            const updated = prevSpeakers.map((spk) => {
                 if (spk.id === id) {
                     return {
                         ...spk,
@@ -678,51 +1019,112 @@ export default function TranscriptionViewPage() {
                     };
                 }
                 return spk;
-            })
-        );
+            });
+            saveToLocal(segments, updated);
+            persistSpeakersToServer(updated);
+            return updated;
+        });
     };
 
-    const handleDeleteSpeaker = (id: string) => {
-        setSpeakers((prev) => prev.filter(s => s.id !== id));
-        setSegments((prevSegments) =>
-            prevSegments.map(seg =>
-                seg.selectedSpeakerId === id ? { ...seg, selectedSpeakerId: null } : seg
-            )
-        );
+    const handleDeleteSpeaker = async (id: string) => {
+        // If it's a persistent speaker (has a real database ID), delete from server too
+        if (id.length > 20 && !id.startsWith('uploaded-') && !id.startsWith('speaker-')) {
+            try {
+                await fetch(`/api/speakers/${id}/delete`, { method: 'DELETE' });
+            } catch (error) {
+                console.error("Failed to delete speaker from server:", error);
+            }
+        }
+
+        setSpeakers((prev) => {
+            const updated = prev.filter(s => s.id !== id);
+            // We also need to update segments since we might have deleted a selected speaker
+            setSegments(prevSegments => {
+                const updatedSegments = prevSegments.map(seg =>
+                    seg.selectedSpeakerId === id ? { ...seg, selectedSpeakerId: null } : seg
+                );
+                saveToLocal(updatedSegments, updated);
+                persistSpeakersToServer(updated);
+                return updatedSegments;
+            });
+            return updated;
+        });
     };
 
 
     // Segment handlers
     const handleContentChange = (id: string, newContent: string) => {
-        setSegments((prev) =>
-            prev.map((seg) => {
+        setSegments((prev) => {
+            const updated = prev.map((seg) => {
                 if (seg.id !== id) return seg;
                 return { ...seg, content: newContent };
-            })
-        );
+            });
+            // Save to local storage on every change for draft persistence
+            saveToLocal(updated, speakers);
+            return updated;
+        });
     };
 
     const handleSpeakerSelect = (segmentId: string, speakerId: string) => {
         if (isGlobalSaved) return;
 
-        setSegments((prev) =>
-            prev.map((seg) => {
+        setSegments((prev) => {
+            const updated = prev.map((seg) => {
                 if (seg.id !== segmentId) return seg;
                 const newSelection = seg.selectedSpeakerId === speakerId ? null : speakerId;
 
                 let capturedTimestamp = seg.timestamp;
+                let capturedStartTime = seg.startTimeSeconds;
+
                 if (newSelection && !capturedTimestamp && videoRef.current) {
                     const currentTime = videoRef.current.currentTime;
                     capturedTimestamp = formatTime(currentTime);
+                    capturedStartTime = currentTime;
                 }
 
                 return {
                     ...seg,
                     selectedSpeakerId: newSelection,
-                    timestamp: capturedTimestamp
+                    state: null, // Clear state when speaker is selected
+                    timestamp: capturedTimestamp,
+                    startTimeSeconds: capturedStartTime
                 };
-            })
-        );
+            });
+            saveToLocal(updated, speakers);
+            return updated;
+        });
+    };
+
+    const handleStateSelect = (segmentId: string, state: SegmentState) => {
+        if (isGlobalSaved) return;
+
+        setSegments((prev) => {
+            const updated = prev.map((seg) => {
+                if (seg.id !== segmentId) return seg;
+
+                // Mutually exclusive: selecting a state clears speakerId
+                const newState = seg.state === state ? null : state;
+
+                let capturedTimestamp = seg.timestamp;
+                let capturedStartTime = seg.startTimeSeconds;
+
+                if (newState && !capturedTimestamp && videoRef.current) {
+                    const currentTime = videoRef.current.currentTime;
+                    capturedTimestamp = formatTime(currentTime);
+                    capturedStartTime = currentTime;
+                }
+
+                return {
+                    ...seg,
+                    selectedSpeakerId: null, // Clear speaker
+                    state: newState,
+                    timestamp: capturedTimestamp,
+                    startTimeSeconds: capturedStartTime
+                };
+            });
+            saveToLocal(updated, speakers);
+            return updated;
+        });
     };
 
     const handleTimestampClick = (timeStr: string | null) => {
@@ -745,45 +1147,168 @@ export default function TranscriptionViewPage() {
         }, 100);
     };
 
-    const handleAddNext = () => {
-        const newId = `seg-${Date.now()}`;
-        setSegments((prev) => [
-            ...prev,
-            { id: newId, selectedSpeakerId: null, timestamp: null, content: "" }
-        ]);
-        setTimeout(scrollToBottom, 100);
-    };
-
     const handleDeleteSegment = (id: string) => {
         if (isGlobalSaved) return;
         if (segments.length === 1) {
-            setSegments([{ id: "seg-" + Date.now(), selectedSpeakerId: null, timestamp: null, content: "" }]);
+            setSegments([{ 
+                id: "seg-" + Date.now(), 
+                selectedSpeakerId: null, 
+                state: null,
+                timestamp: "00:00", 
+                content: "",
+                startTimeSeconds: 0,
+                createdAt: Date.now()
+            }]);
             return;
         }
         setSegments((prev) => prev.filter((seg) => seg.id !== id));
     };
 
-    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>, isLastSegment: boolean) => {
+    const handleKeyDown = async (e: React.KeyboardEvent<HTMLTextAreaElement>, segmentId: string, index: number) => {
         if (isGlobalSaved) return;
+
+        const isLastSegment = index === segments.length - 1;
+
         if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
-            if (isLastSegment) {
-                handleAddNext();
+
+            const currentSegment = segments[index];
+            const video = videoRef.current;
+
+            // 1. Mandatory Selection Validation
+            if (!currentSegment.selectedSpeakerId && !currentSegment.state) {
+                if (video && !video.paused) {
+                    video.pause();
+                    setIsVideoPlaying(false);
+                }
+                showSnackbar("Mandatory: Select a speaker or state before continuing");
+                return;
             }
+
+            // 2. Prepare updated segments
+            const currentTime = video ? video.currentTime : (currentSegment.startTimeSeconds || 0) + 5;
+
+            let nextSegments: TranscriptSegment[];
+
+            if (isLastSegment) {
+                const newId = `seg-${Date.now()}`;
+                nextSegments = [
+                    ...segments.map(s => s.id === segmentId ? {
+                        ...s,
+                        endTimeSeconds: currentTime
+                    } : s),
+                    {
+                        id: newId,
+                        selectedSpeakerId: null,
+                        state: null,
+                        timestamp: formatTime(currentTime),
+                        content: "",
+                        startTimeSeconds: currentTime,
+                        createdAt: Date.now()
+                    }
+                ];
+            } else {
+                nextSegments = segments.map(s => s.id === segmentId ? {
+                    ...s,
+                    endTimeSeconds: currentTime
+                } : s);
+            }
+
+            // 3. Update state once
+            setSegments(nextSegments);
+            saveToLocal(nextSegments, speakers);
+
+            // 4. Attempt server sync (don't block UI)
+            const saveTranscript = async () => {
+                try {
+                    const speakerData = speakers.map((speaker) => {
+                        let avatarKey: string | null = null;
+                        if (speaker.avatar && speaker.avatar.startsWith('http')) {
+                            try {
+                                const url = new URL(speaker.avatar);
+                                avatarKey = url.pathname.startsWith('/') ? url.pathname.substring(1) : url.pathname;
+                            } catch (e) { }
+                        }
+
+                        return {
+                            name: speaker.name,
+                            speaker_label: speaker.name,
+                            avatar_url: speaker.avatar || null,
+                            avatar_key: avatarKey,
+                            is_moderator: speaker.role === 'coordinator',
+                        };
+                    });
+
+                    const transcriptData = nextSegments
+                        .filter(seg => seg.content.trim() !== "" || seg.state)
+                        .map((seg, idx) => {
+                            const speaker = speakers.find(s => s.id === seg.selectedSpeakerId);
+                            const speakerName = speaker ? speaker.name : (seg.state ? seg.state.replace('_', ' ').toUpperCase() : "Unknown");
+
+                            return {
+                                id: idx,
+                                name: speakerName,
+                                time: seg.timestamp || "00:00",
+                                text: seg.content || `[${speakerName}]`,
+                                startTime: seg.startTimeSeconds ?? parseTimeToSeconds(seg.timestamp),
+                                endTime: seg.endTimeSeconds ?? (parseTimeToSeconds(seg.timestamp) + 5),
+                            };
+                        });
+
+                    await fetch("/api/transcriptions/save", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            videoId: videoId,
+                            transcriptData: transcriptData,
+                            transcriptionType: "manual",
+                            speakerData: speakerData,
+                        }),
+                    });
+                } catch (error) {
+                    console.error("Auto-save to server failed:", error);
+                }
+            };
+
+            if (videoId) {
+                saveTranscript();
+            }
+
+            // 5. Handle focus
+            if (isLastSegment) {
+                setTimeout(scrollToBottom, 100);
+            } else {
+                const nextTextarea = document.querySelectorAll('textarea[data-segment-id]')[index + 1] as HTMLTextAreaElement;
+                if (nextTextarea) {
+                    nextTextarea.focus();
+                }
+            }
+        }
+    };
+
+    const handleSegmentFocus = (segmentId: string) => {
+        if (isGlobalSaved) return;
+
+        // Snap video to segment start
+        const segment = segments.find(s => s.id === segmentId);
+        if (segment && videoRef.current) {
+            const startTime = segment.startTimeSeconds || 0;
+            videoRef.current.currentTime = startTime;
         }
     };
 
     // Save handler
     const handleGlobalSave = async () => {
         const transcriptData = segments
-            .filter(seg => seg.content.trim() !== "")
+            .filter(seg => seg.content.trim() !== "" || seg.state)
             .map((seg, index) => {
                 const speaker = speakers.find(s => s.id === seg.selectedSpeakerId);
-                const speakerName = speaker ? speaker.name : "Unknown";
+                const speakerName = speaker ? speaker.name : (seg.state ? seg.state.replace('_', ' ').toUpperCase() : "Unknown");
 
-                let startTime = 0;
-                let endTime = 0;
-                if (seg.timestamp) {
+                let startTime = seg.startTimeSeconds ?? 0;
+                let endTime = seg.endTimeSeconds ?? (startTime + 5);
+
+                if (!startTime && seg.timestamp) {
                     startTime = parseTimeToSeconds(seg.timestamp);
                     endTime = startTime + 5;
                 }
@@ -792,7 +1317,7 @@ export default function TranscriptionViewPage() {
                     id: index,
                     name: speakerName,
                     time: seg.timestamp || "00:00",
-                    text: seg.content,
+                    text: seg.content || `[${speakerName}]`,
                     startTime: startTime,
                     endTime: endTime,
                 };
@@ -983,9 +1508,13 @@ export default function TranscriptionViewPage() {
             <div className="shrink-0 bg-gray-50 z-30 shadow-sm lg:shadow-none">
                 <header className="bg-white border-b border-[#F0F0F0] h-[50px] lg:h-[60px] flex items-center px-4 lg:px-6 justify-between">
                     <div className="flex items-center gap-3 lg:gap-4">
-                        <Link href="/">
+                        <button 
+                            onClick={() => router.back()} 
+                            className="hover:opacity-70 transition flex items-center"
+                            aria-label="Go back"
+                        >
                             <img src="/icons/arrow-left.png" alt="Back" className="w-[24px] h-[24px] cursor-pointer" />
-                        </Link>
+                        </button>
                         <h1 className="text-[16px] lg:text-[18px] font-semibold text-gray-800">Sessions</h1>
                     </div>
                 </header>
@@ -1086,7 +1615,13 @@ export default function TranscriptionViewPage() {
                         }}
                         onMouseDown={handleMouseDown}
                     >
-                        <div className="h-full w-full rounded-2xl overflow-hidden shadow-2xl bg-black border-2 border-gray-300">
+                        <div className="h-full w-full rounded-2xl overflow-hidden shadow-2xl bg-black border-2 border-gray-300 relative">
+                            {/* Playback Speed Indicator */}
+                            {playbackSpeed !== 1 && (
+                                <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-sm text-white text-[10px] font-bold px-2 py-1 rounded-md z-20 pointer-events-none border border-white/10">
+                                    {playbackSpeed}x Speed
+                                </div>
+                            )}
                             {(() => {
                                 const videoUrl = video?.source_url || video?.fileUrl;
                                 // Check if videoUrl is a valid non-empty string
@@ -1141,23 +1676,42 @@ export default function TranscriptionViewPage() {
 
                     {segments.map((segment, index) => {
                         const isSpeakerSelected = !!segment.selectedSpeakerId;
+                        const isStateSelected = !!segment.state;
+                        const isAssigned = isSpeakerSelected || isStateSelected;
                         const hasStartedTyping = segment.content.length > 0;
-                        const isLocked = isGlobalSaved || (!isSpeakerSelected && !isGlobalSaved);
+                        const isLocked = isGlobalSaved || (!isAssigned && !isGlobalSaved);
                         const isLastSegment = index === segments.length - 1;
                         const isActive = activeSegmentId === segment.id;
 
+                        const stateOptions: { value: SegmentState; label: string }[] = [
+                            { value: 'inaudible', label: 'Inaudible' },
+                            { value: 'overlapping', label: 'Overlapping' },
+                            { value: 'no_conversation', label: 'No Conversation' },
+                            { value: 'unknown', label: 'Unknown' },
+                        ];
+
                         return (
-                            <div
-                                key={segment.id}
-                                data-segment-id={segment.id}
-                                className={`
+            <div
+                key={segment.id}
+                data-segment-id={segment.id}
+                className={`
                   relative flex flex-col p-3 rounded-xl border bg-white transition-all duration-300
                   ${isGlobalSaved ? 'opacity-80 border-gray-100' : 'opacity-100 border-gray-200 shadow-sm'}
                   ${isActive ? 'ring-2 ring-[#00A3AF] ring-offset-2 bg-[#E0F7FA] border-[#00A3AF] shadow-md' : ''}
+                  ${!isAssigned && !isGlobalSaved ? 'border-dashed border-gray-300' : 'border-solid'}
                 `}
-                            >
+            >
+                {/* TIMER OVERLAY */}
+                {isActive && !isAssigned && speakerSelectionDeadline && !isGlobalSaved && (
+                    <div className="absolute -top-2 left-1/2 -translate-x-1/2 z-40">
+                        <div className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-lg animate-pulse flex items-center gap-1">
+                            <Image src={ClockIcon} alt="clock" width={12} height={12} className="invert brightness-0" />
+                            {Math.ceil((speakerSelectionDeadline - Date.now()) / 1000)}s to assign speaker
+                        </div>
+                    </div>
+                )}
 
-                                {!isGlobalSaved && hasStartedTyping && (
+                                {!isGlobalSaved && (
                                     <button
                                         onClick={() => handleDeleteSegment(segment.id)}
                                         className="absolute top-3 right-3 p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors z-20"
@@ -1167,15 +1721,15 @@ export default function TranscriptionViewPage() {
                                     </button>
                                 )}
 
-                                <div className="w-full flex flex-col sm:flex-row sm:items-center justify-between mb-2 pr-0 sm:pr-8 gap-2 sm:gap-0">
-                                    <div
-                                        onWheel={handleHorizontalScroll}
-                                        className="flex gap-2 overflow-x-auto scrollbar-hide flex-1 w-full sm:w-auto pb-1 sm:pb-0 cursor-ew-resize"
-                                    >
-                                        {speakers.length === 0 ? (
-                                            <span className="text-xs text-gray-400 italic py-1">Add a Moderator to start...</span>
-                                        ) : (
-                                            speakers.map((spk, idx) => {
+                                <div className="w-full flex flex-col sm:flex-row sm:items-start justify-between mb-2 pr-0 sm:pr-8 gap-3">
+                                    <div className="flex flex-col gap-2 flex-1 min-w-0">
+                                        {/* Speaker & State Plate */}
+                                        <div
+                                            onWheel={handleHorizontalScroll}
+                                            className="flex items-center gap-2 overflow-x-auto scrollbar-hide pb-1 cursor-ew-resize"
+                                        >
+                                            {/* Speakers */}
+                                            {speakers.map((spk, idx) => {
                                                 const speakerIdStr = String(spk.id);
                                                 const pillStyle = getSpeakerPillStyle(idx, speakerIdStr, segment, spk.role);
                                                 const isSelected = segment.selectedSpeakerId === speakerIdStr;
@@ -1186,11 +1740,15 @@ export default function TranscriptionViewPage() {
                                                         onClick={() => !isGlobalSaved && handleSpeakerSelect(segment.id, speakerIdStr)}
                                                         disabled={isGlobalSaved}
                                                         className={`
-                              flex items-center gap-2 px-3 py-1 rounded-lg text-[12px] border transition-colors whitespace-nowrap shrink-0
-                              ${pillStyle}
-                            `}
+                                            flex items-center gap-2 px-3 py-1 rounded-lg text-[12px] border transition-colors whitespace-nowrap shrink-0
+                                            ${pillStyle}
+                                        `}
                                                     >
-                                                        {isSelected ? (
+                                                        {spk.avatar ? (
+                                                            <div className="w-4 h-4 rounded-full overflow-hidden border border-current/20">
+                                                                <img src={spk.avatar} alt={spk.name} className="w-full h-full object-cover" />
+                                                            </div>
+                                                        ) : isSelected ? (
                                                             <Image src={MicrophoneIcon} alt="mic" width={12} height={12} className={idx === 0 ? "text-black" : "text-current"} />
                                                         ) : (
                                                             <Image src={UserIcon} alt="user" width={12} height={12} className={idx === 0 ? "text-black" : "opacity-40"} />
@@ -1199,13 +1757,54 @@ export default function TranscriptionViewPage() {
                                                         {spk.role === 'coordinator' && <span className="text-[9px] opacity-70 ml-1">(C)</span>}
                                                     </button>
                                                 );
-                                            })
-                                        )}
+                                            })}
+
+                                            {/* Divider */}
+                                            {speakers.length > 0 && <div className="h-4 w-[1px] bg-gray-200 mx-1 shrink-0" />}
+
+                                            {/* State Options */}
+                                            {stateOptions.map((opt) => (
+                                                <button
+                                                    key={opt.value}
+                                                    onClick={() => !isGlobalSaved && handleStateSelect(segment.id, opt.value)}
+                                                    disabled={isGlobalSaved}
+                                                    className={`
+                            px-3 py-1 rounded-lg text-[12px] border transition-all whitespace-nowrap shrink-0
+                            ${segment.state === opt.value
+                                                            ? 'bg-amber-50 border-amber-500 text-amber-700 shadow-sm font-medium'
+                                                            : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100'
+                                                        }
+                          `}
+                                                >
+                                                    {opt.label}
+                                                </button>
+                                            ))}
+
+                                            {/* Add Speaker (Inline Trigger) */}
+                                            {!isGlobalSaved && (
+                                                <button
+                                                    onClick={() => {
+                                                        const input = document.getElementById('speaker-upload-input');
+                                                        if (input) {
+                                                            (input as HTMLInputElement).click();
+                                                        } else {
+                                                            // Fallback to moderator input if speaker input is missing
+                                                            const modInput = document.getElementById('coordinator-upload-input');
+                                                            if (modInput) (modInput as HTMLInputElement).click();
+                                                        }
+                                                    }}
+                                                    className="px-3 py-1 rounded-lg text-[12px] border border-dashed border-[#00A3AF] text-[#00A3AF] hover:bg-[#00A3AF]/5 transition-all whitespace-nowrap shrink-0 flex items-center gap-1"
+                                                >
+                                                    <span className="text-sm font-bold leading-none">+</span>
+                                                    Add Speaker
+                                                </button>
+                                            )}
+                                        </div>
                                     </div>
 
                                     <div
                                         onClick={() => handleTimestampClick(segment.timestamp)}
-                                        className={`flex items-center gap-1.5 text-xs font-medium whitespace-nowrap self-end sm:self-auto transition-colors
+                                        className={`flex items-center gap-1.5 text-xs font-medium whitespace-nowrap mt-1 transition-colors
                             ${segment.timestamp ? "cursor-pointer hover:text-[#00A3AF] hover:underline text-gray-600" : "text-gray-400 cursor-default"}
                         `}
                                         title={segment.timestamp ? "Click to seek video" : ""}
@@ -1216,11 +1815,14 @@ export default function TranscriptionViewPage() {
                                 </div>
 
                                 <div className="relative group">
-                                    {!isSpeakerSelected && !isGlobalSaved && (
-                                        <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-50/40 backdrop-blur-[1px] rounded-lg cursor-pointer">
-                                            <div className="flex items-center gap-2 text-gray-500 text-xs sm:text-sm bg-white px-3 py-1.5 rounded-full shadow-sm border border-gray-100 animate-pulse">
-                                                <LockClosedIcon className="w-4 h-4" />
-                                                <span>Select a speaker</span>
+                                    {!isAssigned && !isGlobalSaved && (
+                                        <div
+                                            className="absolute inset-0 z-10 flex items-center justify-center bg-gray-50/20 backdrop-blur-[0.5px] rounded-lg cursor-pointer"
+                                            onClick={() => showSnackbar("Please assign a speaker or state to continue")}
+                                        >
+                                            <div className="flex items-center gap-2 text-gray-400 text-xs sm:text-sm bg-white px-4 py-2 rounded-full shadow-md border border-gray-100">
+                                                <LockClosedIcon className="w-4 h-4 text-amber-400" />
+                                                <span className="font-medium italic">Speaker or State selection required</span>
                                             </div>
                                         </div>
                                     )}
@@ -1229,15 +1831,16 @@ export default function TranscriptionViewPage() {
                                         data-segment-id={segment.id}
                                         value={segment.content}
                                         onChange={(e) => handleContentChange(segment.id, e.target.value)}
-                                        onKeyDown={(e) => handleKeyDown(e, isLastSegment)}
-                                        placeholder={!isGlobalSaved ? "Type content..." : ""}
-                                        readOnly={isLocked}
-                                        disabled={isLocked}
+                                        onKeyDown={(e) => handleKeyDown(e, segment.id, index)}
+                                        onFocus={() => handleSegmentFocus(segment.id)}
+                                        placeholder={!isGlobalSaved ? (isAssigned ? "Type content..." : "") : ""}
+                                        readOnly={isLocked || !isAssigned}
+                                        disabled={isLocked || !isAssigned}
                                         className={`
                       w-full min-h-[24px] p-2 rounded-lg border resize-none text-[13px] lg:text-[14px] leading-relaxed focus:outline-none transition-all overflow-hidden
-                      ${!isLocked
-                                                ? "bg-white border-gray-200 focus:border-[#00A3AF] focus:ring-1 focus:ring-[#00A3AF] text-gray-800"
-                                                : "bg-gray-50 border-transparent text-gray-500 cursor-not-allowed"
+                      ${isAssigned && !isLocked
+                                                ? "bg-[#FAFAFA] border-gray-200 focus:border-[#00A3AF] focus:ring-1 focus:ring-[#00A3AF] text-gray-800"
+                                                : "bg-gray-50/50 border-transparent text-gray-500 cursor-not-allowed"
                                             }
                     `}
                                         rows={1}

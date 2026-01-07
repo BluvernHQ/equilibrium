@@ -14,6 +14,7 @@ interface SpeakerHeaderProps {
   onUpdateSpeaker: (oldName: string, newName: string) => void;
   onUpdateAvatar?: (name: string, avatarUrl: string, avatarKey: string) => void;
   onAddModerator?: (file: File) => void; // Callback when moderator file is uploaded
+  onAddSpeaker?: (file: File) => void; // Callback when generic speaker file is uploaded
   sectionTitle?: string;
   moderatorName?: string | null; // Current moderator name (read-only)
   videoId?: string | null; // Video ID for avatar upload
@@ -25,6 +26,7 @@ export default function SpeakerHeader({
   onUpdateSpeaker,
   onUpdateAvatar,
   onAddModerator,
+  onAddSpeaker,
   sectionTitle,
   moderatorName,
   videoId,
@@ -64,6 +66,7 @@ export default function SpeakerHeader({
   const [uploadingAvatar, setUploadingAvatar] = useState<string | null>(null);
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const moderatorInputRef = useRef<HTMLInputElement | null>(null);
+  const speakerInputRef = useRef<HTMLInputElement | null>(null);
 
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -91,10 +94,26 @@ export default function SpeakerHeader({
     moderatorInputRef.current?.click();
   };
 
+  const triggerSpeakerUpload = () => {
+    setShowAddMenu(false);
+    speakerInputRef.current?.click();
+  };
+
   const handleModeratorFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file && onAddModerator) {
       onAddModerator(file);
+    }
+    // Reset input
+    if (e.target) {
+      e.target.value = '';
+    }
+  };
+
+  const handleSpeakerFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && onAddSpeaker) {
+      onAddSpeaker(file);
     }
     // Reset input
     if (e.target) {
@@ -191,36 +210,41 @@ export default function SpeakerHeader({
         </h3>
 
         <div className="relative" ref={menuRef}>
-          {onAddModerator && (
+          {(onAddModerator || onAddSpeaker) && (
             <>
               <button 
                 onClick={() => setShowAddMenu(!showAddMenu)}
-                className={`p-1.5 rounded-full shadow-sm transition-all ${
-                  hasModerator 
-                    ? "bg-gray-300 text-gray-500 cursor-not-allowed" 
-                    : "bg-[#00A3AF] text-white hover:bg-[#008C97]"
-                }`}
-                title={hasModerator ? "Moderator already added" : "Add New"}
-                disabled={hasModerator}
+                className={`p-1.5 rounded-full shadow-sm transition-all bg-[#00A3AF] text-white hover:bg-[#008C97]`}
+                title="Add New"
               >
                 <PlusIcon className="w-5 h-5" />
               </button>
 
-              {showAddMenu && !hasModerator && (
+              {showAddMenu && (
                 <div className="absolute top-full right-0 mt-2 w-48 bg-white border border-gray-200 shadow-xl rounded-lg overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200 z-50">
-                  <button 
-                    onClick={triggerModeratorUpload}
-                    disabled={hasModerator}
-                    className={`px-4 py-3 text-left text-sm font-medium border-b border-gray-100 flex items-center justify-between
-                      ${hasModerator 
-                        ? "bg-gray-50 text-gray-400 cursor-not-allowed" 
-                        : "hover:bg-[#E0F7FA] text-gray-700 hover:text-[#00A3AF]"
-                      }
-                    `}
-                  >
-                    <span>Add Moderator</span>
-                    {hasModerator && <span className="text-[10px] bg-gray-200 px-2 py-0.5 rounded text-gray-500">Done</span>}
-                  </button>
+                  {onAddModerator && (
+                    <button 
+                      onClick={triggerModeratorUpload}
+                      disabled={hasModerator}
+                      className={`px-4 py-3 text-left text-sm font-medium border-b border-gray-100 flex items-center justify-between
+                        ${hasModerator 
+                          ? "bg-gray-50 text-gray-400 cursor-not-allowed" 
+                          : "hover:bg-[#E0F7FA] text-gray-700 hover:text-[#00A3AF]"
+                        }
+                      `}
+                    >
+                      <span>Add Moderator</span>
+                      {hasModerator && <span className="text-[10px] bg-gray-200 px-2 py-0.5 rounded text-gray-500">Done</span>}
+                    </button>
+                  )}
+                  {onAddSpeaker && (
+                    <button 
+                      onClick={triggerSpeakerUpload}
+                      className="px-4 py-3 text-left text-sm font-medium hover:bg-[#E0F7FA] text-gray-700 hover:text-[#00A3AF] transition-colors"
+                    >
+                      Add Speaker
+                    </button>
+                  )}
                 </div>
               )}
             </>
@@ -232,9 +256,20 @@ export default function SpeakerHeader({
       <input 
         type="file" 
         hidden 
+        id="moderator-upload-input"
         ref={moderatorInputRef} 
         accept="image/*" 
         onChange={handleModeratorFileChange} 
+      />
+
+      {/* HIDDEN INPUT FOR SPEAKER */}
+      <input 
+        type="file" 
+        hidden 
+        id="speaker-upload-input"
+        ref={speakerInputRef} 
+        accept="image/*" 
+        onChange={handleSpeakerFileChange} 
       />
 
       {/* --- CAROUSEL SLIDER --- */}

@@ -107,6 +107,11 @@ export default function Recordings() {
         throw new Error(errorData.error || 'Failed to delete transcription');
       }
 
+      // Clear local storage for this transcription
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(`transcript:${video.id}`);
+      }
+
       // Refresh videos list
       await fetchVideos();
       setOpenMenuId(null);

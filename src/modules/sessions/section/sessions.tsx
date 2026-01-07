@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useCallback, useMemo, useLayoutEffect } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { sessionsData } from "../data/sessions";
 import {
   PencilIcon,
@@ -13,8 +13,11 @@ import {
   StopIcon,
   ArrowDownIcon,
   PencilSquareIcon,
-  UserIcon
+  UserIcon as UserIconOutline
 } from "@heroicons/react/24/outline";
+import SpeakersCarousel, { Speaker } from "@/modules/manual-transcription/components/speakers-carousel";
+import UserIcon from "../../../../public/icons/profile-circle.png";
+import MicrophoneIcon from "../../../../public/icons/spk-icon.png";
 import { DeleteModal } from "../components/action-modals";
 import {
   MasterTagRow,
@@ -27,6 +30,7 @@ import {
 } from '../components/tag-hierarchy';
 import RecentTags from "../components/RecentTags";
 import Link from "next/link";
+import NextImage from "next/image";
 
 // Type for loaded transcript data from database
 interface TranscriptBlock {
@@ -74,11 +78,13 @@ interface PrimaryTagDetail {
   instanceIndex?: number; // e.g. 1
   messageIndex: number;
   blockId?: string; // Database block ID
+  blockIds?: string[]; // Multiple block IDs
   comment?: string;
   impressionId?: string; // Database impression ID
   secondaryTags?: SecondaryTag[]; // Secondary tags under this primary
   selectedText?: string; // The exact selected text (for card preview)
   selectionRange?: SelectionRange; // Character offsets within the block
+  selectionRanges?: SelectionRange[]; // Multiple ranges across blocks
 }
 
 interface TagItem {
@@ -92,6 +98,7 @@ interface TagItem {
   primaryList: PrimaryTagDetail[];
   allText: string[];
   blockIds: string[]; // All block IDs for this tag group
+
   // Selection data for precise highlight persistence
   selectionRanges?: SelectionRange[];
   verticalOffset?: number; // Pixels from top of block
@@ -110,10 +117,12 @@ interface PendingPrimary {
 export interface PendingEntry {
   id: string;
   messageIndex: number;
-  blockId?: string; // Database block ID
+  blockId?: string; // Database block ID (legacy/single-block)
+  blockIds?: string[]; // Multiple block IDs for multi-block selection
   text: string;
   selectedText: string; // The exact selected text (for display in cards)
-  selectionRange?: SelectionRange; // Character offsets within the block
+  selectionRange?: SelectionRange; // Character offsets within the block (legacy/single-block)
+  selectionRanges?: SelectionRange[]; // Character offsets across multiple blocks
   primaryInput: string;
   primaryInputClosed?: boolean;
   primaryList: PendingPrimary[];
@@ -188,6 +197,8 @@ interface DbTagGroup {
     comment?: string;
   }[];
   blockIds: string[];
+  selectedText?: string;
+  selectionRanges?: SelectionRange[];
 }
 
 interface VideoItem {
@@ -236,12 +247,13 @@ function formatTime(seconds: number): string {
 // Helper to get speaker display name
 function getSpeakerName(label: string): string {
   if (label.match(/^[A-Z]$/)) {
-    return `Person ${label.charCodeAt(0) - 64}`;
+    return `Speaker ${label.charCodeAt(0) - 64}`;
   }
   return label;
 }
 
 export default function Sessions() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const videoId = searchParams.get('videoId');
 
@@ -266,6 +278,173 @@ export default function Sessions() {
   const [dbMasterTags, setDbMasterTags] = useState<{ id: string; name: string }[]>([]);
   const [dbPrimaryTags, setDbPrimaryTags] = useState<{ id: string; name: string; displayName: string; instanceIndex: number }[]>([]);
   const [dbSections, setDbSections] = useState<DbSection[]>([]);
+  const [speakers, setSpeakers] = useState<Speaker[]>([]);
+
+  const persistSpeakersToServer = async (currentSpeakers: Speaker[]) => {
+    if (!videoId) return;
+    try {
+      const speakerData = currentSpeakers.map((speaker) => {
+        let avatarKey: string | null = null;
+        if (speaker.avatar && speaker.avatar.startsWith('http')) {
+          try {
+            const url = new URL(speaker.avatar);
+            // The key is the entire pathname minus the leading slash
+            avatarKey = url.pathname.startsWith('/') ? url.pathname.substring(1) : url.pathname;
+          } catch (e) { }
+        }
+        return {
+          name: speaker.name,
+          speaker_label: speaker.name,
+          avatar_url: speaker.avatar || null,
+          avatar_key: avatarKey,
+          is_moderator: speaker.role === 'coordinator',
+        };
+      });
+
+      const transcriptData = transcriptBlocks.map((block, idx) => ({
+        id: idx,
+        name: block.speaker_label,
+        time: formatTime(block.start_time_seconds),
+        text: block.text,
+        startTime: block.start_time_seconds,
+        endTime: block.end_time_seconds,
+      }));
+
+      await fetch("/api/transcriptions/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoId: videoId,
+          transcriptData: transcriptData,
+          transcriptionType: "manual",
+          speakerData: speakerData,
+        }),
+      });
+    } catch (error) {
+      console.error("Failed to persist speakers to server:", error);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, role: 'coordinator' | 'speaker') => {
+    if (e.target.files && e.target.files.length > 0) {
+      const file = e.target.files[0];
+      const rolePrefix = role === 'coordinator' ? 'Moderator' : 'Speaker';
+      const roleNumbers = speakers
+        .map(s => {
+          const regex = new RegExp(`^${rolePrefix} (\\d+)$`);
+          const match = s.name.match(regex);
+          return match ? parseInt(match[1], 10) : 0;
+        })
+        .filter(n => !isNaN(n));
+      const nextNumber = roleNumbers.length > 0 ? Math.max(...roleNumbers) + 1 : 1;
+      const speakerName = `${rolePrefix} ${nextNumber}`;
+
+      // 1. Optimistic UI Update: Add speaker immediately with a local preview
+      const tempId = `uploaded-${Date.now()}-${file.name}`;
+      const localPreviewUrl = URL.createObjectURL(file);
+      
+      const newSpeaker: Speaker = {
+        id: tempId,
+        name: speakerName,
+        shortName: speakerName,
+        avatar: localPreviewUrl,
+        isDefault: false,
+        role: role
+      };
+
+      setSpeakers(prev => [...prev, newSpeaker]);
+
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('speakerName', speakerName);
+        if (videoId) formData.append('videoId', videoId);
+
+        const response = await fetch('/api/speakers/upload-avatar', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          // 2. Finalize: Replace local preview with permanent server URL
+          setSpeakers(prev => {
+            const updated = prev.map(s => s.id === tempId ? { ...s, avatar: data.url } : s);
+            persistSpeakersToServer(updated);
+            return updated;
+          });
+        } else {
+          // If upload failed, remove the optimistic speaker
+          setSpeakers(prev => prev.filter(s => s.id !== tempId));
+        }
+      } catch (error) {
+        console.error('Avatar upload error:', error);
+        setSpeakers(prev => prev.filter(s => s.id !== tempId));
+      } finally {
+        e.target.value = "";
+      }
+    }
+  };
+
+  const handleUpdateAvatar = async (id: string, file: File) => {
+    // 1. Optimistic UI Update
+    const localPreviewUrl = URL.createObjectURL(file);
+    setSpeakers(prev => prev.map(s => s.id === id ? { ...s, avatar: localPreviewUrl } : s));
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const speaker = speakers.find(s => s.id === id);
+      if (speaker) formData.append('speakerName', speaker.name);
+      if (videoId) formData.append('videoId', videoId);
+
+      const response = await fetch('/api/speakers/upload-avatar', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        // 2. Finalize
+        setSpeakers(prev => {
+          const updated = prev.map(s => s.id === id ? { ...s, avatar: data.url } : s);
+          persistSpeakersToServer(updated);
+          return updated;
+        });
+      }
+    } catch (error) {
+      console.error('Avatar upload error:', error);
+    }
+  };
+
+  const handleUpdateSpeaker = (id: string | number, newName: string) => {
+    setSpeakers(prev => {
+      const updated = prev.map(spk => spk.id === id ? {
+        ...spk,
+        name: newName,
+        shortName: newName.length > 10 ? newName.substring(0, 8) + "..." : newName,
+      } : spk);
+      persistSpeakersToServer(updated);
+      return updated;
+    });
+  };
+
+  const handleDeleteSpeaker = async (id: string) => {
+    // If it's a persistent speaker (has a real database ID), delete from server too
+    if (id.length > 20 && !id.startsWith('uploaded-') && !id.startsWith('speaker-')) {
+      try {
+        await fetch(`/api/speakers/${id}/delete`, { method: 'DELETE' });
+      } catch (error) {
+        console.error("Failed to delete speaker from server:", error);
+      }
+    }
+
+    setSpeakers(prev => {
+      const updated = prev.filter(s => s.id !== id);
+      persistSpeakersToServer(updated);
+      return updated;
+    });
+  };
 
   // Function to fetch primary tags from database for search/suggestions
   const fetchPrimaryTags = useCallback(async (masterName: string, search: string = "") => {
@@ -428,15 +607,15 @@ export default function Sessions() {
 
           if (item.getAttribute('data-is-root') === 'true') {
             rootTop = relativeTop + 18; // Spine starts at stem level (18px from top of card)
-            
+
             // For root card, use the actual card's bottom position to extend spine to the end
             // This accounts for all content: master tag, branch tags, primary tags, secondary tags, comments, etc.
             // Using Array.from to avoid CSS selector issues with dots in Tailwind classes (like gap-0.5)
             const cardElement = Array.from(item.children).find((child) => {
               if (child instanceof HTMLElement) {
-                return child.classList.contains('flex') && 
-                       child.classList.contains('flex-col') && 
-                       child.classList.contains('bg-white');
+                return child.classList.contains('flex') &&
+                  child.classList.contains('flex-col') &&
+                  child.classList.contains('bg-white');
               }
               return false;
             }) as HTMLElement | undefined;
@@ -444,7 +623,7 @@ export default function Sessions() {
             if (cardElement) {
               const cardRect = cardElement.getBoundingClientRect();
               const cardBottom = cardRect.bottom - containerRect.top + container.scrollTop;
-              
+
               // Use the card's bottom as the spine end point
               if (cardBottom > maxBottom) {
                 maxBottom = cardBottom;
@@ -855,6 +1034,16 @@ export default function Sessions() {
 
           // Load speaker avatars from API response
           if (data.speakers && Array.isArray(data.speakers)) {
+            const convertedSpeakers: Speaker[] = data.speakers.map((s: any) => ({
+              id: s.id,
+              name: s.name,
+              shortName: s.name.length > 10 ? s.name.substring(0, 8) + "..." : s.name,
+              avatar: s.avatar_url || "",
+              isDefault: false,
+              role: s.is_moderator ? "coordinator" : "speaker"
+            }));
+            setSpeakers(convertedSpeakers);
+
             data.speakers.forEach((speaker: any) => {
               const speakerLabel = speaker.speaker_label || speaker.name;
               if (speaker.avatar_url) {
@@ -866,7 +1055,7 @@ export default function Sessions() {
           // Convert transcript blocks to session data format with block IDs
           const convertedData: SessionDataItem[] = data.transcription.blocks.map((block: TranscriptBlock) => {
             const speakerLabel = block.speaker_label || "A";
-
+            
             // Assign color to speaker
             if (!speakerColorMap.has(speakerLabel)) {
               speakerColorMap.set(speakerLabel, speakerColors[colorIndex % speakerColors.length]);
@@ -971,7 +1160,6 @@ export default function Sessions() {
             // Master tag without primary tags - create a TagItem with empty primaryList
             // Use the first block ID for messageIndex lookup
             const firstBlockId = group.blockIds && group.blockIds.length > 0 ? group.blockIds[0] : null;
-            const messageIndex = firstBlockId ? (blockIdToIndex.get(firstBlockId) ?? -1) : -1;
 
             loadedTags.push({
               id: group.id || `master-${group.masterTag.id}`,
@@ -982,9 +1170,9 @@ export default function Sessions() {
               isClosed: group.masterTag.is_closed,
               branchTags: group.branchTags,
               primaryList: [], // Empty primary list for master-only tags
-              allText: [""], // No selected text for master-only tags
+              allText: [group.selectedText || ""],
               blockIds: group.blockIds || [],
-              selectionRanges: [],
+              selectionRanges: group.selectionRanges || [],
             });
           }
         });
@@ -1690,8 +1878,8 @@ export default function Sessions() {
     e.stopPropagation();
     setContextMenu({
       visible: true,
-      x: e.pageX,
-      y: e.pageY,
+      x: e.clientX,
+      y: e.clientY,
       displayIndex,
       transcriptIndex
     });
@@ -2126,10 +2314,30 @@ export default function Sessions() {
   }, []);
 
 
-  const handleTextSelection = (messageIndex: number, blockId?: string) => {
+  const getOffsetInBlock = useCallback((blockElement: Element, targetNode: Node, targetOffset: number): number => {
+    const treeWalker = document.createTreeWalker(blockElement, NodeFilter.SHOW_TEXT, null);
+    let charCount = 0;
+    while (treeWalker.nextNode()) {
+      const node = treeWalker.currentNode;
+      if (node === targetNode) {
+        return charCount + targetOffset;
+      }
+      charCount += node.textContent?.length || 0;
+    }
+    // If targetNode is not a text node (e.g. an element node)
+    if (blockElement.contains(targetNode) && targetNode.nodeType !== Node.TEXT_NODE) {
+      // Find the text node at the offset or just return charCount
+      return targetOffset === 0 ? 0 : charCount;
+    }
+    return charCount;
+  }, []);
+
+  const handleTextSelection = useCallback((messageIndex: number, blockId?: string) => {
     const selection = window.getSelection();
     const text = selection?.toString()?.trim();
-    if (!text || !selection) return;
+    if (!text || !selection || selection.rangeCount === 0) return;
+
+    const range = selection.getRangeAt(0);
 
     // Reset cancelled state if a new selection is made
     if (masterCancelled) {
@@ -2137,91 +2345,86 @@ export default function Sessions() {
       setMasterConfirmed(false);
     }
 
-    const exists = pending.some((p) => p.messageIndex === messageIndex && p.text === text);
+    // Find all blocks spanned by the selection
+    const blockElements = Array.from(document.querySelectorAll('[data-block-id]'));
+    const selectionRanges: SelectionRange[] = [];
+    const blockIds: string[] = [];
+    let firstMessageIndex: number | undefined;
+
+    blockElements.forEach((el) => {
+      const bId = el.getAttribute('data-block-id')!;
+      
+      // Check if this block is part of the selection
+      // We check if the range intersects the block element OR if the block contains start/end points
+      if (range.intersectsNode(el) || el.contains(range.startContainer) || el.contains(range.endContainer)) {
+        let startOffset = 0;
+        let endOffset = el.textContent?.length || 0;
+
+        // If this is the start block
+        if (el.contains(range.startContainer)) {
+          startOffset = getOffsetInBlock(el, range.startContainer, range.startOffset);
+        }
+
+        // If this is the end block
+        if (el.contains(range.endContainer)) {
+          endOffset = getOffsetInBlock(el, range.endContainer, range.endOffset);
+        }
+
+        // Only add if there is actual text selected in this block
+        if (endOffset > startOffset) {
+          selectionRanges.push({
+            blockId: bId,
+            startOffset,
+            endOffset
+          });
+          blockIds.push(bId);
+
+          // Find message index for this block
+          const item = displayItems.find(i => i.originalData?.blockId === bId);
+          if (item && firstMessageIndex === undefined) {
+            firstMessageIndex = item.originalIndex;
+          }
+        }
+      }
+    });
+
+    // Fallback if discovery failed but we have a direct blockId from the event
+    if (selectionRanges.length === 0 && blockId) {
+      selectionRanges.push({
+        blockId,
+        startOffset: 0,
+        endOffset: text.length // This is a rough fallback
+      });
+      blockIds.push(blockId);
+      firstMessageIndex = messageIndex;
+    }
+
+    if (selectionRanges.length === 0) return;
+
+    // Check if this selection already exists in pending
+    const selectionKey = JSON.stringify(selectionRanges);
+    const exists = pending.some(p => JSON.stringify(p.selectionRanges) === selectionKey);
     if (exists) {
       window.getSelection()?.removeAllRanges();
       return;
     }
 
-    // Calculate selection offsets within the block text
-    let startOffset = 0;
-    let endOffset = text.length;
-
-    // Try to get the actual offsets from the selection range
-    if (selection.rangeCount > 0) {
-      const range = selection.getRangeAt(0);
-      const blockElement = range.commonAncestorContainer.parentElement?.closest('[data-block-text]');
-
-      if (blockElement) {
-        const blockText = blockElement.getAttribute('data-block-text') || '';
-        const selectedText = text;
-
-        // Find the position of the selected text within the block
-        // We need to reconstruct the position by walking through the text nodes
-        const treeWalker = document.createTreeWalker(
-          blockElement,
-          NodeFilter.SHOW_TEXT,
-          null
-        );
-
-        let charCount = 0;
-        let foundStart = false;
-        let calculatedStart = 0;
-
-        while (treeWalker.nextNode()) {
-          const node = treeWalker.currentNode;
-
-          if (node === range.startContainer) {
-            calculatedStart = charCount + range.startOffset;
-            foundStart = true;
-          }
-
-          if (node === range.endContainer && foundStart) {
-            const calculatedEnd = charCount + range.endOffset;
-            startOffset = calculatedStart;
-            endOffset = calculatedEnd;
-            break;
-          }
-
-          charCount += node.textContent?.length || 0;
-        }
-
-        // Fallback: find the first occurrence of selected text in block
-        if (!foundStart && blockText) {
-          const idx = blockText.indexOf(selectedText);
-          if (idx !== -1) {
-            startOffset = idx;
-            endOffset = idx + selectedText.length;
-          }
-        }
-      }
-    }
-
-    const selectionRange: SelectionRange | undefined = blockId ? {
-      blockId,
-      startOffset,
-      endOffset,
-    } : undefined;
-
-    // Calculate vertical offset relative to the block element
+    // Calculate vertical offset relative to the first block element
     let verticalOffset = 0;
-    if (selection.rangeCount > 0) {
-      const range = selection.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
-      const blockElement = document.querySelector(`[data-block-id="${blockId}"]`);
-      if (blockElement) {
-        const blockRect = blockElement.getBoundingClientRect();
-        verticalOffset = rect.top - blockRect.top;
-      }
+    const rect = range.getBoundingClientRect();
+    const firstBlockEl = document.querySelector(`[data-block-id="${selectionRanges[0].blockId}"]`);
+    if (firstBlockEl) {
+      const blockRect = firstBlockEl.getBoundingClientRect();
+      verticalOffset = rect.top - blockRect.top;
     }
 
     const newEntry: PendingEntry = {
       id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
-      messageIndex,
-      blockId, // Store block ID for database linking
+      messageIndex: firstMessageIndex ?? messageIndex,
+      blockIds,
       text,
-      selectedText: text, // Store the exact selected text
-      selectionRange, // Store the selection range for persistence
+      selectedText: text,
+      selectionRanges,
       primaryInput: "",
       primaryList: [],
       verticalOffset,
@@ -2239,14 +2442,16 @@ export default function Sessions() {
 
     setPending((prev) => [...prev, newEntry]);
     setHighlightedTexts((prev) => [...prev, text]);
-
-    // Also track highlighted block IDs
-    if (blockId) {
-      setHighlightedBlockIds(prev => new Set([...prev, blockId]));
-    }
+    
+    // Track all highlighted block IDs
+    setHighlightedBlockIds(prev => {
+      const next = new Set(prev);
+      blockIds.forEach(id => next.add(id));
+      return next;
+    });
 
     window.getSelection()?.removeAllRanges();
-  };
+  }, [pending, masterCancelled, editingMasterName, tags, displayItems, getOffsetInBlock]);
 
   const handlePrimaryChange = (id: string, value: string) => {
     setPending((prev) =>
@@ -2521,9 +2726,9 @@ export default function Sessions() {
           masterTagName: tag.master,
           primaryTags: [{
             name: trimmed,
-            blockId: tag.blockIds[0],
-            selectionRange: tag.selectionRanges?.[0],
-            selectedText: tag.allText?.[0]
+            blockIds: tag.blockIds,
+            selectionRanges: tag.selectionRanges,
+            selectedText: tag.allText?.join(' ')
           }],
           selectionRanges: tag.selectionRanges,
           selectedText: tag.allText?.join(' ')
@@ -2641,7 +2846,12 @@ export default function Sessions() {
   const handleMasterCancelAction = () => {
     // This is the "Cancel" button next to "Add" (not the popup cancel)
     // Get all pending block IDs before clearing
-    const pendingBlockIds = pending.map(p => p.blockId).filter((id): id is string => !!id);
+    const pendingBlockIds = pending.flatMap(p => {
+      const ids: string[] = [];
+      if (p.blockId) ids.push(p.blockId);
+      if (p.blockIds) ids.push(...p.blockIds);
+      return ids;
+    });
     const pendingTexts = pending.map(p => p.text);
 
     // Get block IDs and texts that are still in saved tags
@@ -2700,14 +2910,20 @@ export default function Sessions() {
     const activeEntries = hasPrimaryTags ? pending.filter(p => p.primaryList.length > 0) : pending;
 
     // Collect all block IDs from active entries
-    const blockIds = activeEntries
-      .filter((p) => p.blockId)
-      .map((p) => p.blockId!);
+    const blockIds = activeEntries.flatMap((p) => {
+      const ids: string[] = [];
+      if (p.blockId) ids.push(p.blockId);
+      if (p.blockIds) ids.push(...p.blockIds);
+      return Array.from(new Set(ids)); // Deduplicate
+    });
 
     // Collect all selection ranges for precise highlight persistence
-    const selectionRanges: SelectionRange[] = activeEntries
-      .filter((p) => p.selectionRange)
-      .map((p) => p.selectionRange!);
+    const selectionRanges: SelectionRange[] = activeEntries.flatMap((p) => {
+      const ranges: SelectionRange[] = [];
+      if (p.selectionRange) ranges.push(p.selectionRange);
+      if (p.selectionRanges) ranges.push(...p.selectionRanges);
+      return ranges;
+    });
 
     // Combine all selected texts for the API
     const combinedSelectedText = activeEntries.map((p) => p.selectedText).join(' ');
@@ -2718,10 +2934,12 @@ export default function Sessions() {
         value: val.value,
         comment: val.comment,
         messageIndex: p.messageIndex,
-        blockId: p.blockId,
+        blockId: p.blockId || (p.blockIds && p.blockIds[0]),
+        blockIds: p.blockIds, // Pass multiple block IDs
         secondaryTags: val.secondaryTags, // Include secondary tags
         selectedText: p.selectedText, // Store selected text per primary
         selectionRange: p.selectionRange, // Store selection range per primary
+        selectionRanges: p.selectionRanges, // Pass multiple ranges
       }))
     );
 
@@ -2761,7 +2979,9 @@ export default function Sessions() {
               secondaryTags: p.secondaryTags?.map(s => s.value) || [], // Pass secondary tag names
               selectedText: p.selectedText, // The exact selected text
               selectionRange: p.selectionRange, // Character offsets within the block
+              selectionRanges: p.selectionRanges, // Multiple ranges
               blockId: p.blockId, // Send specific block ID for this highlight
+              blockIds: p.blockIds, // Multiple block IDs
             })),
             // Selection data for precise highlight persistence
             selectedText: combinedSelectedText,
@@ -2812,8 +3032,15 @@ export default function Sessions() {
     // Use the first impression ID as the unique ID for this tag group
     // Create SEPARATE TagItems for DIFFERENT selections to allow independent positioning
     const newTags: TagItem[] = activeEntries.map((p, pIdx) => {
+      const firstBlockId = p.blockId || (p.blockIds && p.blockIds[0]) || "";
       const savedImp = p.primaryList.length > 0
-        ? savedImpressions.find(imp => imp.primaryTagName === p.primaryList[0]?.value && imp.blockIds.includes(p.blockId!))
+        ? savedImpressions.find(imp => {
+          const impBlockIds = imp.blockIds || [];
+          return imp.primaryTagName === p.primaryList[0]?.value && (
+            (p.blockId && impBlockIds.includes(p.blockId)) ||
+            (p.blockIds && p.blockIds.some(id => impBlockIds.includes(id)))
+          );
+        })
         : null;
       const tagId = savedImp?.impressionId || Date.now().toString() + Math.random().toString(36).slice(2, 6) + pIdx;
 
@@ -2825,13 +3052,19 @@ export default function Sessions() {
         masterColor: getMasterTagColor(savedMasterTagId || masterToApply || tagId),
         branchTags: p.branchTags?.map(b => ({ id: Math.random().toString(36).slice(2, 9), name: b.value })), // Local branch tags
         primaryList: p.primaryList.map(val => {
-          const imp = savedImpressions.find(si => si.primaryTagName === val.value && si.blockIds.includes(p.blockId!));
+          const imp = savedImpressions.find(si => {
+            const siBlockIds = si.blockIds || [];
+            return si.primaryTagName === val.value && (
+              (p.blockId && siBlockIds.includes(p.blockId)) ||
+              (p.blockIds && p.blockIds.some(id => siBlockIds.includes(id)))
+            );
+          });
           return {
             id: val.id,
             value: val.value,
             comment: val.comment,
             messageIndex: p.messageIndex,
-            blockId: p.blockId,
+            blockId: p.blockId || firstBlockId,
             secondaryTags: val.secondaryTags,
             selectedText: p.selectedText,
             selectionRange: p.selectionRange,
@@ -2841,8 +3074,8 @@ export default function Sessions() {
           };
         }),
         allText: [p.selectedText],
-        blockIds: [p.blockId!],
-        selectionRanges: p.selectionRange ? [p.selectionRange] : [],
+        blockIds: p.blockIds || (p.blockId ? [p.blockId] : []),
+        selectionRanges: p.selectionRanges || (p.selectionRange ? [p.selectionRange] : []),
         verticalOffset: p.verticalOffset,
       };
     });
@@ -2877,6 +3110,15 @@ export default function Sessions() {
           end: entry.selectionRange.endOffset
         });
       }
+      // Check multi-block ranges
+      entry.selectionRanges?.forEach(sr => {
+        if (sr.blockId === blockId) {
+          ranges.push({
+            start: sr.startOffset,
+            end: sr.endOffset
+          });
+        }
+      });
     });
 
     // Check saved tags
@@ -2897,6 +3139,15 @@ export default function Sessions() {
             end: primary.selectionRange.endOffset
           });
         }
+        // Check multi-block primary ranges
+        primary.selectionRanges?.forEach(sr => {
+          if (sr.blockId === blockId) {
+            ranges.push({
+              start: sr.startOffset,
+              end: sr.endOffset
+            });
+          }
+        });
       });
     });
 
@@ -2939,7 +3190,10 @@ export default function Sessions() {
           const hoveredTag = tags.find(t =>
             t.id === hoveredTagId &&
             (t.selectionRanges?.some(sr => sr.blockId === blockId && sr.startOffset === range.start) ||
-              t.primaryList.some(p => p.selectionRange?.blockId === blockId && p.selectionRange?.startOffset === range.start))
+              t.primaryList.some(p => 
+                (p.selectionRange?.blockId === blockId && p.selectionRange?.startOffset === range.start) ||
+                p.selectionRanges?.some(sr => sr.blockId === blockId && sr.startOffset === range.start)
+              ))
           );
 
           // Add highlighted text
@@ -3298,8 +3552,10 @@ export default function Sessions() {
         };
       });
 
-      // Remove empty master tags (no primary tags left)
-      const nonEmptyTags = updatedTags.filter(t => t.primaryList.length > 0);
+      // Remove empty master tags (those with no primary tags AND no selection ranges)
+      const nonEmptyTags = updatedTags.filter(t =>
+        t.primaryList.length > 0 || (t.selectionRanges && t.selectionRanges.length > 0)
+      );
       setTags(nonEmptyTags);
 
       // Recalculate highlights
@@ -3330,19 +3586,25 @@ export default function Sessions() {
       // Remove the text from highlighted texts
       setHighlightedTexts(prev => prev.filter(t => t !== entry.text));
 
-      // Remove the block ID from highlighted block IDs
-      if (entry.blockId) {
-        // Only remove if no other pending entries or tags reference this block
-        const otherPendingWithBlock = pending.filter(p => p.id !== entryId && p.blockId === entry.blockId);
-        const tagsWithBlock = tags.some(t => t.blockIds?.includes(entry.blockId!));
+      // Collect all block IDs associated with this entry
+      const blocksToRemove = new Set<string>();
+      if (entry.blockId) blocksToRemove.add(entry.blockId);
+      if (entry.blockIds) entry.blockIds.forEach(id => blocksToRemove.add(id));
 
-        if (otherPendingWithBlock.length === 0 && !tagsWithBlock) {
-          setHighlightedBlockIds(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(entry.blockId!);
-            return newSet;
+      if (blocksToRemove.size > 0) {
+        setHighlightedBlockIds(prev => {
+          const next = new Set(prev);
+          blocksToRemove.forEach(blockId => {
+            // Only remove if no other pending entries or tags reference this block
+            const otherPendingWithBlock = pending.find(p => p.id !== entryId && (p.blockId === blockId || p.blockIds?.includes(blockId)));
+            const tagsWithBlock = tags.some(t => t.blockIds.includes(blockId));
+
+            if (!otherPendingWithBlock && !tagsWithBlock) {
+              next.delete(blockId);
+            }
           });
-        }
+          return next;
+        });
       }
     }
     setPending(prev => prev.filter(p => p.id !== entryId));
@@ -3356,7 +3618,7 @@ export default function Sessions() {
   }, []);
 
   return (
-    <div className="flex h-screen w-full bg-[#F9FAFB]">
+    <div className="flex h-full w-full bg-[#F9FAFB]">
 
       {/* --- TOAST NOTIFICATION --- */}
       {toast && (
@@ -3500,9 +3762,13 @@ export default function Sessions() {
       <main className="flex-1 flex flex-col h-full overflow-hidden">
         <header className="w-full h-[60px] bg-white border-b border-[#F0F0F0] flex items-center justify-between px-5 shrink-0">
           <div className="flex items-center gap-3">
-            <Link href={videoId ? "/recordings" : "/"}>
+            <button 
+              onClick={() => router.back()} 
+              className="hover:opacity-70 transition flex items-center"
+              aria-label="Go back"
+            >
               <img src="/icons/arrow-left.png" alt="Back" className="w-[24px] h-[24px] cursor-pointer" />
-            </Link>
+            </button>
             <div className="flex flex-col justify-center">
               <h1 className="text-[24px] font-medium text-[#111827] leading-tight">Sessions</h1>
               {loadedVideo && (
@@ -3589,1289 +3855,1307 @@ export default function Sessions() {
             )}
           </div>
         </header>
+        
+        {/* Speaker Carousel */}
+        <div className="shrink-0 bg-gray-50 border-b border-[#F0F0F0] px-4 py-3">
+          <SpeakersCarousel
+            speakersData={speakers}
+            onUpload={handleFileUpload}
+            onUpdateAvatar={handleUpdateAvatar}
+            onUpdateSpeaker={handleUpdateSpeaker}
+            onDeleteSpeaker={handleDeleteSpeaker}
+          />
+        </div>
 
-        <div className="flex flex-1 overflow-y-auto" ref={sharedScrollRootRef} data-transcript-scroll-root>
+        <div className="flex-1 overflow-y-auto" ref={sharedScrollRootRef} data-transcript-scroll-root>
           {/* Senior Layout Engineer Fix: 
               Wrap both panes in a 'flex min-h-full w-full items-stretch' container.
               By using 'flex' on the scroll root and 'min-h-full' + 'items-stretch' on this wrapper,
               both the Transcript and Right Sidebar are forced to match the height of the tallest 
               content (the Transcript), ensuring the sidebar border and background persist to the bottom. */}
-          <div className="flex min-h-full w-full items-stretch">
+          <div className="flex w-full min-h-full items-stretch">
             {/* Left Side: Transcript */}
             <div className="flex-1 p-6" ref={leftListRef}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-[#111827] text-lg font-semibold">
-                {loadedVideo ? "Transcription" : "Auto Transcription"}
-              </h2>
-              <div className="flex items-center gap-3">
-                {loadedVideo && (
-                  <span className="text-xs text-emerald-600 bg-emerald-50 px-2 py-1 rounded">
-                    {sessionData.length} blocks
-                  </span>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-[#111827] text-lg font-semibold">
+                  {loadedVideo ? "Transcription" : "Auto Transcription"}
+                </h2>
+                <div className="flex items-center gap-3">
+                  {loadedVideo && (
+                    <span className="text-xs text-emerald-600 bg-emerald-50 px-2 py-1 rounded">
+                      {sessionData.length} blocks
+                    </span>
+                  )}
+
+                  {/* Filter Controls */}
+                  <div className="flex items-center gap-2">
+                    {/* Hide Untagged Toggle */}
+                    <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={hideUntagged}
+                        onChange={(e) => setHideUntagged(e.target.checked)}
+                        className="w-4 h-4 rounded border-gray-300 text-[#00A3AF] focus:ring-[#00A3AF] flex-shrink-0"
+                      />
+                      <span className="leading-tight">Hide Untagged</span>
+                    </label>
+
+                    {/* Section Filter */}
+                    {availableSections.length > 0 && (
+                      <select
+                        value={filterSection || ''}
+                        onChange={(e) => setFilterSection(e.target.value || null)}
+                        className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-[#00A3AF]"
+                      >
+                        <option value="">All Sections</option>
+                        {availableSections.map(section => (
+                          <option key={section.id} value={section.id}>{section.name}</option>
+                        ))}
+                      </select>
+                    )}
+
+                    {/* Master Tag Filter */}
+                    {tags.length > 0 && (
+                      <select
+                        value={filterMaster || ''}
+                        onChange={(e) => setFilterMaster(e.target.value || null)}
+                        className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-[#00A3AF]"
+                      >
+                        <option value="">All Tags</option>
+                        {(() => {
+                          // Group tags by master name for a cleaner filter list
+                          const uniqueMasterTags = new Map<string, string>();
+                          tags.forEach(t => {
+                            const name = t.master || 'Unnamed';
+                            // Store by name, using masterTagId or name as the filter value
+                            if (!uniqueMasterTags.has(name)) {
+                              uniqueMasterTags.set(name, t.masterTagId || name);
+                            }
+                          });
+
+                          return Array.from(uniqueMasterTags.entries())
+                            .sort((a, b) => a[0].localeCompare(b[0]))
+                            .map(([name, val]) => (
+                              <option key={val} value={val}>{name}</option>
+                            ));
+                        })()}
+                      </select>
+                    )}
+
+                    {/* Clear Filters */}
+                    {(hideUntagged || filterSection || filterMaster) && (
+                      <button
+                        onClick={() => {
+                          setHideUntagged(false);
+                          setFilterSection(null);
+                          setFilterMaster(null);
+                        }}
+                        className="text-xs text-gray-500 hover:text-gray-700 underline"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white p-4 rounded-xl shadow-sm">
+                {/* Add section/subsection before first item */}
+                {filteredDisplayItems.length > 0 && !hideUntagged && !filterSection && !filterMaster && (
+                  <div
+                    className="relative h-[30px] mb-2 flex items-center justify-center opacity-0 hover:opacity-100 cursor-pointer transition-opacity duration-200 z-30"
+                    onClick={(e) => handleContextMenu(e, 0, 0)}
+                  >
+                    <div className="w-full h-[2px] bg-[#00A3AF] relative flex items-center justify-center">
+                      <div className="bg-[#00A3AF] text-white rounded-full p-0.5 shadow-sm transform transition-transform hover:scale-110">
+                        <PlusIcon className="w-3 h-3" />
+                      </div>
+                    </div>
+                  </div>
                 )}
 
-                {/* Filter Controls */}
-                <div className="flex items-center gap-2">
-                  {/* Hide Untagged Toggle */}
-                  <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={hideUntagged}
-                      onChange={(e) => setHideUntagged(e.target.checked)}
-                      className="w-4 h-4 rounded border-gray-300 text-[#00A3AF] focus:ring-[#00A3AF] flex-shrink-0"
-                    />
-                    <span className="leading-tight">Hide Untagged</span>
-                  </label>
-
-                  {/* Section Filter */}
-                  {availableSections.length > 0 && (
-                    <select
-                      value={filterSection || ''}
-                      onChange={(e) => setFilterSection(e.target.value || null)}
-                      className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-[#00A3AF]"
-                    >
-                      <option value="">All Sections</option>
-                      {availableSections.map(section => (
-                        <option key={section.id} value={section.id}>{section.name}</option>
-                      ))}
-                    </select>
-                  )}
-
-                  {/* Master Tag Filter */}
-                  {tags.length > 0 && (
-                    <select
-                      value={filterMaster || ''}
-                      onChange={(e) => setFilterMaster(e.target.value || null)}
-                      className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-[#00A3AF]"
-                    >
-                      <option value="">All Tags</option>
-                      {(() => {
-                        // Group tags by master name for a cleaner filter list
-                        const uniqueMasterTags = new Map<string, string>();
-                        tags.forEach(t => {
-                          const name = t.master || 'Unnamed';
-                          // Store by name, using masterTagId or name as the filter value
-                          if (!uniqueMasterTags.has(name)) {
-                            uniqueMasterTags.set(name, t.masterTagId || name);
-                          }
-                        });
-
-                        return Array.from(uniqueMasterTags.entries())
-                          .sort((a, b) => a[0].localeCompare(b[0]))
-                          .map(([name, val]) => (
-                            <option key={val} value={val}>{name}</option>
-                          ));
-                      })()}
-                    </select>
-                  )}
-
-                  {/* Clear Filters */}
-                  {(hideUntagged || filterSection || filterMaster) && (
+                {/* Show message when filtering results in empty list */}
+                {filteredDisplayItems.length === 0 && displayItems.length > 0 && (
+                  <div className="text-center py-8 text-gray-500">
+                    <p className="text-sm">No items match the current filters.</p>
                     <button
                       onClick={() => {
                         setHideUntagged(false);
                         setFilterSection(null);
                         setFilterMaster(null);
                       }}
-                      className="text-xs text-gray-500 hover:text-gray-700 underline"
+                      className="mt-2 text-[#00A3AF] text-sm underline"
                     >
-                      Clear
+                      Clear filters
                     </button>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white p-4 rounded-xl shadow-sm">
-              {/* Add section/subsection before first item */}
-              {filteredDisplayItems.length > 0 && !hideUntagged && !filterSection && !filterMaster && (
-                <div
-                  className="relative h-[20px] mb-2 flex items-center justify-center opacity-0 hover:opacity-100 cursor-pointer transition-opacity duration-200"
-                  onClick={(e) => handleContextMenu(e, 0, 0)}
-                >
-                  <div className="w-full h-[2px] bg-[#00A3AF] relative flex items-center justify-center">
-                    <div className="bg-[#00A3AF] text-white rounded-full p-0.5 shadow-sm transform transition-transform hover:scale-110">
-                      <PlusIcon className="w-3 h-3" />
-                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* Show message when filtering results in empty list */}
-              {filteredDisplayItems.length === 0 && displayItems.length > 0 && (
-                <div className="text-center py-8 text-gray-500">
-                  <p className="text-sm">No items match the current filters.</p>
-                  <button
-                    onClick={() => {
-                      setHideUntagged(false);
-                      setFilterSection(null);
-                      setFilterMaster(null);
-                    }}
-                    className="mt-2 text-[#00A3AF] text-sm underline"
-                  >
-                    Clear filters
-                  </button>
-                </div>
-              )}
+                {filteredDisplayItems.map((item, index) => {
+                  // Find the original index for context menu operations
+                  const originalIndex = displayItems.findIndex(d => d.id === item.id);
+                  const isFiltered = hideUntagged || filterSection || filterMaster;
 
-              {filteredDisplayItems.map((item, index) => {
-                // Find the original index for context menu operations
-                const originalIndex = displayItems.findIndex(d => d.id === item.id);
-                const isFiltered = hideUntagged || filterSection || filterMaster;
-
-                if (item.type === 'section_close') {
-                  const dataIndex = item.endBlockIndex ?? 0;
-                  return (
-                    <div key={item.id} className="relative group/wrapper">
-                      <div
-                        ref={(el) => { if (el) leftRowRefs.current.set(item.id, el); else leftRowRefs.current.delete(item.id); }}
-                        className="my-4 flex items-center gap-2 animate-fade-in group relative"
-                      >
-                        <div className="w-2 h-2 bg-gray-300 rounded-full flex-shrink-0" />
-                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider leading-tight">
-                          {item.title || 'Section'}
-                        </span>
-                        <div className="flex-1 h-px bg-gray-300 border-dashed border-t" />
-                        <button
-                          onClick={() => deleteDisplayItem(item.id)}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded flex items-center justify-center flex-shrink-0"
-                          title="Delete Close Line"
-                        >
-                          <TrashIcon className="w-3 h-3 text-red-400" />
-                        </button>
-                      </div>
-                      {/* Show + button after section close - hide when filtering */}
-                      {!isFiltered && (
-                        <div
-                          className="absolute bottom-[-10px] left-0 w-full h-[20px] z-10 flex items-center justify-center opacity-0 hover:opacity-100 cursor-pointer transition-opacity duration-200"
-                          onClick={(e) => handleContextMenu(e, originalIndex + 1, dataIndex + 1)}
-                        >
-                          <div className="w-full h-[2px] bg-[#00A3AF] relative flex items-center justify-center">
-                            <div className="bg-[#00A3AF] text-white rounded-full p-0.5 shadow-sm transform transition-transform hover:scale-110">
-                              <PlusIcon className="w-3 h-3" />
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                if (item.type === 'subsection_close') {
-                  const dataIndex = item.endBlockIndex ?? 0;
-                  return (
-                    <div key={item.id} className="relative group/wrapper">
-                      <div
-                        ref={(el) => { if (el) leftRowRefs.current.set(item.id, el); else leftRowRefs.current.delete(item.id); }}
-                        className="my-4 flex items-center gap-2 animate-fade-in group relative ml-4"
-                      >
-                        <div className="w-1.5 h-1.5 bg-amber-300 rounded-full flex-shrink-0" />
-                        <span className="text-xs font-medium text-amber-500 uppercase tracking-wider leading-tight">
-                          {item.title || 'Subsection'}
-                        </span>
-                        <div className="flex-1 h-px bg-amber-100 border-dashed border-t" />
-                        <button
-                          onClick={() => deleteDisplayItem(item.id)}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded flex items-center justify-center flex-shrink-0"
-                          title="Delete Close Line"
-                        >
-                          <TrashIcon className="w-3 h-3 text-red-400" />
-                        </button>
-                      </div>
-                      {/* Show + button after subsection close - hide when filtering */}
-                      {!isFiltered && (
-                        <div
-                          className="absolute bottom-[-10px] left-0 w-full h-[20px] z-10 flex items-center justify-center opacity-0 hover:opacity-100 cursor-pointer transition-opacity duration-200"
-                          onClick={(e) => handleContextMenu(e, originalIndex + 1, dataIndex + 1)}
-                        >
-                          <div className="w-full h-[2px] bg-[#00A3AF] relative flex items-center justify-center">
-                            <div className="bg-[#00A3AF] text-white rounded-full p-0.5 shadow-sm transform transition-transform hover:scale-110">
-                              <PlusIcon className="w-3 h-3" />
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                if (item.type === 'section') {
-                  const isOpen = !item.isClosed;
-                  return (
-                    <div
-                      key={item.id}
-                      ref={(el) => { if (el) leftRowRefs.current.set(item.id, el); else leftRowRefs.current.delete(item.id); }}
-                      className={`my-4 flex items-center gap-2 animate-fade-in group relative ${item.isClosed ? 'opacity-75' : ''}`}
-                    >
-                      {item.isEditing ? (
-                        <div className="flex items-center gap-2 w-full">
-                          <div className="w-2 h-2 rounded-full bg-[#00A3AF] flex-shrink-0" />
-                          <input
-                            autoFocus
-                            type="text"
-                            placeholder="Enter name"
-                            className="border-b border-[#00A3AF] focus:outline-none text-xs font-semibold text-[#00A3AF] uppercase tracking-wider min-w-[150px]"
-                            value={item.title || ""}
-                            onChange={(e) => updateSectionTitle(item.id, e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') saveSectionTitle(item.id);
-                            }}
-                            onBlur={() => saveSectionTitle(item.id)}
-                          />
-                          <div className="flex-1 h-px bg-[#00A3AF]/30" />
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-2 w-full">
-                          <div className="w-2 h-2 rounded-full bg-[#00A3AF] flex-shrink-0" />
-                          <span className="text-xs font-semibold text-[#00A3AF] uppercase tracking-wider leading-tight">
-                            {item.title || 'Section'}
-                            {item.isClosed && <span className="text-[10px] text-gray-400 ml-1 font-normal">(closed)</span>}
-                          </span>
-                          <div className={`flex-1 h-px ${item.isClosed ? 'bg-gray-300' : 'bg-[#00A3AF]/30'}`} />
-                          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                            <button onClick={() => toggleSectionEdit(item.id)} className="p-1 hover:bg-gray-100 rounded flex items-center justify-center" title="Edit">
-                              <PencilIcon className="w-3 h-3 text-gray-400" />
-                            </button>
-                            <button onClick={() => deleteDisplayItem(item.id)} className="p-1 hover:bg-red-50 rounded flex items-center justify-center" title="Delete">
-                              <TrashIcon className="w-3 h-3 text-red-400" />
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                if (item.type === 'subsection') {
-                  const isOpen = !item.isClosed;
-                  return (
-                    <div
-                      key={item.id}
-                      ref={(el) => { if (el) leftRowRefs.current.set(item.id, el); else leftRowRefs.current.delete(item.id); }}
-                      className={`my-4 flex items-center gap-2 animate-fade-in group relative ml-4 ${item.isClosed ? 'opacity-75' : ''}`}
-                    >
-                      {item.isEditing ? (
-                        <div className="flex items-center gap-2 w-full">
-                          <div className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" />
-                          <input
-                            autoFocus
-                            type="text"
-                            placeholder="Enter name"
-                            className="border-b border-amber-500 focus:outline-none text-xs font-medium text-amber-600 uppercase tracking-wider min-w-[150px]"
-                            value={item.title || ""}
-                            onChange={(e) => updateSectionTitle(item.id, e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') saveSectionTitle(item.id);
-                            }}
-                            onBlur={() => saveSectionTitle(item.id)}
-                          />
-                          <div className="flex-1 h-px bg-amber-300/50" />
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-2 w-full">
-                          <div className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" />
-                          <span className="text-xs font-medium text-amber-600 uppercase tracking-wider leading-tight">
-                            {item.title || 'Subsection'}
-                            {item.isClosed && <span className="text-[10px] text-gray-400 ml-1 font-normal">(closed)</span>}
-                          </span>
-                          <div className={`flex-1 h-px ${item.isClosed ? 'bg-amber-100' : 'bg-amber-300/50'}`} />
-                          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                            <button onClick={() => toggleSectionEdit(item.id)} className="p-1 hover:bg-gray-100 rounded flex items-center justify-center" title="Edit">
-                              <PencilIcon className="w-3 h-3 text-gray-400" />
-                            </button>
-                            <button onClick={() => deleteDisplayItem(item.id)} className="p-1 hover:bg-red-50 rounded flex items-center justify-center" title="Delete">
-                              <TrashIcon className="w-3 h-3 text-red-400" />
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                const data = item.originalData!;
-                const dataIndex = item.originalIndex!;
-                const blockId = data.blockId;
-                const isHighlighted = blockId && highlightedBlockIds.has(blockId);
-                const isHoveredFromTag = blockId && hoveredBlockIds.has(blockId);
-
-                return (
-                  <div key={item.id} className="relative group/wrapper">
-                    <div
-                      ref={(el) => {
-                        if (el) leftRowRefs.current.set(item.id, el);
-                        else leftRowRefs.current.delete(item.id);
-                        // Also store ref for block-based scrolling
-                        if (blockId && el) {
-                          blockRefs.current.set(blockId, el);
-                        }
-                      }}
-                      className={`mb-5 cursor-context-menu transition-all duration-200 rounded-lg ${isHoveredFromTag
-                        ? 'ring-2 ring-amber-400 bg-amber-50 scale-[1.01] shadow-lg'
-                        : isHighlighted
-                          ? 'ring-2 ring-[#00A3AF]/30 bg-[#00A3AF]/5'
-                          : ''
-                        }`}
-                      onMouseUp={() => handleTextSelection(dataIndex, blockId)}
-                      onContextMenu={(e) => !isFiltered && handleContextMenu(e, originalIndex, dataIndex)}
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        {data.image && data.image.trim() ? (
-                          <img src={data.image} alt={data.name} className="w-[26px] h-[26px] rounded-full flex-shrink-0" />
-                        ) : (
-                          <div className="w-[26px] h-[26px] rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
-                            <UserIcon className="w-4 h-4 text-gray-400" />
-                          </div>
-                        )}
-                        <span className="font-semibold text-sm leading-tight">{data.name}</span>
-                        <span className="ml-auto flex items-center gap-1.5 flex-shrink-0">
-                          <img src="/icons/clock-1.png" alt="Clock" className="w-[14px] h-[14px] object-contain" />
-                          <span className="text-gray-400 text-xs leading-tight">{data.time}</span>
-                        </span>
-                      </div>
-                      <div className="rounded-[10px] p-[12px]">
-                        <p
-                          className="text-sm leading-relaxed text-gray-600 text-justify"
-                          data-block-text={data.message}
-                        >
-                          {highlightTextWithRanges(data.message, blockId)}
-                        </p>
-                      </div>
-                    </div>
-                    {/* Show + button between items - hide when filtering */}
-                    {!isFiltered && (
-                      <div
-                        className="absolute bottom-[-10px] left-0 w-full h-[20px] z-10 flex items-center justify-center opacity-0 hover:opacity-100 cursor-pointer transition-opacity duration-200"
-                        onClick={(e) => handleContextMenu(e, originalIndex + 1, dataIndex + 1)}
-                      >
-                        <div className="w-full h-[2px] bg-[#00A3AF] relative flex items-center justify-center">
-                          <div className="bg-[#00A3AF] text-white rounded-full p-0.5 shadow-sm transform transition-transform hover:scale-110">
-                            <PlusIcon className="w-3 h-3" />
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Right Side: Tags */}
-          <div className="w-[420px] border-l border-gray-200 p-6 flex flex-col overflow-y-visible" ref={rightListRef}>
-            <div className="flex border-b border-gray-200 w-full mb-4">
-              <button
-                onClick={() => setActiveTab("current")}
-                className={`flex-1 text-sm font-medium py-2 ${activeTab === "current" ? "text-[#00A3AF] border-b-2 border-[#00A3AF]" : "text-gray-500"}`}
-              >
-                Current
-              </button>
-              <button
-                onClick={() => setActiveTab("recent")}
-                className={`flex-1 text-sm font-medium py-2 ${activeTab === "recent" ? "text-[#00A3AF] border-b-2 border-[#00A3AF]" : "text-gray-500"}`}
-              >
-                Recent
-              </button>
-              <button
-                onClick={() => setActiveTab("recordings")}
-                className={`flex-1 text-sm font-medium py-2 ${activeTab === "recordings" ? "text-[#00A3AF] border-b-2 border-[#00A3AF]" : "text-gray-500"}`}
-              >
-                Recordings
-              </button>
-            </div>
-
-            {activeTab === "current" && (
-              <div 
-                className="relative" 
-                style={{ position: 'relative', minHeight: '100%' }}
-                ref={rightContentRef}
-              >
-                {displayItems.map((item, index) => {
-                  const LANE_WIDTH = 12;
-
-                  if (item.type !== 'data') {
-                    // Geometry-driven: Get position from transcript element
-                    const elementPos = elementPositions.get(index);
-                    if (!elementPos) return null; // Wait for position calculation
-
-                    // Collect all active master names that should pass through this section spacer
-                    const activeMasterNames = Object.entries(masterTagMetadata)
-                      .filter(([_, meta]) => index >= meta.firstItemIndex && index <= meta.lastItemIndex)
-                      .map(([name, _]) => name);
-
-                    // Section/Subsection spacer - absolutely positioned
+                  if (item.type === 'section_close') {
+                    const dataIndex = item.endBlockIndex ?? 0;
                     return (
-                      <div
-                        key={item.id}
-                        style={{
-                          position: 'absolute',
-                          top: `${elementPos.top}px`,
-                          left: 0,
-                          right: 0,
-                          height: `${elementPos.height}px`,
-                          pointerEvents: 'none' // Allow clicks to pass through to tags below
-                        }}
-                        className="w-full"
-                      >
-                        {/* Show section indicator in right panel */}
-                        {item.type === 'section' && (
-                          <div className="flex items-center gap-2 px-2 py-1 pointer-events-auto">
-                            <div className="w-2 h-2 rounded-full bg-[#00A3AF]" />
-                            <span className="text-xs font-semibold text-[#00A3AF] uppercase tracking-wider">
-                              {item.title || 'Section'}
-                            </span>
-                            <div className="flex-1 h-px bg-[#00A3AF]/30" />
-                          </div>
-                        )}
-                        {item.type === 'subsection' && (
-                          <div className="flex items-center gap-2 px-2 py-1 ml-4 pointer-events-auto">
-                            <div className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                            <span className="text-xs font-medium text-amber-600 uppercase tracking-wider">
-                              {item.title || 'Subsection'}
-                            </span>
-                            <div className="flex-1 h-px bg-amber-300/50" />
+                      <div key={item.id} className="relative group/wrapper">
+                        <div
+                          ref={(el) => { if (el) leftRowRefs.current.set(item.id, el); else leftRowRefs.current.delete(item.id); }}
+                          className="my-4 flex items-center gap-2 animate-fade-in group relative"
+                        >
+                          <div className="w-2 h-2 bg-gray-300 rounded-full flex-shrink-0" />
+                          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider leading-tight">
+                            {item.title || 'Section'}
+                          </span>
+                          <div className="flex-1 h-px bg-gray-300 border-dashed border-t" />
+                          <button
+                            onClick={() => deleteDisplayItem(item.id)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded flex items-center justify-center flex-shrink-0"
+                            title="Delete Close Line"
+                          >
+                            <TrashIcon className="w-3 h-3 text-red-400" />
+                          </button>
+                        </div>
+                        {/* Show + button after section close - hide when filtering */}
+                        {!isFiltered && (
+                          <div
+                            className="absolute bottom-[-15px] left-0 w-full h-[30px] z-30 flex items-center justify-center opacity-0 hover:opacity-100 cursor-pointer transition-opacity duration-200"
+                            onClick={(e) => handleContextMenu(e, originalIndex + 1, dataIndex + 1)}
+                          >
+                            <div className="w-full h-[2px] bg-[#00A3AF] relative flex items-center justify-center">
+                              <div className="bg-[#00A3AF] text-white rounded-full p-0.5 shadow-sm transform transition-transform hover:scale-110">
+                                <PlusIcon className="w-3 h-3" />
+                              </div>
+                            </div>
                           </div>
                         )}
                       </div>
                     );
                   }
 
-                  // Geometry-driven: Tags are rendered absolutely, not in rows
-                  // Return null here - tags will be rendered separately
-                  return null;
-                })}
-
-                {/* Render all tags with absolute positioning */}
-                {tags.map((tag) => {
-                  const LANE_WIDTH = 12;
-                  // For independent master tags (no primaries), use the first block index for positioning
-                  const firstPrimary = tag.primaryList[0];
-                  let itemIndex = -1;
-
-                  if (firstPrimary) {
-                    itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === firstPrimary.messageIndex);
-                  } else if (tag.blockIds.length > 0) {
-                    // Fallback: use the first block associated with this master tag
-                    itemIndex = displayItems.findIndex(d => d.type === 'data' && d.id === tag.blockIds[0]);
+                  if (item.type === 'subsection_close') {
+                    const dataIndex = item.endBlockIndex ?? 0;
+                    return (
+                      <div key={item.id} className="relative group/wrapper">
+                        <div
+                          ref={(el) => { if (el) leftRowRefs.current.set(item.id, el); else leftRowRefs.current.delete(item.id); }}
+                          className="my-4 flex items-center gap-2 animate-fade-in group relative ml-4"
+                        >
+                          <div className="w-1.5 h-1.5 bg-amber-300 rounded-full flex-shrink-0" />
+                          <span className="text-xs font-medium text-amber-500 uppercase tracking-wider leading-tight">
+                            {item.title || 'Subsection'}
+                          </span>
+                          <div className="flex-1 h-px bg-amber-100 border-dashed border-t" />
+                          <button
+                            onClick={() => deleteDisplayItem(item.id)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded flex items-center justify-center flex-shrink-0"
+                            title="Delete Close Line"
+                          >
+                            <TrashIcon className="w-3 h-3 text-red-400" />
+                          </button>
+                        </div>
+                        {/* Show + button after subsection close - hide when filtering */}
+                        {!isFiltered && (
+                          <div
+                            className="absolute bottom-[-15px] left-0 w-full h-[30px] z-30 flex items-center justify-center opacity-0 hover:opacity-100 cursor-pointer transition-opacity duration-200"
+                            onClick={(e) => handleContextMenu(e, originalIndex + 1, dataIndex + 1)}
+                          >
+                            <div className="w-full h-[2px] bg-[#00A3AF] relative flex items-center justify-center">
+                              <div className="bg-[#00A3AF] text-white rounded-full p-0.5 shadow-sm transform transition-transform hover:scale-110">
+                                <PlusIcon className="w-3 h-3" />
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
                   }
 
-                  if (itemIndex < 0) return null;
+                  if (item.type === 'section') {
+                    const isOpen = !item.isClosed;
+                    return (
+                      <div
+                        key={item.id}
+                        ref={(el) => { if (el) leftRowRefs.current.set(item.id, el); else leftRowRefs.current.delete(item.id); }}
+                        className={`my-4 flex items-center gap-2 animate-fade-in group relative ${item.isClosed ? 'opacity-75' : ''}`}
+                      >
+                        {item.isEditing ? (
+                          <div className="flex items-center gap-2 w-full">
+                            <div className="w-2 h-2 rounded-full bg-[#00A3AF] flex-shrink-0" />
+                            <input
+                              autoFocus
+                              type="text"
+                              placeholder="Enter name"
+                              className="border-b border-[#00A3AF] focus:outline-none text-xs font-semibold text-[#00A3AF] uppercase tracking-wider min-w-[150px]"
+                              value={item.title || ""}
+                              onChange={(e) => updateSectionTitle(item.id, e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') saveSectionTitle(item.id);
+                              }}
+                              onBlur={() => saveSectionTitle(item.id)}
+                            />
+                            <div className="flex-1 h-px bg-[#00A3AF]/30" />
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 w-full">
+                            <div className="w-2 h-2 rounded-full bg-[#00A3AF] flex-shrink-0" />
+                            <span className="text-xs font-semibold text-[#00A3AF] uppercase tracking-wider leading-tight">
+                              {item.title || 'Section'}
+                              {item.isClosed && <span className="text-[10px] text-gray-400 ml-1 font-normal">(closed)</span>}
+                            </span>
+                            <div className={`flex-1 h-px ${item.isClosed ? 'bg-gray-300' : 'bg-[#00A3AF]/30'}`} />
+                            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                              <button onClick={() => toggleSectionEdit(item.id)} className="p-1 hover:bg-gray-100 rounded flex items-center justify-center" title="Edit">
+                                <PencilIcon className="w-3 h-3 text-gray-400" />
+                              </button>
+                              <button onClick={() => deleteDisplayItem(item.id)} className="p-1 hover:bg-red-50 rounded flex items-center justify-center" title="Delete">
+                                <TrashIcon className="w-3 h-3 text-red-400" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
 
-                  // Get position from coordinate system
-                  const elementPos = elementPositions.get(itemIndex);
-                  const tagPos = tagPositions.get(tag.id);
+                  if (item.type === 'subsection') {
+                    const isOpen = !item.isClosed;
+                    return (
+                      <div
+                        key={item.id}
+                        ref={(el) => { if (el) leftRowRefs.current.set(item.id, el); else leftRowRefs.current.delete(item.id); }}
+                        className={`my-4 flex items-center gap-2 animate-fade-in group relative ml-4 ${item.isClosed ? 'opacity-75' : ''}`}
+                      >
+                        {item.isEditing ? (
+                          <div className="flex items-center gap-2 w-full">
+                            <div className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" />
+                            <input
+                              autoFocus
+                              type="text"
+                              placeholder="Enter name"
+                              className="border-b border-amber-500 focus:outline-none text-xs font-medium text-amber-600 uppercase tracking-wider min-w-[150px]"
+                              value={item.title || ""}
+                              onChange={(e) => updateSectionTitle(item.id, e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') saveSectionTitle(item.id);
+                              }}
+                              onBlur={() => saveSectionTitle(item.id)}
+                            />
+                            <div className="flex-1 h-px bg-amber-300/50" />
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 w-full">
+                            <div className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" />
+                            <span className="text-xs font-medium text-amber-600 uppercase tracking-wider leading-tight">
+                              {item.title || 'Subsection'}
+                              {item.isClosed && <span className="text-[10px] text-gray-400 ml-1 font-normal">(closed)</span>}
+                            </span>
+                            <div className={`flex-1 h-px ${item.isClosed ? 'bg-amber-100' : 'bg-amber-300/50'}`} />
+                            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                              <button onClick={() => toggleSectionEdit(item.id)} className="p-1 hover:bg-gray-100 rounded flex items-center justify-center" title="Edit">
+                                <PencilIcon className="w-3 h-3 text-gray-400" />
+                              </button>
+                              <button onClick={() => deleteDisplayItem(item.id)} className="p-1 hover:bg-red-50 rounded flex items-center justify-center" title="Delete">
+                                <TrashIcon className="w-3 h-3 text-red-400" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
 
-                  if (!elementPos || !tagPos) return null; // Wait for position calculation
-
-                  // Use adjusted top from collision detection
-                  const topPosition = tagPos.adjustedTop;
-
-                  const meta = masterTagMetadata[tag.master || 'No Master'];
-                  const masterLaneLeft = (meta?.uniqueIndex || 0) * LANE_WIDTH + 12;
-                  const tagColor = tag.masterColor || getMasterTagColor(tag.masterTagId || tag.id || tag.master || '');
-
-                  // Check if this is the first occurrence
-                  const isFirstRowForTag = itemIndex === meta?.firstItemIndex;
-                  const isFirstInstance = tag.id === meta?.id || tags.find(t => t.master === tag.master)?.id === tag.id;
-                  const shouldShowHeader = isFirstRowForTag && isFirstInstance;
-
-                  // Get all primaries for this tag
-                  const allPrimaries = tag.primaryList.map((p, i) => ({ ...p, originalIndex: i }));
-
-                  // Calculate card indentation based on hierarchy
-                  // Master tags (with header) should be indented, primary-only cards should be more indented
-                  const cardIndentation = shouldShowHeader ? 20 : 40; // 20px for master, 40px for primary-only
-                  const cardLeft = 64 + cardIndentation; // Base left (64px for tree lines) + indentation
+                  const data = item.originalData!;
+                  const dataIndex = item.originalIndex!;
+                  const blockId = data.blockId;
+                  const isHighlighted = blockId && highlightedBlockIds.has(blockId);
+                  const isHoveredFromTag = blockId && hoveredBlockIds.has(blockId);
 
                   return (
-                    <div
-                      key={tag.id}
-                      data-tag-id={tag.id}
-                      style={{
-                        position: 'absolute',
-                        top: `${topPosition}px`,
-                        left: `${cardLeft}px`, // Indent entire card based on hierarchy
-                        right: '24px',
-                        zIndex: hoveredTagId === tag.id ? 30 : 10
-                      }}
-                      className="relative cursor-pointer"
-                      data-spine-item={tag.master}
-                      data-is-root={shouldShowHeader}
-                      onClick={(e) => {
-                        // Prevent scroll when clicking interactive elements
-                        if ((e.target as HTMLElement).closest('button, input')) return;
-                        scrollToTagBlock(tag.blockIds);
-                      }}
-                    >
-                      {/* Vertical Spine - Anchored to Root Card Context */}
-                      {shouldShowHeader && spineOffsets[tag.master!] && (
+                    <div key={item.id} className="relative group/wrapper">
+                      <div
+                        ref={(el) => {
+                          if (el) leftRowRefs.current.set(item.id, el);
+                          else leftRowRefs.current.delete(item.id);
+                          // Also store ref for block-based scrolling
+                          if (blockId && el) {
+                            blockRefs.current.set(blockId, el);
+                          }
+                        }}
+                        className={`mb-5 cursor-context-menu transition-all duration-200 rounded-lg ${isHoveredFromTag
+                          ? 'ring-2 ring-amber-400 bg-amber-50 scale-[1.01] shadow-lg'
+                          : isHighlighted
+                            ? 'ring-2 ring-[#00A3AF]/30 bg-[#00A3AF]/5'
+                            : ''
+                          }`}
+                        onMouseUp={() => handleTextSelection(dataIndex, blockId)}
+                        onContextMenu={(e) => !isFiltered && handleContextMenu(e, originalIndex, dataIndex)}
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          {data.image && data.image.trim() ? (
+                            <img src={data.image} alt={data.name} className="w-[26px] h-[26px] rounded-full flex-shrink-0 object-cover" />
+                          ) : (
+                            <div className="w-[26px] h-[26px] rounded-full bg-gray-100 flex items-center justify-center flex-shrink-0 border border-gray-200">
+                              <NextImage 
+                                src={data.name.startsWith('Moderator') ? MicrophoneIcon : UserIcon} 
+                                alt="avatar" 
+                                width={16} 
+                                height={16} 
+                                className="opacity-60"
+                              />
+                            </div>
+                          )}
+                          <span className="font-semibold text-sm leading-tight">{data.name}</span>
+                          <span className="ml-auto flex items-center gap-1.5 flex-shrink-0">
+                            <img src="/icons/clock-1.png" alt="Clock" className="w-[14px] h-[14px] object-contain" />
+                            <span className="text-gray-400 text-xs leading-tight">{data.time}</span>
+                          </span>
+                        </div>
+                        <div className="rounded-[10px] p-[12px]">
+                          <p
+                            className="text-sm leading-relaxed text-gray-600 text-justify"
+                            data-block-text={data.message}
+                            data-block-id={blockId}
+                          >
+                            {highlightTextWithRanges(data.message, blockId)}
+                          </p>
+                        </div>
+                      </div>
+                      {/* Show + button between items - hide when filtering */}
+                      {!isFiltered && (
                         <div
-                          className="absolute w-[1.5px] transition-all duration-300 pointer-events-none z-0"
-                          style={{
-                            left: `-${64 + cardIndentation - masterLaneLeft}px`,
-                            top: '18px',
-                            height: `${spineOffsets[tag.master!].height}px`,
-                            backgroundColor: tagColor,
-                            opacity: 0.4
-                          }}
-                        />
+                          className="absolute bottom-[-15px] left-0 w-full h-[30px] z-30 flex items-center justify-center opacity-0 hover:opacity-100 cursor-pointer transition-opacity duration-200"
+                          onClick={(e) => handleContextMenu(e, originalIndex + 1, dataIndex + 1)}
+                        >
+                          <div className="w-full h-[2px] bg-[#00A3AF] relative flex items-center justify-center">
+                            <div className="bg-[#00A3AF] text-white rounded-full p-0.5 shadow-sm transform transition-transform hover:scale-110">
+                              <PlusIcon className="w-3 h-3" />
+                            </div>
+                          </div>
+                        </div>
                       )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
 
-                      {/* Render all primary tags for this master tag */}
-                      <div className="flex flex-col gap-0.5 bg-white rounded-lg border border-gray-100 shadow-sm overflow-hidden">
-                        {/* 1. Header Logic: Rendered ONCE per tag group if it's the root */}
-                        <React.Fragment>
-                          {/* Horizontal Stem for the card's first row */}
+            {/* Right Side: Tags */}
+            <div className="w-[420px] border-l border-gray-200 p-6 flex flex-col overflow-visible min-h-full" ref={rightListRef}>
+              <div className="flex border-b border-gray-200 w-full mb-4">
+                <button
+                  onClick={() => setActiveTab("current")}
+                  className={`flex-1 text-sm font-medium py-2 ${activeTab === "current" ? "text-[#00A3AF] border-b-2 border-[#00A3AF]" : "text-gray-500"}`}
+                >
+                  Current
+                </button>
+                <button
+                  onClick={() => setActiveTab("recent")}
+                  className={`flex-1 text-sm font-medium py-2 ${activeTab === "recent" ? "text-[#00A3AF] border-b-2 border-[#00A3AF]" : "text-gray-500"}`}
+                >
+                  Recent
+                </button>
+                <button
+                  onClick={() => setActiveTab("recordings")}
+                  className={`flex-1 text-sm font-medium py-2 ${activeTab === "recordings" ? "text-[#00A3AF] border-b-2 border-[#00A3AF]" : "text-gray-500"}`}
+                >
+                  Recordings
+                </button>
+              </div>
+
+              {activeTab === "current" && (
+                <div
+                  className="relative flex-1 flex flex-col"
+                  style={{ position: 'relative' }}
+                  ref={rightContentRef}
+                >
+                  {displayItems.map((item, index) => {
+                    const LANE_WIDTH = 12;
+
+                    if (item.type !== 'data') {
+                      // Geometry-driven: Get position from transcript element
+                      const elementPos = elementPositions.get(index);
+                      if (!elementPos) return null; // Wait for position calculation
+
+                      // Collect all active master names that should pass through this section spacer
+                      const activeMasterNames = Object.entries(masterTagMetadata)
+                        .filter(([_, meta]) => index >= meta.firstItemIndex && index <= meta.lastItemIndex)
+                        .map(([name, _]) => name);
+
+                      // Section/Subsection spacer - absolutely positioned
+                      return (
+                        <div
+                          key={item.id}
+                          style={{
+                            position: 'absolute',
+                            top: `${elementPos.top}px`,
+                            left: 0,
+                            right: 0,
+                            height: `${elementPos.height}px`,
+                            pointerEvents: 'none' // Allow clicks to pass through to tags below
+                          }}
+                          className="w-full"
+                        >
+                          {/* Show section indicator in right panel */}
+                          {item.type === 'section' && (
+                            <div className="flex items-center gap-2 px-2 py-1 pointer-events-auto">
+                              <div className="w-2 h-2 rounded-full bg-[#00A3AF]" />
+                              <span className="text-xs font-semibold text-[#00A3AF] uppercase tracking-wider">
+                                {item.title || 'Section'}
+                              </span>
+                              <div className="flex-1 h-px bg-[#00A3AF]/30" />
+                            </div>
+                          )}
+                          {item.type === 'subsection' && (
+                            <div className="flex items-center gap-2 px-2 py-1 ml-4 pointer-events-auto">
+                              <div className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                              <span className="text-xs font-medium text-amber-600 uppercase tracking-wider">
+                                {item.title || 'Subsection'}
+                              </span>
+                              <div className="flex-1 h-px bg-amber-300/50" />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    // Geometry-driven: Tags are rendered absolutely, not in rows
+                    // Return null here - tags will be rendered separately
+                    return null;
+                  })}
+
+                  {/* Render all tags with absolute positioning */}
+                  {tags.map((tag) => {
+                    const LANE_WIDTH = 12;
+                    // For independent master tags (no primaries), use the first block index for positioning
+                    const firstPrimary = tag.primaryList[0];
+                    let itemIndex = -1;
+
+                    if (firstPrimary) {
+                      itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === firstPrimary.messageIndex);
+                    } else if (tag.blockIds.length > 0) {
+                      // Fallback: use the first block associated with this master tag
+                      itemIndex = displayItems.findIndex(d => d.type === 'data' && d.id === tag.blockIds[0]);
+                    }
+
+                    if (itemIndex < 0) return null;
+
+                    // Get position from coordinate system
+                    const elementPos = elementPositions.get(itemIndex);
+                    const tagPos = tagPositions.get(tag.id);
+
+                    if (!elementPos || !tagPos) return null; // Wait for position calculation
+
+                    // Use adjusted top from collision detection
+                    const topPosition = tagPos.adjustedTop;
+
+                    const meta = masterTagMetadata[tag.master || 'No Master'];
+                    const masterLaneLeft = (meta?.uniqueIndex || 0) * LANE_WIDTH + 12;
+                    const tagColor = tag.masterColor || getMasterTagColor(tag.masterTagId || tag.id || tag.master || '');
+
+                    // Check if this is the first occurrence
+                    const isFirstRowForTag = itemIndex === meta?.firstItemIndex;
+                    const isFirstInstance = tag.id === meta?.id || tags.find(t => t.master === tag.master)?.id === tag.id;
+                    const shouldShowHeader = isFirstRowForTag && isFirstInstance;
+
+                    // Get all primaries for this tag
+                    const allPrimaries = tag.primaryList.map((p, i) => ({ ...p, originalIndex: i }));
+
+                    // Calculate card indentation based on hierarchy
+                    // Master tags (with header) should be indented, primary-only cards should be more indented
+                    const cardIndentation = shouldShowHeader ? 20 : 40; // 20px for master, 40px for primary-only
+                    const cardLeft = 64 + cardIndentation; // Base left (64px for tree lines) + indentation
+
+                    return (
+                      <div
+                        key={tag.id}
+                        data-tag-id={tag.id}
+                        style={{
+                          position: 'absolute',
+                          top: `${topPosition}px`,
+                          left: `${cardLeft}px`, // Indent entire card based on hierarchy
+                          right: '24px',
+                          zIndex: hoveredTagId === tag.id ? 30 : 10
+                        }}
+                        className="relative cursor-pointer"
+                        data-spine-item={tag.master}
+                        data-is-root={shouldShowHeader}
+                        onClick={(e) => {
+                          // Prevent scroll when clicking interactive elements
+                          if ((e.target as HTMLElement).closest('button, input')) return;
+                          scrollToTagBlock(tag.blockIds);
+                        }}
+                      >
+                        {/* Vertical Spine - Anchored to Root Card Context */}
+                        {shouldShowHeader && spineOffsets[tag.master!] && (
                           <div
-                            className="absolute h-[1.5px] pointer-events-none"
+                            className="absolute w-[1.5px] transition-all duration-300 pointer-events-none z-0"
                             style={{
-                              // Start from the right edge of the vertical spine (1.5px wide)
-                              left: `${-(64 + cardIndentation - masterLaneLeft) + 1.5}px`,
-                              // Width extends from spine to card edge (0px)
-                              width: `${64 + cardIndentation - masterLaneLeft - 1.5}px`,
+                              left: `-${64 + cardIndentation - masterLaneLeft}px`,
                               top: '18px',
+                              height: `${spineOffsets[tag.master!].height}px`,
                               backgroundColor: tagColor,
                               opacity: 0.4
                             }}
                           />
+                        )}
 
-                          {shouldShowHeader && (
-                            <React.Fragment>
-                              <MasterTagRow
-                                name={tag.master || "No Master"}
-                                isEditing={editingItem.id === tag.id && editingItem.type === 'master'}
-                                isHighlighted={editingMasterName === tag.master}
-                                color={tagColor}
-                                onEdit={() => handleMasterEditClick(tag)}
-                                onClick={() => {
-                                  if (editingMasterName === tag.master) {
-                                    setEditingMasterName(null);
-                                  } else {
-                                    setEditingMasterName(tag.master);
-                                  }
-                                }}
-                                onDelete={() => initiateDeleteMaster(tag.id)}
-                                onAdd={() => toggleBranchInput(tag.id)}
-                                onAddPrimary={tag.primaryList.length === 0 ? () => togglePrimaryInput(tag.id) : undefined}
-                                onSave={(newName) => {
-                                  setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                  saveEditing();
-                                }}
-                                onCancel={() => {
-                                  setEditingMasterName(null);
-                                  cancelEditing();
-                                }}
-                              />
+                        {/* Render all primary tags for this master tag */}
+                        <div className="flex flex-col gap-0.5 bg-white rounded-lg border border-gray-100 shadow-sm overflow-hidden">
+                          {/* 1. Header Logic: Rendered ONCE per tag group if it's the root */}
+                          <React.Fragment>
+                            {/* Horizontal Stem for the card's first row */}
+                            <div
+                              className="absolute h-[1.5px] pointer-events-none"
+                              style={{
+                                // Start from the right edge of the vertical spine (1.5px wide)
+                                left: `${-(64 + cardIndentation - masterLaneLeft) + 1.5}px`,
+                                // Width extends from spine to card edge (0px)
+                                width: `${64 + cardIndentation - masterLaneLeft - 1.5}px`,
+                                top: '18px',
+                                backgroundColor: tagColor,
+                                opacity: 0.4
+                              }}
+                            />
 
-                              {/* Branch Tags (Master level) */}
-                              {tag.branchTags && tag.branchTags.length > 0 && (
-                                <TagRowLayout level={2} className="mt-0.5">
-                                  <div className="flex flex-wrap gap-1.5 py-1">
-                                    {(() => {
-                                      const groupId = `${tag.id}-master-branches`;
-                                      const isExpanded = expandedTagGroups.has(groupId);
-                                      const visibleTags = isExpanded ? tag.branchTags : tag.branchTags.slice(0, 3);
-                                      const remainingCount = tag.branchTags.length - visibleTags.length;
-
-                                      return (
-                                        <>
-                                          {visibleTags.map((b, idx) => (
-                                            <BranchTagChip
-                                              key={b.id || idx}
-                                              name={b.name}
-                                              variant="master"
-                                              isEditing={editingItem.id === tag.id && editingItem.type === 'master_branch' && editingItem.index === idx}
-                                              onEdit={() => startEditing(tag.id, 'master_branch', b.name, idx)}
-                                              onDelete={() => removeBranchTag(tag.id, b.id)}
-                                              onSave={(newName) => {
-                                                setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                                saveEditing();
-                                              }}
-                                              onCancel={cancelEditing}
-                                            />
-                                          ))}
-                                          {tag.branchTags.length > 3 && (
-                                            <button
-                                              onClick={() => toggleTagGroupExpansion(groupId)}
-                                              className="text-[10px] text-gray-400 hover:text-[#00A3AF] font-medium px-1 py-0.5 rounded hover:bg-cyan-50 transition-colors"
-                                            >
-                                              {isExpanded ? 'Show Less' : `+${remainingCount} more`}
-                                            </button>
-                                          )}
-                                        </>
-                                      );
-                                    })()}
-                                  </div>
-                                </TagRowLayout>
-                              )}
-
-                              {/* Branch Input Slot */}
-                              {branchInput?.tagId === tag.id && (
-                                <ReservedEditSlotRow
-                                  level={2}
-                                  placeholder="Add branch tag..."
-                                  onSave={(val: string) => addBranchTag(tag.id, val)}
-                                  onCancel={() => setBranchInput(null)}
-                                />
-                              )}
-
-                              {/* Primary Input slot (for empty master) */}
-                              {tag.primaryList.length === 0 && savedPrimaryInput?.tagId === tag.id && (
-                                <ReservedEditSlotRow
-                                  level={2}
-                                  placeholder="Add primary tag..."
-                                  onSave={(val: string) => addPrimaryToSavedTag(tag.id, val)}
-                                  onCancel={() => setSavedPrimaryInput(null)}
-                                />
-                              )}
-                            </React.Fragment>
-                          )}
-                        </React.Fragment>
-
-                        {/* 2. Primaries Logic: Rendered ONLY if they exist */}
-                        {allPrimaries.map((p, i) => {
-                          // Calculate exact vertical position for each primary tag's horizontal stem
-                          // MasterTagRow: min-h-[32px], center at ~16px from row top
-                          // Gap between rows: 2px (gap-0.5)
-                          // PrimaryTagRow: min-h-[32px], center at ~16px from row top
-                          // Formula: master height + gap + (i * (primary height + gap)) + primary center
-                          let primaryTopPosition = 18; // Default for first primary when no header
-                          if (shouldShowHeader) {
-                            // Each primary tag gets its own horizontal stem connecting to the vertical line
-                            const masterRowHeight = 32;
-                            const gap = 2;
-                            const primaryRowHeight = 32;
-                            const primaryRowCenter = 16;
-                            // Position = master row + gap + cumulative primary rows + current primary center
-                            primaryTopPosition = masterRowHeight + gap + (i * (primaryRowHeight + gap)) + primaryRowCenter;
-                          } else {
-                            // No master header, calculate from start
-                            primaryTopPosition = 18 + (i * 34); // 32px row + 2px gap, center at 16px
-                          }
-
-                          return (
-                            <React.Fragment key={p.impressionId || `${p.value}-${i}`}>
-                              {/* Horizontal Stem connecting vertical spine to primary tag - L-shaped connection */}
-                              {/* Render for subsequent rows in the same card, or all primary rows if there is a master header */}
-                              {(i > 0 || shouldShowHeader) && (
-                                <div
-                                  className="absolute h-[1.5px] pointer-events-none"
-                                  style={{
-                                    // Start from the right edge of the vertical spine (1.5px wide)
-                                    left: `${-(64 + cardIndentation - masterLaneLeft) + 1.5}px`,
-                                    // Width extends from spine to card edge (0px)
-                                    width: `${64 + cardIndentation - masterLaneLeft - 1.5}px`,
-                                    top: `${primaryTopPosition}px`,
-                                    backgroundColor: tagColor,
-                                    opacity: 0.4
+                            {shouldShowHeader && (
+                              <React.Fragment>
+                                <MasterTagRow
+                                  name={tag.master || "No Master"}
+                                  isEditing={editingItem.id === tag.id && editingItem.type === 'master'}
+                                  isHighlighted={editingMasterName === tag.master}
+                                  color={tagColor}
+                                  onEdit={() => handleMasterEditClick(tag)}
+                                  onClick={() => {
+                                    if (editingMasterName === tag.master) {
+                                      setEditingMasterName(null);
+                                    } else {
+                                      setEditingMasterName(tag.master);
+                                    }
                                   }}
-                                />
-                              )}
-
-                              {/* Primary Row */}
-                              {(() => {
-                                const isEditingPrimary = editingItem.id === tag.id && editingItem.type === 'primary' && editingItem.index === p.originalIndex;
-                                return (
-                                  <div data-primary-row>
-                                    <PrimaryTagRow
-                                      name={p.value}
-                                      isEditing={isEditingPrimary}
-                                      onEdit={() => startEditing(tag.id, 'primary', p.value, p.originalIndex)}
-                                      onDelete={() => initiateDeletePrimary(tag.id, p.originalIndex, p.impressionId)}
-                                      onComment={() => startEditing(tag.id, 'primary_comment', p.comment || "", p.originalIndex)}
-                                      onAdd={isEditingPrimary ? () => toggleSecondaryInput(tag.id, p.originalIndex) : undefined}
-                                      onSave={(newName) => {
-                                        setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                        saveEditing();
-                                      }}
-                                      onCancel={cancelEditing}
-                                    />
-                                  </div>
-                                );
-                              })()}
-
-                              {/* Primary Comment (if exists and not editing) */}
-                              {p.comment && !(editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex) && (
-                                <div className="pl-6 pr-2 py-1 bg-blue-50/30 border-l-2 border-blue-200">
-                                  <p className="text-[10px] text-blue-600 italic truncate">
-                                    "{p.comment}"
-                                  </p>
-                                </div>
-                              )}
-
-                              {/* Secondary Tags (Primary level) - Horizontal Wrap */}
-                              {p.secondaryTags && p.secondaryTags.length > 0 && (
-                                <TagRowLayout level={2}>
-                                  <div className="flex flex-wrap gap-1.5 py-1">
-                                    {(() => {
-                                      const groupId = `${tag.id}-${p.originalIndex}-secondary-branches`;
-                                      const isExpanded = expandedTagGroups.has(groupId);
-                                      const visibleTags = isExpanded ? p.secondaryTags : p.secondaryTags.slice(0, 3);
-                                      const remainingCount = p.secondaryTags.length - visibleTags.length;
-
-                                      return (
-                                        <>
-                                          {visibleTags.map((sec, secIdx) => (
-                                            <BranchTagChip
-                                              key={sec.id || secIdx}
-                                              name={sec.value}
-                                              variant="primary"
-                                              isEditing={editingItem.id === tag.id && editingItem.type === 'secondary' && editingItem.index === (p.originalIndex * 100 + secIdx)}
-                                              onEdit={() => startEditing(tag.id, 'secondary', sec.value, p.originalIndex * 100 + secIdx)}
-                                              onDelete={() => removeSecondaryTag(tag.id, p.originalIndex, secIdx)}
-                                              onSave={(newName) => {
-                                                setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                                saveEditing();
-                                              }}
-                                              onCancel={cancelEditing}
-                                            />
-                                          ))}
-                                          {p.secondaryTags.length > 3 && (
-                                            <button
-                                              onClick={() => toggleTagGroupExpansion(groupId)}
-                                              className="text-[10px] text-gray-400 hover:text-[#00A3AF] font-medium px-1 py-0.5 rounded hover:bg-cyan-50 transition-colors"
-                                            >
-                                              {isExpanded ? 'Show Less' : `+${remainingCount} more`}
-                                            </button>
-                                          )}
-                                        </>
-                                      );
-                                    })()}
-                                  </div>
-                                </TagRowLayout>
-                              )}
-
-                              {/* Secondary Tag Input Slot */}
-                              {secondaryInput?.entryId === tag.id && secondaryInput?.primaryIndex === p.originalIndex && (
-                                <ReservedEditSlotRow
-                                  level={2}
-                                  placeholder="Add secondary tag..."
-                                  onSave={(val: string) => addSecondaryTag(tag.id, p.originalIndex, val)}
-                                  onCancel={() => setSecondaryInput(null)}
-                                />
-                              )}
-
-                              {/* Primary Comment Input Slot */}
-                              {editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex && (
-                                <ReservedEditSlotRow
-                                  level={2}
-                                  isComment={true}
-                                  placeholder="Primary tag comment..."
-                                  initialValue={editingItem.tempValue}
-                                  onSave={(val: string) => {
-                                    setEditingItem(prev => ({ ...prev, tempValue: val }));
+                                  onDelete={() => initiateDeleteMaster(tag.id)}
+                                  onAdd={() => toggleBranchInput(tag.id)}
+                                  onAddPrimary={tag.primaryList.length === 0 ? () => togglePrimaryInput(tag.id) : undefined}
+                                  onSave={(newName) => {
+                                    setEditingItem(prev => ({ ...prev, tempValue: newName }));
                                     saveEditing();
                                   }}
-                                  onCancel={cancelEditing}
+                                  onCancel={() => {
+                                    setEditingMasterName(null);
+                                    cancelEditing();
+                                  }}
                                 />
-                              )}
 
-                            </React.Fragment>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
+                                {/* Branch Tags (Master level) */}
+                                {tag.branchTags && tag.branchTags.length > 0 && (
+                                  <TagRowLayout level={2} className="mt-0.5">
+                                    <div className="flex flex-wrap gap-1.5 py-1">
+                                      {(() => {
+                                        const groupId = `${tag.id}-master-branches`;
+                                        const isExpanded = expandedTagGroups.has(groupId);
+                                        const visibleTags = isExpanded ? tag.branchTags : tag.branchTags.slice(0, 3);
+                                        const remainingCount = tag.branchTags.length - visibleTags.length;
 
-                {/* Render pending entries with absolute positioning */}
-                {pending.map((entry) => {
-                  const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === entry.messageIndex);
-                  if (itemIndex < 0) return null;
-
-                  const elementPos = elementPositions.get(itemIndex);
-                  if (!elementPos) return null;
-
-                  // Use selection top if available, otherwise element top
-                  const topPosition = elementPos.selectionTop ?? elementPos.top;
-
-                  // Pending entries are always primary-level, so indent 40px
-                  const pendingCardLeft = 64 + 40; // Base left (64px for tree lines) + 40px for primary indentation
-
-                  return (
-                    <div
-                      key={entry.id}
-                      style={{
-                        position: 'absolute',
-                        top: `${topPosition}px`,
-                        left: `${pendingCardLeft}px`,
-                        right: '24px',
-                        zIndex: 20
-                      }}
-                      className="relative"
-                    >
-                      {/* PENDING ENTRY FORM */}
-                      {entry && (
-                        <div className="p-4 rounded-xl bg-white border-2 border-[#E0F7FA] shadow-md relative z-30 mt-2">
-                          {/* Remove Entry Button */}
-                          <button
-                            onClick={() => handleRemovePendingEntry(entry.id)}
-                            className="absolute -top-2 -right-2 p-1.5 bg-white border border-gray-200 shadow-md hover:bg-red-50 rounded-full transition-all duration-200 group z-40 hover:scale-110"
-                            title="Remove selection"
-                          >
-                            <XMarkIcon className="w-4 h-4 text-gray-500 group-hover:text-red-500" />
-                          </button>
-                          {/* --- MASTER INPUT AREA --- */}
-                          {pending[0]?.id === entry.id &&
-                            !masterConfirmed &&
-                            !masterCancelled && (
-                              <div className="flex flex-col w-full relative mb-2">
-                                <div className="flex items-center gap-2 w-full">
-                                  <div className="relative flex-1">
-                                    <input
-                                      type="text"
-                                      placeholder="Master"
-                                      value={masterInput}
-                                      onChange={(e) => {
-                                        setMasterInput(e.target.value);
-                                        setShowMasterSuggestions(true);
-                                      }}
-                                      className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#00A3AF]"
-                                    />
-                                    {showMasterSuggestions && masterInput && masterSuggestions.length > 0 && (
-                                      <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-lg border border-gray-200 z-50 max-h-48 overflow-y-auto">
-                                        {masterSuggestions.map((s, i) => (
-                                          <div key={i} className="px-4 py-2 text-sm cursor-pointer hover:bg-[#E7FAFC] hover:text-[#00A3AF]"
-                                            onClick={() => { setMasterInput(s!); setShowMasterSuggestions(false); }}>
-                                            {s}
-                                          </div>
-                                        ))}
-                                      </div>
-                                    )}
-                                  </div>
-                                  <button onClick={handleMasterAddClick} className="px-3 py-2 bg-[#00A3AF] text-white rounded-lg text-sm font-medium">Add</button>
-                                  <button onClick={handleMasterCancelAction} className="px-3 py-2 border text-gray-600 rounded-lg text-sm bg-white hover:bg-gray-50">Cancel</button>
-                                </div>
-                              </div>
-                            )}
-
-                          {/* --- CONFIRMED MASTER DISPLAY --- */}
-                          {pending[0]?.id === entry.id && masterConfirmed && !masterCancelled && (
-                            <div className="flex items-center justify-between bg-[#F0FDFA] px-3 py-2 rounded border border-[#CCFBF1] mb-2">
-                              <div className="flex items-center gap-2 flex-1 flex-wrap">
-                                <div className="text-sm font-bold text-[#0F766E]">{masterInput || "Master (empty)"}</div>
-
-                                {/* Branch Tags Display for Pending */}
-                                {entry.branchTags && entry.branchTags.length > 0 && (
-                                  <div className="flex items-center gap-1">
-                                    {entry.branchTags.map((b, bIdx) => (
-                                      <span key={bIdx} className="text-[9px] bg-[#00A3AF]/10 text-[#00A3AF] px-1.5 py-0.5 rounded border border-[#00A3AF]/20 flex items-center gap-1 group/pbranch">
-                                        {b.value}
-                                        <button
-                                          onClick={(e) => { e.stopPropagation(); removeBranchTag(entry.id, undefined, bIdx); }}
-                                          className="text-red-400 opacity-0 group-hover/pbranch:opacity-100 transition-opacity"
-                                        >
-                                          <XMarkIcon className="w-2.5 h-2.5" />
-                                        </button>
-                                      </span>
-                                    ))}
-                                  </div>
+                                        return (
+                                          <>
+                                            {visibleTags.map((b, idx) => (
+                                              <BranchTagChip
+                                                key={b.id || idx}
+                                                name={b.name}
+                                                variant="master"
+                                                isEditing={editingItem.id === tag.id && editingItem.type === 'master_branch' && editingItem.index === idx}
+                                                onEdit={() => startEditing(tag.id, 'master_branch', b.name, idx)}
+                                                onDelete={() => removeBranchTag(tag.id, b.id)}
+                                                onSave={(newName) => {
+                                                  setEditingItem(prev => ({ ...prev, tempValue: newName }));
+                                                  saveEditing();
+                                                }}
+                                                onCancel={cancelEditing}
+                                              />
+                                            ))}
+                                            {tag.branchTags.length > 3 && (
+                                              <button
+                                                onClick={() => toggleTagGroupExpansion(groupId)}
+                                                className="text-[10px] text-gray-400 hover:text-[#00A3AF] font-medium px-1 py-0.5 rounded hover:bg-cyan-50 transition-colors"
+                                              >
+                                                {isExpanded ? 'Show Less' : `+${remainingCount} more`}
+                                              </button>
+                                            )}
+                                          </>
+                                        );
+                                      })()}
+                                    </div>
+                                  </TagRowLayout>
                                 )}
 
-                                {/* Add Branch Button for Pending - Support multiple */}
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); toggleBranchInput(entry.id); }}
-                                  className="p-0.5 bg-white/50 hover:bg-white rounded text-[#00A3AF] transition-colors"
-                                  title={entry.branchTags && entry.branchTags.length > 0 ? "Add another branch tag" : "Add branch tag"}
-                                >
-                                  <PlusIcon className="w-3 h-3" />
-                                </button>
-
-                                {/* Branch Tag Input for Pending */}
-                                {branchInput?.tagId === entry.id && (
-                                  <div className="flex items-center gap-1 ml-1" onClick={(e) => e.stopPropagation()}>
-                                    <input
-                                      autoFocus
-                                      type="text"
-                                      placeholder="Branch..."
-                                      value={branchInput.value}
-                                      onChange={(e) => setBranchInput({ ...branchInput, value: e.target.value })}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Enter') addBranchTag(entry.id, branchInput.value);
-                                        if (e.key === 'Escape') setBranchInput(null);
-                                      }}
-                                      className="px-2 py-0.5 text-[10px] border border-[#00A3AF] rounded focus:outline-none w-20"
-                                    />
-                                    <button onClick={() => addBranchTag(entry.id, branchInput.value)} className="p-0.5 hover:bg-[#E0F7FA] rounded">
-                                      <CheckIcon className="w-3.5 h-3.5 text-[#00A3AF]" />
-                                    </button>
-                                    <button onClick={() => setBranchInput(null)} className="p-0.5 hover:bg-gray-100 rounded">
-                                      <XMarkIcon className="w-3.5 h-3.5 text-gray-400" />
-                                    </button>
-                                  </div>
-                                )}
-
-                                {editingItem.id === entry.id && editingItem.type === 'pending_master_comment' ? (
-                                  <div className="flex items-center gap-2 flex-1" onClick={(e) => e.stopPropagation()}>
-                                    <input
-                                      autoFocus
-                                      type="text"
-                                      placeholder="Add master comment..."
-                                      value={editingItem.tempValue}
-                                      onChange={(e) => setEditingItem({ ...editingItem, tempValue: e.target.value })}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Enter') saveEditing();
-                                        if (e.key === 'Escape') cancelEditing();
-                                      }}
-                                      className="flex-1 px-2 py-1 text-[10px] border border-[#00A3AF] rounded focus:outline-none"
-                                    />
-                                    <button onClick={saveEditing} className="p-0.5 hover:bg-[#E0F7FA] rounded">
-                                      <CheckIcon className="w-3 h-3 text-[#00A3AF]" />
-                                    </button>
-                                    <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded">
-                                      <XMarkIcon className="w-3 h-3 text-gray-500" />
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <div className="relative group/tooltip">
-                                    <button
-                                      onClick={() => startEditing(entry.id, 'pending_master_comment', masterComment || "")}
-                                      className="p-1 hover:bg-[#E0F7FA] rounded"
-                                    >
-                                      <ChatBubbleBottomCenterTextIcon
-                                        className={`w-4 h-4 cursor-pointer ${masterComment ? 'text-[#00A3AF]' : 'text-gray-300'}`}
-                                      />
-                                    </button>
-                                    {masterComment && (
-                                      <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-max max-w-[200px] hidden group-hover/tooltip:block z-50">
-                                        <div className="bg-black text-white text-xs rounded py-1 px-2 shadow-lg relative">
-                                          {masterComment}
-                                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-black"></div>
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                              <button
-                                onClick={handleEditMaster}
-                                className="p-1 text-gray-400 hover:text-[#0F766E] hover:bg-[#0F766E]/10 rounded transition-colors"
-                                title="Edit Master"
-                              >
-                                <PencilSquareIcon className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          )}
-
-                          {!entry.primaryInputClosed && (
-                            <div className="flex flex-col w-full relative">
-                              <div className="flex items-center gap-2 w-full">
-                                <div className="relative flex-1">
-                                  <input
-                                    type="text"
-                                    placeholder={`Primary tag (optional)...`}
-                                    value={entry.primaryInput}
-                                    onFocus={() => {
-                                      setShowPrimarySuggestions(entry.id);
-                                      if (masterInput.trim()) fetchPrimaryTags(masterInput.trim(), entry.primaryInput);
-                                    }}
-                                    onChange={(e) => {
-                                      handlePrimaryChange(entry.id, e.target.value);
-                                      setShowPrimarySuggestions(entry.id);
-                                    }}
-                                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#00A3AF]"
+                                {/* Branch Input Slot */}
+                                {branchInput?.tagId === tag.id && (
+                                  <ReservedEditSlotRow
+                                    level={2}
+                                    placeholder="Add branch tag..."
+                                    onSave={(val: string) => addBranchTag(tag.id, val)}
+                                    onCancel={() => setBranchInput(null)}
                                   />
-                                  {showPrimarySuggestions === entry.id && (
-                                    <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-lg border border-gray-200 z-50 max-h-64 overflow-y-auto overflow-x-hidden">
-                                      <div className="px-3 py-1.5 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-gray-50 border-b border-gray-100 sticky top-0 z-10">
-                                        <span>Primary Tags under "{masterInput}"</span>
-                                      </div>
+                                )}
 
-                                      {/* Existing Instances */}
-                                      {getPrimarySuggestions(entry.id).map((p) => (
-                                        <div
-                                          key={p.id}
-                                          className="px-4 py-2 text-sm cursor-pointer hover:bg-[#E7FAFC] hover:text-[#00A3AF] flex justify-between items-center group/sugg transition-colors border-b border-gray-50 last:border-0"
-                                          onClick={() => handleSelectPrimaryInstance(entry.id, p)}
-                                        >
-                                          <div className="flex flex-col min-w-0">
-                                            <span className="font-semibold truncate text-gray-700 group-hover/sugg:text-[#00A3AF]">{p.name}</span>
-                                          </div>
-                                        </div>
-                                      ))}
+                                {/* Primary Input slot (for empty master) */}
+                                {tag.primaryList.length === 0 && savedPrimaryInput?.tagId === tag.id && (
+                                  <ReservedEditSlotRow
+                                    level={2}
+                                    placeholder="Add primary tag..."
+                                    onSave={(val: string) => addPrimaryToSavedTag(tag.id, val)}
+                                    onCancel={() => setSavedPrimaryInput(null)}
+                                  />
+                                )}
+                              </React.Fragment>
+                            )}
+                          </React.Fragment>
 
-                                      {/* Create New Option - Always show if there is input, or if no suggestions */}
-                                      {(entry.primaryInput.trim() || getPrimarySuggestions(entry.id).length === 0) && (
-                                        <div
-                                          className="px-4 py-3 text-sm cursor-pointer hover:bg-[#E7FAFC] hover:text-[#00A3AF] border-t border-gray-100 font-medium text-[#00A3AF] flex items-center gap-2 group/new transition-colors"
-                                          onClick={() => handleInitiateAddPrimary(entry.id)}
-                                        >
-                                          <div className="w-5 h-5 rounded-full bg-[#00A3AF]/10 flex items-center justify-center shrink-0 group-hover/new:bg-[#00A3AF]/20">
-                                            <PlusIcon className="w-3.5 h-3.5" />
-                                          </div>
-                                          <div className="flex flex-col min-w-0">
-                                            <span className="truncate font-semibold text-xs">Create new: "{entry.primaryInput.trim() || 'New Tag'}"</span>
-                                          </div>
+                          {/* 2. Primaries Logic: Rendered ONLY if they exist */}
+                          {allPrimaries.map((p, i) => {
+                            // Calculate exact vertical position for each primary tag's horizontal stem
+                            // MasterTagRow: min-h-[32px], center at ~16px from row top
+                            // Gap between rows: 2px (gap-0.5)
+                            // PrimaryTagRow: min-h-[32px], center at ~16px from row top
+                            // Formula: master height + gap + (i * (primary height + gap)) + primary center
+                            let primaryTopPosition = 18; // Default for first primary when no header
+                            if (shouldShowHeader) {
+                              // Each primary tag gets its own horizontal stem connecting to the vertical line
+                              const masterRowHeight = 32;
+                              const gap = 2;
+                              const primaryRowHeight = 32;
+                              const primaryRowCenter = 16;
+                              // Position = master row + gap + cumulative primary rows + current primary center
+                              primaryTopPosition = masterRowHeight + gap + (i * (primaryRowHeight + gap)) + primaryRowCenter;
+                            } else {
+                              // No master header, calculate from start
+                              primaryTopPosition = 18 + (i * 34); // 32px row + 2px gap, center at 16px
+                            }
+
+                            return (
+                              <React.Fragment key={p.impressionId || `${p.value}-${i}`}>
+                                {/* Horizontal Stem connecting vertical spine to primary tag - L-shaped connection */}
+                                {/* Render for subsequent rows in the same card, or all primary rows if there is a master header */}
+                                {(i > 0 || shouldShowHeader) && (
+                                  <div
+                                    className="absolute h-[1.5px] pointer-events-none"
+                                    style={{
+                                      // Start from the right edge of the vertical spine (1.5px wide)
+                                      left: `${-(64 + cardIndentation - masterLaneLeft) + 1.5}px`,
+                                      // Width extends from spine to card edge (0px)
+                                      width: `${64 + cardIndentation - masterLaneLeft - 1.5}px`,
+                                      top: `${primaryTopPosition}px`,
+                                      backgroundColor: tagColor,
+                                      opacity: 0.4
+                                    }}
+                                  />
+                                )}
+
+                                {/* Primary Row */}
+                                {(() => {
+                                  const isEditingPrimary = editingItem.id === tag.id && editingItem.type === 'primary' && editingItem.index === p.originalIndex;
+                                  return (
+                                    <div data-primary-row>
+                                      <PrimaryTagRow
+                                        name={p.value}
+                                        isEditing={isEditingPrimary}
+                                        onEdit={() => startEditing(tag.id, 'primary', p.value, p.originalIndex)}
+                                        onDelete={() => initiateDeletePrimary(tag.id, p.originalIndex, p.impressionId)}
+                                        onComment={() => startEditing(tag.id, 'primary_comment', p.comment || "", p.originalIndex)}
+                                        onAdd={isEditingPrimary ? () => toggleSecondaryInput(tag.id, p.originalIndex) : undefined}
+                                        onSave={(newName) => {
+                                          setEditingItem(prev => ({ ...prev, tempValue: newName }));
+                                          saveEditing();
+                                        }}
+                                        onCancel={cancelEditing}
+                                      />
+                                    </div>
+                                  );
+                                })()}
+
+                                {/* Primary Comment (if exists and not editing) */}
+                                {p.comment && !(editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex) && (
+                                  <div className="pl-6 pr-2 py-1 bg-blue-50/30 border-l-2 border-blue-200">
+                                    <p className="text-[10px] text-blue-600 italic truncate">
+                                      "{p.comment}"
+                                    </p>
+                                  </div>
+                                )}
+
+                                {/* Secondary Tags (Primary level) - Horizontal Wrap */}
+                                {p.secondaryTags && p.secondaryTags.length > 0 && (
+                                  <TagRowLayout level={2}>
+                                    <div className="flex flex-wrap gap-1.5 py-1">
+                                      {(() => {
+                                        const groupId = `${tag.id}-${p.originalIndex}-secondary-branches`;
+                                        const isExpanded = expandedTagGroups.has(groupId);
+                                        const visibleTags = isExpanded ? p.secondaryTags : p.secondaryTags.slice(0, 3);
+                                        const remainingCount = p.secondaryTags.length - visibleTags.length;
+
+                                        return (
+                                          <>
+                                            {visibleTags.map((sec, secIdx) => (
+                                              <BranchTagChip
+                                                key={sec.id || secIdx}
+                                                name={sec.value}
+                                                variant="primary"
+                                                isEditing={editingItem.id === tag.id && editingItem.type === 'secondary' && editingItem.index === (p.originalIndex * 100 + secIdx)}
+                                                onEdit={() => startEditing(tag.id, 'secondary', sec.value, p.originalIndex * 100 + secIdx)}
+                                                onDelete={() => removeSecondaryTag(tag.id, p.originalIndex, secIdx)}
+                                                onSave={(newName) => {
+                                                  setEditingItem(prev => ({ ...prev, tempValue: newName }));
+                                                  saveEditing();
+                                                }}
+                                                onCancel={cancelEditing}
+                                              />
+                                            ))}
+                                            {p.secondaryTags.length > 3 && (
+                                              <button
+                                                onClick={() => toggleTagGroupExpansion(groupId)}
+                                                className="text-[10px] text-gray-400 hover:text-[#00A3AF] font-medium px-1 py-0.5 rounded hover:bg-cyan-50 transition-colors"
+                                              >
+                                                {isExpanded ? 'Show Less' : `+${remainingCount} more`}
+                                              </button>
+                                            )}
+                                          </>
+                                        );
+                                      })()}
+                                    </div>
+                                  </TagRowLayout>
+                                )}
+
+                                {/* Secondary Tag Input Slot */}
+                                {secondaryInput?.entryId === tag.id && secondaryInput?.primaryIndex === p.originalIndex && (
+                                  <ReservedEditSlotRow
+                                    level={2}
+                                    placeholder="Add secondary tag..."
+                                    onSave={(val: string) => addSecondaryTag(tag.id, p.originalIndex, val)}
+                                    onCancel={() => setSecondaryInput(null)}
+                                  />
+                                )}
+
+                                {/* Primary Comment Input Slot */}
+                                {editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex && (
+                                  <ReservedEditSlotRow
+                                    level={2}
+                                    isComment={true}
+                                    placeholder="Primary tag comment..."
+                                    initialValue={editingItem.tempValue}
+                                    onSave={(val: string) => {
+                                      setEditingItem(prev => ({ ...prev, tempValue: val }));
+                                      saveEditing();
+                                    }}
+                                    onCancel={cancelEditing}
+                                  />
+                                )}
+
+                              </React.Fragment>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Render pending entries with absolute positioning */}
+                  {pending.map((entry) => {
+                    const itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === entry.messageIndex);
+                    if (itemIndex < 0) return null;
+
+                    const elementPos = elementPositions.get(itemIndex);
+                    if (!elementPos) return null;
+
+                    // Use selection top if available, otherwise element top
+                    const topPosition = elementPos.selectionTop ?? elementPos.top;
+
+                    // Pending entries are always primary-level, so indent 40px
+                    const pendingCardLeft = 64 + 40; // Base left (64px for tree lines) + 40px for primary indentation
+
+                    return (
+                      <div
+                        key={entry.id}
+                        style={{
+                          position: 'absolute',
+                          top: `${topPosition}px`,
+                          left: `${pendingCardLeft}px`,
+                          right: '24px',
+                          zIndex: 20
+                        }}
+                        className="relative"
+                      >
+                        {/* PENDING ENTRY FORM */}
+                        {entry && (
+                          <div className="p-4 rounded-xl bg-white border-2 border-[#E0F7FA] shadow-md relative z-30 mt-2">
+                            {/* Remove Entry Button */}
+                            <button
+                              onClick={() => handleRemovePendingEntry(entry.id)}
+                              className="absolute -top-2 -right-2 p-1.5 bg-white border border-gray-200 shadow-md hover:bg-red-50 rounded-full transition-all duration-200 group z-40 hover:scale-110"
+                              title="Remove selection"
+                            >
+                              <XMarkIcon className="w-4 h-4 text-gray-500 group-hover:text-red-500" />
+                            </button>
+                            {/* --- MASTER INPUT AREA --- */}
+                            {pending[0]?.id === entry.id &&
+                              !masterConfirmed &&
+                              !masterCancelled && (
+                                <div className="flex flex-col w-full relative mb-2">
+                                  <div className="flex items-center gap-2 w-full">
+                                    <div className="relative flex-1">
+                                      <input
+                                        type="text"
+                                        placeholder="Master"
+                                        value={masterInput}
+                                        onChange={(e) => {
+                                          setMasterInput(e.target.value);
+                                          setShowMasterSuggestions(true);
+                                        }}
+                                        className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#00A3AF]"
+                                      />
+                                      {showMasterSuggestions && masterInput && masterSuggestions.length > 0 && (
+                                        <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-lg border border-gray-200 z-50 max-h-48 overflow-y-auto">
+                                          {masterSuggestions.map((s, i) => (
+                                            <div key={i} className="px-4 py-2 text-sm cursor-pointer hover:bg-[#E7FAFC] hover:text-[#00A3AF]"
+                                              onClick={() => { setMasterInput(s!); setShowMasterSuggestions(false); }}>
+                                              {s}
+                                            </div>
+                                          ))}
                                         </div>
                                       )}
+                                    </div>
+                                    <button onClick={handleMasterAddClick} className="px-3 py-2 bg-[#00A3AF] text-white rounded-lg text-sm font-medium">Add</button>
+                                    <button onClick={handleMasterCancelAction} className="px-3 py-2 border text-gray-600 rounded-lg text-sm bg-white hover:bg-gray-50">Cancel</button>
+                                  </div>
+                                </div>
+                              )}
 
-                                      {/* Informational message if no input and no suggestions */}
-                                      {!entry.primaryInput.trim() && getPrimarySuggestions(entry.id).length === 0 && (
-                                        <div className="px-4 py-4 text-xs text-gray-400 text-center italic">
-                                          Type to create a new primary tag.
+                            {/* --- CONFIRMED MASTER DISPLAY --- */}
+                            {pending[0]?.id === entry.id && masterConfirmed && !masterCancelled && (
+                              <div className="flex items-center justify-between bg-[#F0FDFA] px-3 py-2 rounded border border-[#CCFBF1] mb-2">
+                                <div className="flex items-center gap-2 flex-1 flex-wrap">
+                                  <div className="text-sm font-bold text-[#0F766E]">{masterInput || "Master (empty)"}</div>
+
+                                  {/* Branch Tags Display for Pending */}
+                                  {entry.branchTags && entry.branchTags.length > 0 && (
+                                    <div className="flex items-center gap-1">
+                                      {entry.branchTags.map((b, bIdx) => (
+                                        <span key={bIdx} className="text-[9px] bg-[#00A3AF]/10 text-[#00A3AF] px-1.5 py-0.5 rounded border border-[#00A3AF]/20 flex items-center gap-1 group/pbranch">
+                                          {b.value}
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); removeBranchTag(entry.id, undefined, bIdx); }}
+                                            className="text-red-400 opacity-0 group-hover/pbranch:opacity-100 transition-opacity"
+                                          >
+                                            <XMarkIcon className="w-2.5 h-2.5" />
+                                          </button>
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {/* Add Branch Button for Pending - Support multiple */}
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); toggleBranchInput(entry.id); }}
+                                    className="p-0.5 bg-white/50 hover:bg-white rounded text-[#00A3AF] transition-colors"
+                                    title={entry.branchTags && entry.branchTags.length > 0 ? "Add another branch tag" : "Add branch tag"}
+                                  >
+                                    <PlusIcon className="w-3 h-3" />
+                                  </button>
+
+                                  {/* Branch Tag Input for Pending */}
+                                  {branchInput?.tagId === entry.id && (
+                                    <div className="flex items-center gap-1 ml-1" onClick={(e) => e.stopPropagation()}>
+                                      <input
+                                        autoFocus
+                                        type="text"
+                                        placeholder="Branch..."
+                                        value={branchInput.value}
+                                        onChange={(e) => setBranchInput({ ...branchInput, value: e.target.value })}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') addBranchTag(entry.id, branchInput.value);
+                                          if (e.key === 'Escape') setBranchInput(null);
+                                        }}
+                                        className="px-2 py-0.5 text-[10px] border border-[#00A3AF] rounded focus:outline-none w-20"
+                                      />
+                                      <button onClick={() => addBranchTag(entry.id, branchInput.value)} className="p-0.5 hover:bg-[#E0F7FA] rounded">
+                                        <CheckIcon className="w-3.5 h-3.5 text-[#00A3AF]" />
+                                      </button>
+                                      <button onClick={() => setBranchInput(null)} className="p-0.5 hover:bg-gray-100 rounded">
+                                        <XMarkIcon className="w-3.5 h-3.5 text-gray-400" />
+                                      </button>
+                                    </div>
+                                  )}
+
+                                  {editingItem.id === entry.id && editingItem.type === 'pending_master_comment' ? (
+                                    <div className="flex items-center gap-2 flex-1" onClick={(e) => e.stopPropagation()}>
+                                      <input
+                                        autoFocus
+                                        type="text"
+                                        placeholder="Add master comment..."
+                                        value={editingItem.tempValue}
+                                        onChange={(e) => setEditingItem({ ...editingItem, tempValue: e.target.value })}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') saveEditing();
+                                          if (e.key === 'Escape') cancelEditing();
+                                        }}
+                                        className="flex-1 px-2 py-1 text-[10px] border border-[#00A3AF] rounded focus:outline-none"
+                                      />
+                                      <button onClick={saveEditing} className="p-0.5 hover:bg-[#E0F7FA] rounded">
+                                        <CheckIcon className="w-3 h-3 text-[#00A3AF]" />
+                                      </button>
+                                      <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded">
+                                        <XMarkIcon className="w-3 h-3 text-gray-500" />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="relative group/tooltip">
+                                      <button
+                                        onClick={() => startEditing(entry.id, 'pending_master_comment', masterComment || "")}
+                                        className="p-1 hover:bg-[#E0F7FA] rounded"
+                                      >
+                                        <ChatBubbleBottomCenterTextIcon
+                                          className={`w-4 h-4 cursor-pointer ${masterComment ? 'text-[#00A3AF]' : 'text-gray-300'}`}
+                                        />
+                                      </button>
+                                      {masterComment && (
+                                        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-max max-w-[200px] hidden group-hover/tooltip:block z-50">
+                                          <div className="bg-black text-white text-xs rounded py-1 px-2 shadow-lg relative">
+                                            {masterComment}
+                                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-black"></div>
+                                          </div>
                                         </div>
                                       )}
                                     </div>
                                   )}
                                 </div>
-                                <button onClick={() => handleInitiateAddPrimary(entry.id)} className="px-3 py-2 bg-[#00A3AF] text-white rounded-lg text-sm font-medium">Add</button>
+                                <button
+                                  onClick={handleEditMaster}
+                                  className="p-1 text-gray-400 hover:text-[#0F766E] hover:bg-[#0F766E]/10 rounded transition-colors"
+                                  title="Edit Master"
+                                >
+                                  <PencilSquareIcon className="w-3.5 h-3.5" />
+                                </button>
                               </div>
-                            </div>
-                          )}
+                            )}
 
-                          {entry.primaryList.length > 0 && (
-                            <div className="relative mt-4 ml-2">
-                              <div className="absolute left-[9px] top-0 bottom-2 w-[2px] bg-gray-200"></div>
-                              <div className="space-y-3">
-                                {entry.primaryList.map((p, pIndex) => (
-                                  <div key={pIndex} className="relative">
-                                    {/* Primary Tag Row */}
-                                    <div className="relative pl-6 flex items-center justify-between text-sm group">
-                                      <div className="absolute left-[9px] top-1/2 w-3 h-[2px] bg-gray-200 -translate-y-1/2"></div>
-                                      <div className="absolute left-[6px] top-1/2 -translate-y-1/2 w-2 h-2 bg-white border border-gray-300 rounded-full"></div>
-
-                                      <div className="flex flex-col flex-1 min-w-0">
-                                        <div className="flex items-center gap-2">
-                                          {editingItem.id === entry.id && editingItem.type === 'pending_primary' && editingItem.index === pIndex ? (
-                                            <div className="flex items-center gap-2 flex-1" onClick={(e) => e.stopPropagation()}>
-                                              <input
-                                                autoFocus
-                                                type="text"
-                                                value={editingItem.tempValue}
-                                                onChange={(e) => setEditingItem({ ...editingItem, tempValue: e.target.value })}
-                                                onKeyDown={(e) => {
-                                                  if (e.key === 'Enter') saveEditing();
-                                                  if (e.key === 'Escape') cancelEditing();
-                                                }}
-                                                className="flex-1 px-2 py-1 text-xs font-semibold border border-[#00A3AF] rounded focus:outline-none"
-                                              />
-                                              <button onClick={saveEditing} className="p-0.5 hover:bg-[#E0F7FA] rounded">
-                                                <CheckIcon className="w-3 h-3 text-[#00A3AF]" />
-                                              </button>
-                                              <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded">
-                                                <XMarkIcon className="w-3 h-3 text-gray-500" />
-                                              </button>
-                                            </div>
-                                          ) : (
-                                            <div className="flex items-center gap-2 overflow-hidden">
-                                              <span className="font-semibold text-gray-700 truncate">{p.displayName || p.value}</span>
-
-                                              {/* Inline Secondary Tags Display for Pending */}
-                                              {p.secondaryTags && p.secondaryTags.length > 0 && (
-                                                <div className="flex items-center gap-1 flex-shrink-0">
-                                                  {p.secondaryTags.map((sec, secIdx) => (
-                                                    <span key={secIdx} className="text-[9px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100 flex items-center gap-1 group/sec">
-                                                      {sec.value}
-                                                      <button
-                                                        onClick={(e) => { e.stopPropagation(); removeSecondaryTag(entry.id, pIndex, secIdx); }}
-                                                        className="text-red-400 opacity-0 group-hover/sec:opacity-100 transition-opacity"
-                                                      >
-                                                        <XMarkIcon className="w-2.5 h-2.5" />
-                                                      </button>
-                                                    </span>
-                                                  ))}
-                                                </div>
-                                              )}
-                                            </div>
-                                          )}
+                            {!entry.primaryInputClosed && (
+                              <div className="flex flex-col w-full relative">
+                                <div className="flex items-center gap-2 w-full">
+                                  <div className="relative flex-1">
+                                    <input
+                                      type="text"
+                                      placeholder={`Primary tag (optional)...`}
+                                      value={entry.primaryInput}
+                                      onFocus={() => {
+                                        setShowPrimarySuggestions(entry.id);
+                                        if (masterInput.trim()) fetchPrimaryTags(masterInput.trim(), entry.primaryInput);
+                                      }}
+                                      onChange={(e) => {
+                                        handlePrimaryChange(entry.id, e.target.value);
+                                        setShowPrimarySuggestions(entry.id);
+                                      }}
+                                      className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#00A3AF]"
+                                    />
+                                    {showPrimarySuggestions === entry.id && (
+                                      <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-lg border border-gray-200 z-50 max-h-64 overflow-y-auto overflow-x-hidden">
+                                        <div className="px-3 py-1.5 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-gray-50 border-b border-gray-100 sticky top-0 z-10">
+                                          <span>Primary Tags under "{masterInput}"</span>
                                         </div>
 
-                                        <div className="flex items-center gap-1 mt-1">
-                                          {editingItem.id === entry.id && editingItem.type === 'pending_primary' && editingItem.index === pIndex ? null : (
-                                            <>
-                                              {/* Add Secondary Tag Button - Limit to 1 */}
-                                              {(!p.secondaryTags || p.secondaryTags.length === 0) && (
-                                                <button
-                                                  onClick={() => toggleSecondaryInput(entry.id, pIndex)}
-                                                  className="p-1 hover:bg-gray-100 rounded text-gray-400"
-                                                  title="Add secondary tag"
-                                                >
-                                                  <PlusIcon className="w-3.5 h-3.5" />
-                                                </button>
-                                              )}
+                                        {/* Existing Instances */}
+                                        {getPrimarySuggestions(entry.id).map((p) => (
+                                          <div
+                                            key={p.id}
+                                            className="px-4 py-2 text-sm cursor-pointer hover:bg-[#E7FAFC] hover:text-[#00A3AF] flex justify-between items-center group/sugg transition-colors border-b border-gray-50 last:border-0"
+                                            onClick={() => handleSelectPrimaryInstance(entry.id, p)}
+                                          >
+                                            <div className="flex flex-col min-w-0">
+                                              <span className="font-semibold truncate text-gray-700 group-hover/sugg:text-[#00A3AF]">{p.name}</span>
+                                            </div>
+                                          </div>
+                                        ))}
 
-                                              <button
-                                                onClick={() => startEditing(entry.id, 'pending_primary', p.value, pIndex)}
-                                                className="p-1 hover:bg-gray-100 rounded"
-                                                title="Edit primary tag"
-                                              >
-                                                <PencilIcon className="w-3.5 h-3.5 text-gray-400" />
-                                              </button>
-
-                                              <button
-                                                onClick={() => startEditing(entry.id, 'pending_primary_comment', p.comment || "", pIndex)}
-                                                className="p-1 hover:bg-gray-100 rounded"
-                                              >
-                                                <ChatBubbleBottomCenterTextIcon
-                                                  className={`w-3.5 h-3.5 cursor-pointer ${p.comment ? 'text-[#00A3AF]' : 'text-gray-300'}`}
-                                                />
-                                              </button>
-                                            </>
-                                          )}
-                                        </div>
-
-                                        {p.comment && !(editingItem.id === entry.id && editingItem.type === 'pending_primary_comment' && editingItem.index === pIndex) && (
-                                          <span className="text-[10px] text-gray-400 mt-0.5 italic truncate max-w-[150px]">"{p.comment}"</span>
+                                        {/* Create New Option - Always show if there is input, or if no suggestions */}
+                                        {(entry.primaryInput.trim() || getPrimarySuggestions(entry.id).length === 0) && (
+                                          <div
+                                            className="px-4 py-3 text-sm cursor-pointer hover:bg-[#E7FAFC] hover:text-[#00A3AF] border-t border-gray-100 font-medium text-[#00A3AF] flex items-center gap-2 group/new transition-colors"
+                                            onClick={() => handleInitiateAddPrimary(entry.id)}
+                                          >
+                                            <div className="w-5 h-5 rounded-full bg-[#00A3AF]/10 flex items-center justify-center shrink-0 group-hover/new:bg-[#00A3AF]/20">
+                                              <PlusIcon className="w-3.5 h-3.5" />
+                                            </div>
+                                            <div className="flex flex-col min-w-0">
+                                              <span className="truncate font-semibold text-xs">Create new: "{entry.primaryInput.trim() || 'New Tag'}"</span>
+                                            </div>
+                                          </div>
                                         )}
-                                      </div>
 
-                                      <button onClick={() => handleDeletePendingPrimary(entry.id, pIndex)} className="text-red-500 text-xs opacity-0 group-hover:opacity-100 transition-opacity self-start mt-1">
-                                        <TrashIcon className="w-4 h-4" />
-                                      </button>
-                                    </div>
-
-                                    {/* Secondary Tag Input */}
-                                    {secondaryInput?.entryId === entry.id && secondaryInput?.primaryIndex === pIndex && (
-                                      <div className="ml-10 mt-2 flex items-center gap-2">
-                                        <input
-                                          type="text"
-                                          placeholder="Secondary tag name..."
-                                          value={secondaryInput.value}
-                                          onChange={(e) => setSecondaryInput({ ...secondaryInput, value: e.target.value })}
-                                          onKeyDown={(e) => {
-                                            if (e.key === 'Enter') {
-                                              addSecondaryTag(entry.id, pIndex, secondaryInput.value);
-                                            } else if (e.key === 'Escape') {
-                                              setSecondaryInput(null);
-                                            }
-                                          }}
-                                          autoFocus
-                                          className="flex-1 text-xs border border-purple-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-purple-400"
-                                        />
-                                        <button
-                                          onClick={() => addSecondaryTag(entry.id, pIndex, secondaryInput.value)}
-                                          className="p-1 hover:bg-emerald-50 rounded"
-                                        >
-                                          <CheckIcon className="w-4 h-4 text-emerald-500" />
-                                        </button>
-                                        <button
-                                          onClick={() => setSecondaryInput(null)}
-                                          className="p-1 hover:bg-gray-100 rounded"
-                                        >
-                                          <XMarkIcon className="w-4 h-4 text-gray-400" />
-                                        </button>
+                                        {/* Informational message if no input and no suggestions */}
+                                        {!entry.primaryInput.trim() && getPrimarySuggestions(entry.id).length === 0 && (
+                                          <div className="px-4 py-4 text-xs text-gray-400 text-center italic">
+                                            Type to create a new primary tag.
+                                          </div>
+                                        )}
                                       </div>
                                     )}
                                   </div>
-                                ))}
+                                  <button onClick={() => handleInitiateAddPrimary(entry.id)} className="px-3 py-2 bg-[#00A3AF] text-white rounded-lg text-sm font-medium">Add</button>
+                                </div>
+                              </div>
+                            )}
+
+                            {entry.primaryList.length > 0 && (
+                              <div className="relative mt-4 ml-2">
+                                <div className="absolute left-[9px] top-0 bottom-2 w-[2px] bg-gray-200"></div>
+                                <div className="space-y-3">
+                                  {entry.primaryList.map((p, pIndex) => (
+                                    <div key={pIndex} className="relative">
+                                      {/* Primary Tag Row */}
+                                      <div className="relative pl-6 flex items-center justify-between text-sm group">
+                                        <div className="absolute left-[9px] top-1/2 w-3 h-[2px] bg-gray-200 -translate-y-1/2"></div>
+                                        <div className="absolute left-[6px] top-1/2 -translate-y-1/2 w-2 h-2 bg-white border border-gray-300 rounded-full"></div>
+
+                                        <div className="flex flex-col flex-1 min-w-0">
+                                          <div className="flex items-center gap-2">
+                                            {editingItem.id === entry.id && editingItem.type === 'pending_primary' && editingItem.index === pIndex ? (
+                                              <div className="flex items-center gap-2 flex-1" onClick={(e) => e.stopPropagation()}>
+                                                <input
+                                                  autoFocus
+                                                  type="text"
+                                                  value={editingItem.tempValue}
+                                                  onChange={(e) => setEditingItem({ ...editingItem, tempValue: e.target.value })}
+                                                  onKeyDown={(e) => {
+                                                    if (e.key === 'Enter') saveEditing();
+                                                    if (e.key === 'Escape') cancelEditing();
+                                                  }}
+                                                  className="flex-1 px-2 py-1 text-xs font-semibold border border-[#00A3AF] rounded focus:outline-none"
+                                                />
+                                                <button onClick={saveEditing} className="p-0.5 hover:bg-[#E0F7FA] rounded">
+                                                  <CheckIcon className="w-3 h-3 text-[#00A3AF]" />
+                                                </button>
+                                                <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded">
+                                                  <XMarkIcon className="w-3 h-3 text-gray-500" />
+                                                </button>
+                                              </div>
+                                            ) : (
+                                              <div className="flex items-center gap-2 overflow-hidden">
+                                                <span className="font-semibold text-gray-700 truncate">{p.displayName || p.value}</span>
+
+                                                {/* Inline Secondary Tags Display for Pending */}
+                                                {p.secondaryTags && p.secondaryTags.length > 0 && (
+                                                  <div className="flex items-center gap-1 flex-shrink-0">
+                                                    {p.secondaryTags.map((sec, secIdx) => (
+                                                      <span key={secIdx} className="text-[9px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100 flex items-center gap-1 group/sec">
+                                                        {sec.value}
+                                                        <button
+                                                          onClick={(e) => { e.stopPropagation(); removeSecondaryTag(entry.id, pIndex, secIdx); }}
+                                                          className="text-red-400 opacity-0 group-hover/sec:opacity-100 transition-opacity"
+                                                        >
+                                                          <XMarkIcon className="w-2.5 h-2.5" />
+                                                        </button>
+                                                      </span>
+                                                    ))}
+                                                  </div>
+                                                )}
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          <div className="flex items-center gap-1 mt-1">
+                                            {editingItem.id === entry.id && editingItem.type === 'pending_primary' && editingItem.index === pIndex ? null : (
+                                              <>
+                                                {/* Add Secondary Tag Button - Limit to 1 */}
+                                                {(!p.secondaryTags || p.secondaryTags.length === 0) && (
+                                                  <button
+                                                    onClick={() => toggleSecondaryInput(entry.id, pIndex)}
+                                                    className="p-1 hover:bg-gray-100 rounded text-gray-400"
+                                                    title="Add secondary tag"
+                                                  >
+                                                    <PlusIcon className="w-3.5 h-3.5" />
+                                                  </button>
+                                                )}
+
+                                                <button
+                                                  onClick={() => startEditing(entry.id, 'pending_primary', p.value, pIndex)}
+                                                  className="p-1 hover:bg-gray-100 rounded"
+                                                  title="Edit primary tag"
+                                                >
+                                                  <PencilIcon className="w-3.5 h-3.5 text-gray-400" />
+                                                </button>
+
+                                                <button
+                                                  onClick={() => startEditing(entry.id, 'pending_primary_comment', p.comment || "", pIndex)}
+                                                  className="p-1 hover:bg-gray-100 rounded"
+                                                >
+                                                  <ChatBubbleBottomCenterTextIcon
+                                                    className={`w-3.5 h-3.5 cursor-pointer ${p.comment ? 'text-[#00A3AF]' : 'text-gray-300'}`}
+                                                  />
+                                                </button>
+                                              </>
+                                            )}
+                                          </div>
+
+                                          {p.comment && !(editingItem.id === entry.id && editingItem.type === 'pending_primary_comment' && editingItem.index === pIndex) && (
+                                            <span className="text-[10px] text-gray-400 mt-0.5 italic truncate max-w-[150px]">"{p.comment}"</span>
+                                          )}
+                                        </div>
+
+                                        <button onClick={() => handleDeletePendingPrimary(entry.id, pIndex)} className="text-red-500 text-xs opacity-0 group-hover:opacity-100 transition-opacity self-start mt-1">
+                                          <TrashIcon className="w-4 h-4" />
+                                        </button>
+                                      </div>
+
+                                      {/* Secondary Tag Input */}
+                                      {secondaryInput?.entryId === entry.id && secondaryInput?.primaryIndex === pIndex && (
+                                        <div className="ml-10 mt-2 flex items-center gap-2">
+                                          <input
+                                            type="text"
+                                            placeholder="Secondary tag name..."
+                                            value={secondaryInput.value}
+                                            onChange={(e) => setSecondaryInput({ ...secondaryInput, value: e.target.value })}
+                                            onKeyDown={(e) => {
+                                              if (e.key === 'Enter') {
+                                                addSecondaryTag(entry.id, pIndex, secondaryInput.value);
+                                              } else if (e.key === 'Escape') {
+                                                setSecondaryInput(null);
+                                              }
+                                            }}
+                                            autoFocus
+                                            className="flex-1 text-xs border border-purple-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-purple-400"
+                                          />
+                                          <button
+                                            onClick={() => addSecondaryTag(entry.id, pIndex, secondaryInput.value)}
+                                            className="p-1 hover:bg-emerald-50 rounded"
+                                          >
+                                            <CheckIcon className="w-4 h-4 text-emerald-500" />
+                                          </button>
+                                          <button
+                                            onClick={() => setSecondaryInput(null)}
+                                            className="p-1 hover:bg-gray-100 rounded"
+                                          >
+                                            <XMarkIcon className="w-4 h-4 text-gray-400" />
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {activeTab === "recent" && <RecentTags />}
+
+              {activeTab === "recordings" && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold text-gray-900">Uploaded Videos</h3>
+                    <button
+                      onClick={async () => {
+                        setLoadingVideos(true);
+                        try {
+                          const response = await fetch("/api/videos");
+                          if (response.ok) {
+                            const data = await response.json();
+                            setVideos(data.videos || []);
+                          }
+                        } catch (error) {
+                          console.error("Failed to refresh videos:", error);
+                        } finally {
+                          setLoadingVideos(false);
+                        }
+                      }}
+                      className="text-sm text-[#00A3AF] hover:text-[#008C97] font-medium"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  {loadingVideos ? (
+                    <div className="flex items-center justify-center py-8">
+                      <div className="text-gray-500">Loading videos...</div>
+                    </div>
+                  ) : videos.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-12 text-center">
+                      <div className="text-gray-400 mb-2">No videos uploaded yet</div>
+                      <div className="text-sm text-gray-500">Upload videos from the home page to see them here</div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3 max-h-[calc(100vh-200px)] overflow-y-auto">
+                      {videos.map((video) => (
+                        <div
+                          key={video.key}
+                          className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-md transition-shadow"
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="flex-shrink-0 w-16 h-16 bg-[#E0F7FA] rounded-lg flex items-center justify-center">
+                              <svg
+                                className="w-8 h-8 text-[#00A3AF]"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+                                />
+                              </svg>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <h4 className="text-sm font-medium text-gray-900 truncate mb-1">
+                                {video.fileName}
+                              </h4>
+                              <div className="flex items-center gap-4 text-xs text-gray-500 mb-2">
+                                <span>
+                                  {new Date(video.lastModified).toLocaleDateString("en-US", {
+                                    month: "short",
+                                    day: "numeric",
+                                    year: "numeric",
+                                  })}
+                                </span>
+                                <span>
+                                  {(video.size / (1024 * 1024)).toFixed(2)} MB
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <a
+                                  href={video.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs text-[#00A3AF] hover:text-[#008C97] font-medium"
+                                >
+                                  View Video
+                                </a>
+                                <span className="text-gray-300">•</span>
+                                <button
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(video.url);
+                                    alert("Video URL copied to clipboard!");
+                                  }}
+                                  className="text-xs text-gray-600 hover:text-gray-900 font-medium"
+                                >
+                                  Copy URL
+                                </button>
                               </div>
                             </div>
-                          )}
+                          </div>
                         </div>
-                      )}
+                      ))}
                     </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {activeTab === "recent" && <RecentTags />}
-
-            {activeTab === "recordings" && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900">Uploaded Videos</h3>
-                  <button
-                    onClick={async () => {
-                      setLoadingVideos(true);
-                      try {
-                        const response = await fetch("/api/videos");
-                        if (response.ok) {
-                          const data = await response.json();
-                          setVideos(data.videos || []);
-                        }
-                      } catch (error) {
-                        console.error("Failed to refresh videos:", error);
-                      } finally {
-                        setLoadingVideos(false);
-                      }
-                    }}
-                    className="text-sm text-[#00A3AF] hover:text-[#008C97] font-medium"
-                  >
-                    Refresh
-                  </button>
+                  )}
                 </div>
-
-                {loadingVideos ? (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="text-gray-500">Loading videos...</div>
-                  </div>
-                ) : videos.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-12 text-center">
-                    <div className="text-gray-400 mb-2">No videos uploaded yet</div>
-                    <div className="text-sm text-gray-500">Upload videos from the home page to see them here</div>
-                  </div>
-                ) : (
-                  <div className="space-y-3 max-h-[calc(100vh-200px)] overflow-y-auto">
-                    {videos.map((video) => (
-                      <div
-                        key={video.key}
-                        className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-md transition-shadow"
-                      >
-                        <div className="flex items-start gap-3">
-                          <div className="flex-shrink-0 w-16 h-16 bg-[#E0F7FA] rounded-lg flex items-center justify-center">
-                            <svg
-                              className="w-8 h-8 text-[#00A3AF]"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
-                              />
-                            </svg>
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <h4 className="text-sm font-medium text-gray-900 truncate mb-1">
-                              {video.fileName}
-                            </h4>
-                            <div className="flex items-center gap-4 text-xs text-gray-500 mb-2">
-                              <span>
-                                {new Date(video.lastModified).toLocaleDateString("en-US", {
-                                  month: "short",
-                                  day: "numeric",
-                                  year: "numeric",
-                                })}
-                              </span>
-                              <span>
-                                {(video.size / (1024 * 1024)).toFixed(2)} MB
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <a
-                                href={video.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-xs text-[#00A3AF] hover:text-[#008C97] font-medium"
-                              >
-                                View Video
-                              </a>
-                              <span className="text-gray-300">•</span>
-                              <button
-                                onClick={() => {
-                                  navigator.clipboard.writeText(video.url);
-                                  alert("Video URL copied to clipboard!");
-                                }}
-                                className="text-xs text-gray-600 hover:text-gray-900 font-medium"
-                              >
-                                Copy URL
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
-      </div>
-    </main>
+      </main>
     </div >
   );
 }

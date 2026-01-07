@@ -9,23 +9,10 @@ export async function GET(
     try {
         const { videoId } = await params;
 
+        // Use a simpler query first to avoid complex include/select issues
         // @ts-ignore
         const video = await prisma.video.findUnique({
-            where: { id: videoId },
-            include: {
-                transcripts: {
-                    orderBy: { version: 'desc' },
-                    take: 1,
-                    select: {
-                        id: true,
-                        version: true,
-                        language: true,
-                        transcription_type: true,
-                        created_at: true,
-                        _count: { select: { blocks: true } }
-                    }
-                }
-            }
+            where: { id: videoId }
         });
 
         if (!video) {
@@ -35,6 +22,20 @@ export async function GET(
             );
         }
 
+        // Get transcript count separately to be safe
+        // @ts-ignore
+        const latestTranscript = await prisma.transcript.findFirst({
+            where: { video_id: videoId },
+            orderBy: { version: 'desc' },
+            select: {
+                id: true,
+                version: true,
+                language: true,
+                transcription_type: true,
+                created_at: true
+            }
+        });
+
         return NextResponse.json({
             success: true,
             video: {
@@ -43,13 +44,13 @@ export async function GET(
                 source_type: video.source_type,
                 source_url: video.source_url,
                 fileUrl: video.fileUrl,
-                createdAt: video.createdAt.toISOString(),
-                hasTranscript: video.transcripts.length > 0,
-                latestTranscript: video.transcripts[0] || null,
+                createdAt: video.createdAt ? video.createdAt.toISOString() : new Date().toISOString(),
+                hasTranscript: !!latestTranscript,
+                latestTranscript: latestTranscript || null,
             },
         });
     } catch (error: any) {
-        console.error("Get video error:", error);
+        console.error("Get video metadata error:", error);
         return NextResponse.json(
             { error: error.message || "Failed to get video" },
             { status: 500 }

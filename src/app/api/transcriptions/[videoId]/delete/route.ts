@@ -23,14 +23,21 @@ export async function DELETE(
 
         // Delete all transcripts for this video (cascade will handle blocks, sections, etc.)
         // @ts-ignore - Prisma types generated at runtime
-        const deleteResult = await prisma.transcript.deleteMany({
+        const deleteTranscriptResult = await prisma.transcript.deleteMany({
+            where: { video_id: videoId },
+        });
+
+        // Also delete all speakers for this video
+        // @ts-ignore
+        const deleteSpeakerResult = await prisma.speaker.deleteMany({
             where: { video_id: videoId },
         });
 
         return NextResponse.json({
             success: true,
-            message: "Transcription deleted successfully",
-            deletedCount: deleteResult.count,
+            message: "Transcription and speakers deleted successfully",
+            deletedTranscriptsCount: deleteTranscriptResult.count,
+            deletedSpeakersCount: deleteSpeakerResult.count,
         });
 
     } catch (error: any) {

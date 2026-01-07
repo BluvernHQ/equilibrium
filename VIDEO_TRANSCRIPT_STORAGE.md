@@ -26,7 +26,7 @@ Immutable transcript versions:
 Normalized transcript blocks (atomic units):
 - `id` (UUID) - Primary key
 - `transcript_id` - Foreign key to Transcript
-- `speaker_label` - Speaker identifier (e.g. "Person 1")
+- `speaker_label` - Speaker identifier (e.g. "Speaker 1")
 - `start_time_seconds` - Start time in seconds
 - `end_time_seconds` - End time in seconds
 - `text` - Block text content

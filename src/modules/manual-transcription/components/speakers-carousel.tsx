@@ -196,9 +196,9 @@ useEffect(() => {
       </div>
 
       {/* HIDDEN INPUTS */}
-      <input type="file" hidden ref={coordinatorInputRef} accept="image/*" onChange={(e) => onUpload(e, 'coordinator')} />
-      <input type="file" hidden ref={speakerInputRef} accept="image/*" onChange={(e) => onUpload(e, 'speaker')} />
-      <input type="file" hidden ref={updateAvatarInputRef} accept="image/*" onChange={handleAvatarFileChange} />
+      <input id="coordinator-upload-input" type="file" hidden ref={coordinatorInputRef} accept="image/*" onChange={(e) => onUpload(e, 'coordinator')} />
+      <input id="speaker-upload-input" type="file" hidden ref={speakerInputRef} accept="image/*" onChange={(e) => onUpload(e, 'speaker')} />
+      <input id="avatar-update-input" type="file" hidden ref={updateAvatarInputRef} accept="image/*" onChange={handleAvatarFileChange} />
 
       {/* --- CAROUSEL SLIDER --- */}
       <div className="flex-1 overflow-x-auto overflow-y-hidden custom-slider pb-2 scrollbar-hide">

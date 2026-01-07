@@ -36,6 +36,8 @@ interface SessionContextType {
     stopTranscription: () => void; // Cancel ongoing transcription
     resetSession: () => void;
     updateSpeakerName: (oldName: string, newName: string) => void;
+    setTranscriptionData: (data: TranscriptEntry[] | null) => void;
+    setVideoId: (id: string | null) => void;
 }
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
@@ -205,11 +207,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             if (data.utterances && data.utterances.length > 0) {
                 formattedData = data.utterances.map((utterance: any, index: number) => {
                     const speakerLabel = utterance.speaker || "A";
-                    let speakerName = `Person ${speakerLabel}`;
+                    let speakerName = `Speaker ${speakerLabel}`;
 
                     if (speakerLabel.length === 1 && speakerLabel >= 'A' && speakerLabel <= 'Z') {
                         const speakerIndex = speakerLabel.charCodeAt(0) - 64;
-                        speakerName = `Person ${speakerIndex}`;
+                        speakerName = `Speaker ${speakerIndex}`;
                     }
 
                     const minutes = Math.floor(utterance.start / 60000);
@@ -228,7 +230,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             } else if (data.text) {
                 formattedData = [{
                     id: 0,
-                    name: "Person 1",
+                    name: "Speaker 1",
                     time: "00:00",
                     text: data.text,
                     startTime: 0,
@@ -241,9 +243,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             // Save transcription to database (will create video if needed)
             if (formattedData.length > 0) {
                 try {
+                    // Get unique speakers for the initial save
+                    const uniqueSpeakerNames = new Set<string>();
+                    formattedData.forEach(entry => {
+                        if (entry.name) uniqueSpeakerNames.add(entry.name);
+                    });
+                    
+                    const speakerData = Array.from(uniqueSpeakerNames).map(name => ({
+                        name,
+                        speaker_label: name,
+                        is_moderator: false
+                    }));
+
                     const saveBody: any = {
                         transcriptData: formattedData,
                         transcriptionType: "auto",
+                        speakerData: speakerData,
                     };
 
                     // If we have videoId, use it; otherwise pass videoMetadata to create video
@@ -292,6 +307,38 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                             if (newVideoId && !videoId) {
                                 setVideoId(newVideoId);
                             }
+
+                            // Update local storage for View Session compatibility
+                            if (typeof window !== 'undefined' && (newVideoId || videoId)) {
+                                const vId = newVideoId || videoId;
+                                const manualSegments = formattedData.map((entry: any, idx: number) => ({
+                                    id: `auto-${idx}-${Date.now()}`,
+                                    selectedSpeakerId: `speaker-${entry.name}`,
+                                    state: null,
+                                    timestamp: entry.time,
+                                    content: entry.text,
+                                    startTimeSeconds: entry.startTime,
+                                    endTimeSeconds: entry.endTime,
+                                    status: 'committed',
+                                    createdAt: Date.now()
+                                }));
+
+                                const manualSpeakers = Array.from(uniqueSpeakerNames).map((name: any) => ({
+                                    id: `speaker-${name}`,
+                                    name,
+                                    shortName: name.length > 10 ? name.substring(0, 8) + "..." : name,
+                                    avatar: "",
+                                    isDefault: false,
+                                    role: "speaker"
+                                }));
+
+                                localStorage.setItem(`transcript:${vId}`, JSON.stringify({
+                                    segments: manualSegments,
+                                    speakers: manualSpeakers,
+                                    lastSaved: Date.now()
+                                }));
+                            }
+
                             console.log("Transcription and video saved to database", { videoId: newVideoId });
                         } else {
                             const errorData = await saveResponse.json();
@@ -366,6 +413,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                     if (transcriptionData.transcription?.transcriptData) {
                         setTranscriptionData(transcriptionData.transcription.transcriptData as TranscriptEntry[]);
                     }
+                } else if (transcriptionResponse.status === 404) {
+                    // If no transcription on server, clear local storage to prevent stale data
+                    if (typeof window !== 'undefined') {
+                        localStorage.removeItem(`transcript:${finalVideoId}`);
+                    }
                 }
             } catch (error) {
                 console.error("Failed to load existing transcription:", error);
@@ -405,7 +457,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             startTranscription,
             stopTranscription,
             resetSession,
-            updateSpeakerName
+            updateSpeakerName,
+            setTranscriptionData,
+            setVideoId,
         }}>
             {children}
         </SessionContext.Provider>

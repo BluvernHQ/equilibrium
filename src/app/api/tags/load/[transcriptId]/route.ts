@@ -72,6 +72,8 @@ export async function GET(
                     branchTags: imp.master_tag.branch_tags || [],
                     primaryTags: [],
                     blockIds: new Set(),
+                    selectedText: imp.selected_text,
+                    selectionRanges: imp.selection_ranges,
                 };
             }
 

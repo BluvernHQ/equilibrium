@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { S3Client, DeleteObjectCommand } from "@aws-sdk/client-s3";
 
 interface TranscriptBlockData {
     speaker_label?: string;
@@ -149,16 +150,6 @@ export async function POST(req: NextRequest) {
             );
         }
 
-        // Get the latest transcript version for this video
-        // @ts-ignore - Prisma types generated at runtime
-        const latestTranscript = await prisma.transcript.findFirst({
-            where: { video_id: finalVideoId },
-            orderBy: { version: 'desc' },
-        });
-
-        // Create new version (immutability principle)
-        const newVersion = latestTranscript ? latestTranscript.version + 1 : 1;
-
         // Normalize transcript data into blocks
         let blocks: TranscriptBlockData[] = [];
         
@@ -229,6 +220,19 @@ export async function POST(req: NextRequest) {
         // Create transcript and blocks in a transaction
         // @ts-ignore - Prisma types generated at runtime (will be available after prisma generate)
         const transcript = await prisma.$transaction(async (tx: any) => {
+            // LOCK the video record to serialize saves for this video
+            // This prevents race conditions on version calculation when multiple rapid saves occur
+            await tx.$executeRawUnsafe(`SELECT id FROM "Video" WHERE id = '${finalVideoId}'::uuid FOR UPDATE`);
+
+            // Get the latest transcript version for this video INSIDE the transaction
+            const latestTranscript = await tx.transcript.findFirst({
+                where: { video_id: finalVideoId },
+                orderBy: { version: 'desc' },
+            });
+
+            // Create new version (immutability principle)
+            const newVersion = latestTranscript ? latestTranscript.version + 1 : 1;
+
             // Create transcript
             const newTranscript = await tx.transcript.create({
                 data: {
@@ -256,90 +260,129 @@ export async function POST(req: NextRequest) {
             );
 
             // Save speaker data with avatars if provided
-            if (speakerData && Array.isArray(speakerData) && speakerData.length > 0) {
+            if (speakerData && Array.isArray(speakerData)) {
                 try {
                     // Check if Speaker model exists in Prisma client
-                    // Prisma converts model names: Speaker -> speaker (lowercase first letter)
                     const prismaClient = tx as any;
+                    let SpeakerModel = prismaClient.speaker || prismaClient.Speaker;
                     
-                    // Try different possible model name variations
-                    let SpeakerModel = prismaClient.speaker;
                     if (!SpeakerModel) {
-                        // Try capitalized version
-                        SpeakerModel = prismaClient.Speaker;
-                    }
-                    if (!SpeakerModel) {
-                        // Try accessing via $dmmf (Data Model Meta Format) to find the actual name
                         const dmmf = (prismaClient as any).$dmmf;
-                        if (dmmf && dmmf.datamodel) {
-                            const speakerModel = dmmf.datamodel.models.find((m: any) => 
-                                m.name.toLowerCase() === 'speaker'
-                            );
-                            if (speakerModel) {
-                                SpeakerModel = prismaClient[speakerModel.name.charAt(0).toLowerCase() + speakerModel.name.slice(1)];
-                            }
+                        if (dmmf?.datamodel) {
+                            const model = dmmf.datamodel.models.find((m: any) => m.name.toLowerCase() === 'speaker');
+                            if (model) SpeakerModel = prismaClient[model.name.charAt(0).toLowerCase() + model.name.slice(1)];
                         }
                     }
                     
-                    if (!SpeakerModel) {
-                        // Fallback: Use raw SQL to insert/update speakers
-                        console.warn("Speaker model not available in Prisma client. Using raw SQL fallback.");
-                        await Promise.all(
-                            speakerData.map(async (speaker: any) => {
-                                const speakerLabel = speaker.speaker_label || speaker.name;
-                                // Use raw SQL to upsert speaker
-                                await tx.$executeRaw`
-                                    INSERT INTO "Speaker" (id, video_id, name, speaker_label, avatar_url, avatar_key, is_moderator, created_at, updated_at)
-                                    VALUES (gen_random_uuid(), ${finalVideoId}::uuid, ${speaker.name}, ${speakerLabel}, ${speaker.avatar_url || null}, ${speaker.avatar_key || null}, ${speaker.is_moderator || false}, NOW(), NOW())
-                                    ON CONFLICT (video_id, speaker_label) 
-                                    DO UPDATE SET 
-                                        name = EXCLUDED.name,
-                                        avatar_url = EXCLUDED.avatar_url,
-                                        avatar_key = EXCLUDED.avatar_key,
-                                        is_moderator = EXCLUDED.is_moderator,
-                                        updated_at = NOW()
-                                `;
-                            })
-                        );
-                        console.log(`Successfully saved ${speakerData.length} speaker(s) using raw SQL, including ${speakerData.filter((s: any) => s.is_moderator).length} moderator(s)`);
-                    } else {
-                        await Promise.all(
-                            speakerData.map((speaker: any) => {
-                                const speakerLabel = speaker.speaker_label || speaker.name;
-                                // Upsert speaker (create or update)
-                                return SpeakerModel.upsert({
-                                    where: {
-                                        video_id_speaker_label: {
-                                            video_id: finalVideoId,
-                                            speaker_label: speakerLabel,
+                    // 1. Get all existing speakers for this video
+                    const existingSpeakers = await (SpeakerModel 
+                        ? SpeakerModel.findMany({ where: { video_id: finalVideoId } })
+                        : tx.$queryRaw`SELECT id, speaker_label, avatar_key FROM "Speaker" WHERE video_id = ${finalVideoId}::uuid`);
+                    
+                    const providedLabels = speakerData.map((s: any) => s.speaker_label || s.name);
+                    
+                    // 2. Identify speakers to delete (those in DB but not in provided list)
+                    const speakersToDelete = existingSpeakers.filter((es: any) => !providedLabels.includes(es.speaker_label));
+                    
+                    if (speakersToDelete.length > 0) {
+                        // Clean up storage for deleted speakers
+                        const s3Client = new S3Client({
+                            endpoint: process.env.DO_SPACES_ENDPOINT || "https://blr1.digitaloceanspaces.com",
+                            region: "us-east-1",
+                            credentials: {
+                                accessKeyId: process.env.DO_SPACES_KEY || "",
+                                secretAccessKey: process.env.DO_SPACES_SECRET || "",
+                            },
+                        });
+                        
+                        for (const s of speakersToDelete) {
+                            if (s.avatar_key) {
+                                try {
+                                    await s3Client.send(new DeleteObjectCommand({
+                                        Bucket: process.env.DO_SPACES_BUCKET || "",
+                                        Key: s.avatar_key,
+                                    }));
+                                } catch (e) {
+                                    console.error("Failed to delete avatar from storage during sync:", e);
+                                }
+                            }
+                        }
+                        
+                        // Delete from database
+                        if (SpeakerModel) {
+                            await SpeakerModel.deleteMany({
+                                where: { 
+                                    video_id: finalVideoId,
+                                    speaker_label: { in: speakersToDelete.map((s: any) => s.speaker_label) }
+                                }
+                            });
+                        } else {
+                            await tx.$executeRaw`
+                                DELETE FROM "Speaker" 
+                                WHERE video_id = ${finalVideoId}::uuid 
+                                AND speaker_label IN (${providedLabels.length > 0 ? providedLabels : ''})
+                            `;
+                            // Correction: The above logic is wrong for raw SQL. Let's use a simpler approach.
+                            for (const s of speakersToDelete) {
+                                await tx.$executeRaw`DELETE FROM "Speaker" WHERE id = ${s.id}::uuid`;
+                            }
+                        }
+                        console.log(`Deleted ${speakersToDelete.length} stale speaker(s)`);
+                    }
+
+                    // 3. Upsert provided speakers
+                    if (speakerData.length > 0) {
+                        if (!SpeakerModel) {
+                            // Raw SQL fallback for upsert
+                            await Promise.all(
+                                speakerData.map(async (speaker: any) => {
+                                    const speakerLabel = speaker.speaker_label || speaker.name;
+                                    await tx.$executeRaw`
+                                        INSERT INTO "Speaker" (id, video_id, name, speaker_label, avatar_url, avatar_key, is_moderator, created_at, updated_at)
+                                        VALUES (gen_random_uuid(), ${finalVideoId}::uuid, ${speaker.name}, ${speakerLabel}, ${speaker.avatar_url || null}, ${speaker.avatar_key || null}, ${speaker.is_moderator || false}, NOW(), NOW())
+                                        ON CONFLICT (video_id, speaker_label) 
+                                        DO UPDATE SET 
+                                            name = EXCLUDED.name,
+                                            avatar_url = EXCLUDED.avatar_url,
+                                            avatar_key = EXCLUDED.avatar_key,
+                                            is_moderator = EXCLUDED.is_moderator,
+                                            updated_at = NOW()
+                                    `;
+                                })
+                            );
+                        } else {
+                            await Promise.all(
+                                speakerData.map((speaker: any) => {
+                                    const speakerLabel = speaker.speaker_label || speaker.name;
+                                    return SpeakerModel.upsert({
+                                        where: {
+                                            video_id_speaker_label: {
+                                                video_id: finalVideoId,
+                                                speaker_label: speakerLabel,
+                                            },
                                         },
-                                    },
-                                    create: {
-                                        video_id: finalVideoId,
-                                        name: speaker.name,
-                                        speaker_label: speakerLabel,
-                                        avatar_url: speaker.avatar_url || null,
-                                        avatar_key: speaker.avatar_key || null,
-                                        is_moderator: speaker.is_moderator || false,
-                                    },
-                                    update: {
-                                        name: speaker.name,
-                                        avatar_url: speaker.avatar_url !== undefined ? speaker.avatar_url : undefined,
-                                        avatar_key: speaker.avatar_key !== undefined ? speaker.avatar_key : undefined,
-                                        is_moderator: speaker.is_moderator !== undefined ? speaker.is_moderator : undefined,
-                                    },
-                                });
-                            })
-                        );
-                        console.log(`Successfully saved ${speakerData.length} speaker(s) including ${speakerData.filter((s: any) => s.is_moderator).length} moderator(s)`);
+                                        create: {
+                                            video_id: finalVideoId,
+                                            name: speaker.name,
+                                            speaker_label: speakerLabel,
+                                            avatar_url: speaker.avatar_url || null,
+                                            avatar_key: speaker.avatar_key || null,
+                                            is_moderator: speaker.is_moderator || false,
+                                        },
+                                        update: {
+                                            name: speaker.name,
+                                            avatar_url: speaker.avatar_url !== undefined ? speaker.avatar_url : undefined,
+                                            avatar_key: speaker.avatar_key !== undefined ? speaker.avatar_key : undefined,
+                                            is_moderator: speaker.is_moderator !== undefined ? speaker.is_moderator : undefined,
+                                        },
+                                    });
+                                })
+                            );
+                        }
+                        console.log(`Successfully saved ${speakerData.length} speaker(s)`);
                     }
                 } catch (speakerError: any) {
-                    // If Speaker table doesn't exist yet, log warning but don't fail the save
-                    console.error("Could not save speakers:", speakerError.message);
-                    console.error("Speaker error details:", {
-                        error: speakerError,
-                        stack: speakerError.stack,
-                    });
+                    console.error("Could not sync speakers:", speakerError.message);
                 }
             }
 

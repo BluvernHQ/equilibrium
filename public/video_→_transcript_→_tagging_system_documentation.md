@@ -82,7 +82,7 @@ Each block represents a speaker turn or sentence group.
 **TranscriptBlock**
 - id (UUID)
 - transcript_id (FK)
-- speaker_label (e.g. Person 1, Person 2)
+- speaker_label (e.g. Speaker 1, Speaker 2)
 - start_time_seconds
 - end_time_seconds
 - text

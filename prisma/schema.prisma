@@ -173,7 +173,7 @@ model TranscriptBlock {
   transcript    Transcript @relation(fields: [transcript_id], references: [id], onDelete: Cascade)
 
   // Block content
-  speaker_label      String? @db.VarChar(255) // e.g. Person 1, Person 2
+  speaker_label      String? @db.VarChar(255) // e.g. Speaker 1, Speaker 2
   start_time_seconds Float? // Start time in seconds
   end_time_seconds   Float? // End time in seconds
   text               String  @db.Text
@@ -342,7 +342,7 @@ model Speaker {
   video    Video  @relation(fields: [video_id], references: [id], onDelete: Cascade)
 
   name          String  @db.VarChar(255)
-  speaker_label String? @db.VarChar(255) // e.g. "Person 1", "Person 2" - matches TranscriptBlock.speaker_label
+  speaker_label String? @db.VarChar(255) // e.g. "Speaker 1", "Speaker 2" - matches TranscriptBlock.speaker_label
   avatar_url    String? @db.VarChar(500) // URL to avatar image in object storage
   avatar_key    String? @db.VarChar(500) // Key in object storage for presigned URL generation
   is_moderator  Boolean @default(false)
