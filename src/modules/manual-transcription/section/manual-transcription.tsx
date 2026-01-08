@@ -825,6 +825,25 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
 
     setIsSaving(true);
     try {
+      // Prepare speaker data with avatars
+      const speakerData = speakers.map((speaker) => {
+        let avatarKey: string | null = null;
+        if (speaker.avatar && speaker.avatar.startsWith('http')) {
+          try {
+            const url = new URL(speaker.avatar);
+            avatarKey = url.pathname.startsWith('/') ? url.pathname.substring(1) : url.pathname;
+          } catch (e) { }
+        }
+
+        return {
+          name: speaker.name,
+          speaker_label: speaker.name,
+          avatar_url: speaker.avatar || null,
+          avatar_key: avatarKey,
+          is_moderator: speaker.role === 'coordinator',
+        };
+      });
+
       // If we have a videoId, save the transcription
       if (videoId) {
         const response = await fetch("/api/transcriptions/save", {
@@ -834,6 +853,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
             videoId: videoId,
             transcriptData: transcriptData,
             transcriptionType: "manual",
+            speakerData: speakerData,
           }),
         });
 
@@ -898,6 +918,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
             videoId: videoIdToUse,
             transcriptData: transcriptData,
             transcriptionType: "manual",
+            speakerData: speakerData,
           }),
         });
 
