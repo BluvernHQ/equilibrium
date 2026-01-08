@@ -86,6 +86,8 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
   const [isSaving, setIsSaving] = useState(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const [speakerCreationTriggerSegmentId, setSpeakerCreationTriggerSegmentId] = useState<string | null>(null);
+  const [showNavigationAfterSave, setShowNavigationAfterSave] = useState(false);
+  const [savedVideoId, setSavedVideoId] = useState<string | null>(null);
   
   // Strict Behavioral States
   const [playbackMode, setPlaybackMode] = useState<'locked' | 'unlocked'>('locked');
@@ -841,6 +843,8 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
         }
 
         setIsGlobalSaved(true);
+        setSavedVideoId(videoId);
+        setShowNavigationAfterSave(true);
         showSnackbar("Transcription saved successfully!");
         setTimeout(() => setIsGlobalSaved(false), 2000);
         console.log("Manual transcription saved to database successfully");
@@ -903,6 +907,12 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
         }
 
         setIsGlobalSaved(true);
+        setSavedVideoId(videoIdToUse);
+        setShowNavigationAfterSave(true);
+        // Update videoId in session context if available
+        if (setVideoUrl) {
+          setVideoUrl(videoUrl, videoIdToUse);
+        }
         showSnackbar("Transcription saved successfully!");
         setTimeout(() => setIsGlobalSaved(false), 2000);
         console.log("Manual transcription saved to database successfully");
@@ -1170,6 +1180,49 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
           <span className="text-sm font-medium">{snackbar.message}</span>
         </div>
       </div>
+
+      {/* NAVIGATION MODAL AFTER SAVE */}
+      {showNavigationAfterSave && savedVideoId && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-in fade-in zoom-in duration-200">
+            <div className="flex flex-col items-center gap-4">
+              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center">
+                <svg className="w-8 h-8 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <div className="text-center">
+                <h3 className="text-xl font-bold text-gray-900 mb-2">Transcription Saved!</h3>
+                <p className="text-gray-600 text-sm">What would you like to do next?</p>
+              </div>
+              <div className="flex flex-col gap-3 w-full">
+                <Link
+                  href={`/transcription/${savedVideoId}`}
+                  onClick={() => setShowNavigationAfterSave(false)}
+                  className="w-full px-4 py-3 bg-[#00A3AF] text-white rounded-lg font-medium hover:bg-[#008C97] transition flex items-center justify-center gap-2"
+                >
+                  View Transcription
+                  <ArrowRightIcon className="w-4 h-4" />
+                </Link>
+                <Link
+                  href={`/sessions?videoId=${savedVideoId}`}
+                  onClick={() => setShowNavigationAfterSave(false)}
+                  className="w-full px-4 py-3 bg-blue-50 text-[#00A3AF] border border-[#00A3AF] rounded-lg font-medium hover:bg-blue-100 transition flex items-center justify-center gap-2"
+                >
+                  View Session
+                  <ArrowRightIcon className="w-4 h-4" />
+                </Link>
+                <button
+                  onClick={() => setShowNavigationAfterSave(false)}
+                  className="w-full px-4 py-2 text-gray-600 hover:text-gray-800 transition text-sm font-medium"
+                >
+                  Continue Editing
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* HEADER & TOP SECTION */}
       <div className="shrink-0 bg-gray-50 z-30 shadow-sm lg:shadow-none">

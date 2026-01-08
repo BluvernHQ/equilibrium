@@ -65,6 +65,9 @@ export async function POST(req: NextRequest) {
         // Extract fileName from fileKey
         const fileName = fileKey.split('/').pop() || fileKey;
 
+        // Extract canonical URL (without query parameters) for source_url
+        const canonicalUrl = fileUrl.split('?')[0];
+
         // Check if video already exists by fileKey
         // Access Prisma models dynamically
         const prismaClient = prisma as any;
@@ -90,7 +93,7 @@ export async function POST(req: NextRequest) {
                 success: true,
                 video: {
                     ...existingVideo,
-                    fileSize: existingVideo.fileSize.toString(),
+                    fileSize: existingVideo.fileSize?.toString() || "0",
                 },
             });
         }
@@ -98,6 +101,10 @@ export async function POST(req: NextRequest) {
         // Create new video record (just a reference to the bucket URL)
         const video = await prismaClient.video.create({
             data: {
+                // Required fields
+                source_type: "s3", // Digital Ocean Spaces is S3-compatible
+                source_url: canonicalUrl,
+                // Legacy fields (for backward compatibility)
                 fileName,
                 fileKey,
                 fileUrl,
