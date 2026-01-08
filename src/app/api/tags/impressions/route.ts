@@ -9,6 +9,7 @@ export async function POST(req: NextRequest) {
             transcriptId,
             blockIds,
             masterTagName,
+            masterTagId, // Added: explicit ID for reuse
             masterTagDescription,
             branchNames, // Added: Array of strings
             primaryTags, // Array of { name: string, comment?: string, secondaryTags?: string[], selectedText?: string, selectionRange?: object }
@@ -44,10 +45,17 @@ export async function POST(req: NextRequest) {
         // @ts-ignore
         const result = await prisma.$transaction(async (tx: any) => {
             // 1. Create or get Master Tag
-            let masterTag = await tx.masterTag.findUnique({
-                where: { name: masterTagName.trim() }
-            });
+            let masterTag = null;
 
+            if (masterTagId) {
+                // If ID is provided, reuse the existing Master Tag
+                masterTag = await tx.masterTag.findUnique({
+                    where: { id: masterTagId }
+                });
+            }
+
+            // If no ID provided OR provided ID not found, create a NEW Master Tag
+            // Rule 1.2: No auto-merge on name
             if (!masterTag) {
                 masterTag = await tx.masterTag.create({
                     data: {
@@ -218,10 +226,10 @@ export async function POST(req: NextRequest) {
                     subsection_id: subsectionId || null,
                     comment: null,
                 };
-                
+
                 // Only include primary_tag_id if we have one (we don't in this case)
                 // Omitting it entirely allows Prisma to set it to null in the database
-                
+
                 const impression = await tx.tagImpression.create({
                     data: impressionData
                 });

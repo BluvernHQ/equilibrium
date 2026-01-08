@@ -8,6 +8,7 @@ import { TagActionsColumn } from './TagActionsColumn';
 interface PrimaryTagRowProps {
     name: string;
     isEditing: boolean;
+    selectedText?: string; // The selected phrase/text that was tagged
     onEdit: () => void;
     onDelete: () => void;
     onComment?: () => void;
@@ -19,6 +20,7 @@ interface PrimaryTagRowProps {
 export const PrimaryTagRow: React.FC<PrimaryTagRowProps> = ({
     name,
     isEditing,
+    selectedText,
     onEdit,
     onDelete,
     onComment,
@@ -79,15 +81,25 @@ export const PrimaryTagRow: React.FC<PrimaryTagRowProps> = ({
                     placeholder="Edit primary tag..."
                 />
             ) : (
-                <div
-                    className={`text-xs font-semibold text-gray-700 truncate ${isEditing ? 'cursor-text hover:bg-gray-50 px-1 -ml-1 rounded border border-transparent hover:border-gray-200' : ''}`}
-                    title={isEditing ? "Click to rename" : name}
-                    onClick={() => {
-                        if (isEditing) setIsRenaming(true);
-                    }}
-                >
-                    {name}
-                </div>
+                <>
+                    <div
+                        className={`text-xs font-semibold text-gray-700 truncate ${isEditing ? 'cursor-text hover:bg-gray-50 px-1 -ml-1 rounded border border-transparent hover:border-gray-200' : ''}`}
+                        title={isEditing ? "Click to rename" : name}
+                        onClick={() => {
+                            if (isEditing) setIsRenaming(true);
+                        }}
+                    >
+                        {name}
+                    </div>
+                    {/* Selected text display - shown below the tag name */}
+                    {selectedText && (
+                        <div className="pl-6 pr-2 py-1 border-l-2 border-gray-200">
+                            <p className="text-[10px] text-gray-500 italic">
+                                "{selectedText}"
+                            </p>
+                        </div>
+                    )}
+                </>
             )}
         </TagRowLayout>
     );

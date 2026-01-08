@@ -236,7 +236,6 @@ model MasterTag {
   branch_tags     BranchTag[]
   tag_impressions TagImpression[]
 
-  @@unique([name]) // Globally unique per documentation
   @@index([name])
   @@index([created_at])
 }

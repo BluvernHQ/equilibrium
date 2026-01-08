@@ -10,6 +10,8 @@ interface MasterTagRowProps {
     isEditing: boolean;
     isHighlighted?: boolean;
     color?: string;
+    impressionCount?: number; // Number of impressions for this master tag
+    selectedText?: string; // The selected phrase/text that was tagged (for master-only tags)
     onEdit: () => void;
     onClick?: () => void;
     onDelete: () => void;
@@ -25,6 +27,8 @@ export const MasterTagRow: React.FC<MasterTagRowProps> = ({
     isEditing,
     isHighlighted = false,
     color = '#00A3AF',
+    impressionCount,
+    selectedText,
     onEdit, // Triggers workspace/edit mode
     onClick,
     onDelete,
@@ -101,40 +105,58 @@ export const MasterTagRow: React.FC<MasterTagRowProps> = ({
                     placeholder="New Master Tag name..."
                 />
             ) : (
-                <div
-                    className={`flex items-center gap-2 h-full w-full ${onClick ? 'cursor-pointer' : ''}`}
-                    onClick={(e) => {
-                        if (onClick) {
-                            e.stopPropagation();
-                            onClick();
-                        }
-                    }}
-                >
-                    {/* Color indicator - vertical pill on the left */}
+                <>
                     <div
-                        className="w-2 h-4 rounded-full"
-                        style={{ backgroundColor: color }}
-                    />
-                    <span className="text-sm font-bold text-gray-800 truncate" title={name}>
-                        {name}
-                    </span>
-
-                    {/* Explicit Rename Pencil - Only acts to rename, separate from main Edit Mode */}
-                    {isEditing && !isRenaming && (
-                        <button
-                            onClick={(e) => {
+                        className={`flex items-center gap-2 h-full w-full ${onClick ? 'cursor-pointer' : ''}`}
+                        onClick={(e) => {
+                            if (onClick) {
                                 e.stopPropagation();
-                                setIsRenaming(true);
-                            }}
-                            className="p-1 text-gray-400 hover:text-[#00A3AF] hover:bg-cyan-50 rounded-full transition-colors ml-1"
-                            title="Rename Master Tag"
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-3 h-3">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
-                            </svg>
-                        </button>
+                                onClick();
+                            }
+                        }}
+                    >
+                        {/* Color indicator - vertical pill on the left */}
+                        <div
+                            data-tag-anchor="true"
+                            className="w-2 h-4 rounded-full"
+                            style={{ backgroundColor: color }}
+                        />
+                        <span className="text-sm font-bold text-gray-800 truncate" title={name}>
+                            {name}
+                        </span>
+                        
+                        {/* Impression count badge */}
+                        {impressionCount !== undefined && impressionCount !== null && (
+                            <span className="text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-200 font-medium">
+                                {impressionCount}
+                            </span>
+                        )}
+
+                        {/* Explicit Rename Pencil - Only acts to rename, separate from main Edit Mode */}
+                        {isEditing && !isRenaming && (
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setIsRenaming(true);
+                                }}
+                                className="p-1 text-gray-400 hover:text-[#00A3AF] hover:bg-cyan-50 rounded-full transition-colors ml-1"
+                                title="Rename Master Tag"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-3 h-3">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
+                                </svg>
+                            </button>
+                        )}
+                    </div>
+                    {/* Selected text display - shown below the tag name (for master-only tags) */}
+                    {selectedText && (
+                        <div className="pl-6 pr-2 py-1 border-l-2 border-gray-200">
+                            <p className="text-[10px] text-gray-500 italic">
+                                "{selectedText}"
+                            </p>
+                        </div>
                     )}
-                </div>
+                </>
             )}
         </TagRowLayout>
     );

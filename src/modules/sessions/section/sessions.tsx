@@ -15,7 +15,7 @@ import {
   PencilSquareIcon,
   UserIcon as UserIconOutline
 } from "@heroicons/react/24/outline";
-import SpeakersCarousel, { Speaker } from "@/modules/manual-transcription/components/speakers-carousel";
+import { Speaker } from "@/modules/manual-transcription/components/speakers-carousel";
 import UserIcon from "../../../../public/icons/profile-circle.png";
 import MicrophoneIcon from "../../../../public/icons/spk-icon.png";
 import { DeleteModal } from "../components/action-modals";
@@ -342,7 +342,7 @@ export default function Sessions() {
       // 1. Optimistic UI Update: Add speaker immediately with a local preview
       const tempId = `uploaded-${Date.now()}-${file.name}`;
       const localPreviewUrl = URL.createObjectURL(file);
-      
+
       const newSpeaker: Speaker = {
         id: tempId,
         name: speakerName,
@@ -533,19 +533,28 @@ export default function Sessions() {
   // Data State
   const [tags, setTags] = useState<TagItem[]>([]);
 
-  // Track the absolute first occurrence of each master tag name for sidebar headers
-  // Track the absolute first and last occurrences of each master tag name for tree lines
+  // Track the absolute first occurrence of each master tag by ID for sidebar headers
+  // Use masterTagId to treat same-name but different-ID tags as separate entities
   const masterTagMetadata = useMemo(() => {
     const metadata: Record<string, {
       firstItemIndex: number,
       lastItemIndex: number,
       color: string,
       id: string,
-      uniqueIndex: number // Used for horizontal positioning of vertical lines
+      masterName: string, // Store name for display
+      uniqueIndex: number, // Used for horizontal positioning of vertical lines (Name-based Lane)
+      idIndexWithinLane: number, // Used to offset lines within the same lane to avoid collision
+      hasDuplicateName: boolean, // True if another tag has same name but different ID
+      leftmostLaneUniqueIndex?: number // Track the leftmost lane for a name group
     }> = {};
 
     let masterCounter = 0;
+    const nameToLane = new Map<string, number>();
+    const laneToIdCount = new Map<number, number>();
 
+    // First pass: collect all master tags by ID
+    const itemsWithTags: { itemIndex: number, masterName: string, masterTagId: string }[] = [];
+    
     displayItems.forEach((item, itemIndex) => {
       if (item.type !== 'data') return;
       const dataIndex = item.originalIndex!;
@@ -555,36 +564,141 @@ export default function Sessions() {
           const indices = tag.primaryList.map(p => p.messageIndex);
           return dataIndex >= Math.min(...indices) && dataIndex <= Math.max(...indices);
         } else {
-          // If no primaries, use blockIds
           return tag.blockIds.includes(item.id);
         }
       });
 
       tagsForThisRow.forEach((tag) => {
-        const name = tag.master || 'No Master';
-        if (!metadata[name]) {
-          metadata[name] = {
-            firstItemIndex: itemIndex,
-            lastItemIndex: itemIndex,
-            color: tag.masterColor || getMasterTagColor(tag.masterTagId || tag.id || name),
-            id: tag.masterTagId || tag.id,
-            uniqueIndex: masterCounter++
-          };
-        } else {
-          metadata[name].lastItemIndex = itemIndex;
-        }
+        const masterTagId = tag.masterTagId || tag.id;
+        const masterName = tag.master || 'No Master';
+        itemsWithTags.push({ itemIndex, masterName, masterTagId });
       });
+    });
+
+    // Determine unique name groups and their FIRST appearance index
+    const nameToFirstIndex = new Map<string, number>();
+    itemsWithTags.forEach(it => {
+      if (!nameToFirstIndex.has(it.masterName)) {
+        nameToFirstIndex.set(it.masterName, it.itemIndex);
+      }
+    });
+
+    // Sort name groups by appearance index (descending) to avoid collisions (Rule 3.3)
+    // Items appearing later vertically get lanes further to the left (smaller x)
+    const sortedNames = Array.from(nameToFirstIndex.entries())
+      .sort((a, b) => b[1] - a[1]) // DESCENDING index
+      .map(entry => entry[0]);
+
+    sortedNames.forEach((name, idx) => {
+      nameToLane.set(name, idx);
+    });
+
+    // Second pass: build metadata with correct lane indices
+    itemsWithTags.forEach(({ itemIndex, masterName, masterTagId }) => {
+      if (!metadata[masterTagId]) {
+        const laneIndex = nameToLane.get(masterName)!;
+        const idIndex = laneToIdCount.get(laneIndex) || 0;
+        laneToIdCount.set(laneIndex, idIndex + 1);
+
+        metadata[masterTagId] = {
+          firstItemIndex: itemIndex,
+          lastItemIndex: itemIndex,
+          color: tags.find(t => (t.masterTagId || t.id) === masterTagId)?.masterColor || getMasterTagColor(masterTagId || masterName),
+          id: masterTagId,
+          masterName: masterName,
+          uniqueIndex: laneIndex,
+          idIndexWithinLane: idIndex,
+          hasDuplicateName: false
+        };
+      } else {
+        metadata[masterTagId].lastItemIndex = itemIndex;
+      }
+    });
+
+    // Second pass: detect if tags with same name have different IDs
+    const nameToIds = new Map<string, Set<string>>();
+    Object.values(metadata).forEach(meta => {
+      if (!nameToIds.has(meta.masterName)) {
+        nameToIds.set(meta.masterName, new Set());
+      }
+      nameToIds.get(meta.masterName)!.add(meta.id);
+    });
+
+    // Mark tags that share names with different IDs
+    nameToIds.forEach((ids, name) => {
+      if (ids.size > 1) {
+        // Multiple IDs share this name - mark all as having duplicate names
+        const laneIndex = nameToLane.get(name)!;
+        ids.forEach(id => {
+          if (metadata[id]) {
+            metadata[id].hasDuplicateName = true;
+            metadata[id].leftmostLaneUniqueIndex = laneIndex;
+          }
+        });
+      }
     });
 
     return metadata;
   }, [displayItems, tags]);
 
+  // Impression Number Rules: Impression = Nth master tag created with the same name (Rule 1.1)
+  // After deletion, numbers are renumbered to reflect current state (no gaps)
+  const impressionIndexes = useMemo(() => {
+    const indexes: Record<string, number> = {};
+
+    // Group tags by name and sort by messageIndex (creation order)
+    const tagsByName = new Map<string, Array<{ id: string; messageIndex: number; tagIndex: number }>>();
+    
+    tags.forEach((tag, tagIndex) => {
+      const name = tag.master || 'No Master';
+      
+      // Calculate messageIndex: use primary tag's messageIndex if available,
+      // otherwise find the block's position in displayItems
+      let messageIndex: number;
+      if (tag.primaryList.length > 0 && tag.primaryList[0]?.messageIndex !== undefined) {
+        messageIndex = tag.primaryList[0].messageIndex;
+      } else if (tag.blockIds.length > 0) {
+        const blockIndex = displayItems.findIndex(d => d.type === 'data' && d.id === tag.blockIds[0]);
+        messageIndex = blockIndex >= 0 ? blockIndex : Infinity;
+      } else {
+        // Fallback: use tag's position in array as tiebreaker
+        messageIndex = Infinity;
+      }
+      
+      if (!tagsByName.has(name)) {
+        tagsByName.set(name, []);
+      }
+      tagsByName.get(name)!.push({ id: tag.id, messageIndex, tagIndex });
+    });
+
+    // For each name group, sort by messageIndex and assign sequential impression numbers
+    tagsByName.forEach((tagList, name) => {
+      // Sort by messageIndex first (creation order), then by tagIndex as tiebreaker
+      tagList.sort((a, b) => {
+        if (a.messageIndex !== b.messageIndex) {
+          return a.messageIndex - b.messageIndex;
+        }
+        return a.tagIndex - b.tagIndex;
+      });
+      
+      // Assign sequential impression numbers (1, 2, 3...) filling gaps after deletion
+      tagList.forEach((tag, index) => {
+        indexes[tag.id] = index + 1;
+      });
+    });
+
+    return indexes;
+  }, [tags, displayItems]);
+
+
   // --- Connector Spine State & Logic ---
   const [spineOffsets, setSpineOffsets] = useState<Record<string, { top: number; height: number }>>({});
+  // Dotted line connections for same-name but different-ID master tags
+  const [dottedSpineOffsets, setDottedSpineOffsets] = useState<Record<string, { top: number; height: number; masterTagIds: string[]; anchors: Array<{ masterTagId: string; anchorY: number; cardLeft: number }> }>>({});
 
   // Recalculate spine heights from live DOM bounds whenever layout changes
   useLayoutEffect(() => {
-    const container = rightListRef.current;
+    const container = rightContentRef.current; // Use rightContentRef since cards are positioned relative to it
     if (!container) return;
 
     const updateSpines = () => {
@@ -593,63 +707,113 @@ export default function Sessions() {
       const containerRect = container.getBoundingClientRect();
       const newOffsets: Record<string, { top: number; height: number }> = {};
 
-      Object.keys(masterTagMetadata).forEach((masterName) => {
-        const items = container.querySelectorAll(`[data-spine-item="${masterName}"]`);
-        if (items.length === 0) return;
+      // 1. Calculate SOLID spines (Same masterTagId)
+      Object.keys(masterTagMetadata).forEach((masterTagId) => {
+        const items = container.querySelectorAll(`[data-spine-item="${masterTagId}"]`);
+        // Rule 2.1: Only draw solid spine if there are multiple impressions for this EXACT Master ID
+        if (items.length < 2) return;
 
-        let rootTop = 0;
-        let maxBottom = -Infinity;
+        let rootTop = -1;
+        let lastStemTop = -1;
 
         items.forEach((item) => {
           const rect = item.getBoundingClientRect();
-          // Normalize to container space (relative to right panel root)
           const relativeTop = rect.top - containerRect.top + container.scrollTop;
+          const stemLevel = relativeTop + 18;
 
           if (item.getAttribute('data-is-root') === 'true') {
-            rootTop = relativeTop + 18; // Spine starts at stem level (18px from top of card)
+            rootTop = stemLevel;
+          }
 
-            // For root card, use the actual card's bottom position to extend spine to the end
-            // This accounts for all content: master tag, branch tags, primary tags, secondary tags, comments, etc.
-            // Using Array.from to avoid CSS selector issues with dots in Tailwind classes (like gap-0.5)
-            const cardElement = Array.from(item.children).find((child) => {
-              if (child instanceof HTMLElement) {
-                return child.classList.contains('flex') &&
-                  child.classList.contains('flex-col') &&
-                  child.classList.contains('bg-white');
-              }
-              return false;
-            }) as HTMLElement | undefined;
-
-            if (cardElement) {
-              const cardRect = cardElement.getBoundingClientRect();
-              const cardBottom = cardRect.bottom - containerRect.top + container.scrollTop;
-
-              // Use the card's bottom as the spine end point
-              if (cardBottom > maxBottom) {
-                maxBottom = cardBottom;
-              }
-            } else {
-              // Fallback: use item's bottom
-              const itemBottom = rect.bottom - containerRect.top + container.scrollTop;
-              if (itemBottom > maxBottom) maxBottom = itemBottom;
-            }
-          } else {
-            // For non-root items, use their stem level
-            const stemLevel = relativeTop + 18;
-            if (stemLevel > maxBottom) maxBottom = stemLevel;
+          if (stemLevel > lastStemTop) {
+            lastStemTop = stemLevel;
           }
         });
 
-        if (maxBottom > -Infinity) {
-          // Height is the distance from root stem to the last item's stem
-          newOffsets[masterName] = {
+        if (rootTop !== -1 && lastStemTop > rootTop) {
+          // Rule 2.1: Solid line from root stem to the last item's stem
+          newOffsets[masterTagId] = {
             top: rootTop,
-            height: Math.max(maxBottom - rootTop, 1)
+            height: lastStemTop - rootTop
           };
         }
       });
 
       setSpineOffsets(newOffsets);
+
+      // 2. Calculate DOTTED spines (Same name, different masterTagId) (Rule 2.2)
+      // Rule 1.1: Dotted line exists ONLY between master anchors, never extending beyond
+      const dottedOffsets: Record<string, { top: number; height: number; masterTagIds: string[]; anchors: Array<{ masterTagId: string; anchorY: number; cardLeft: number }> }> = {};
+      
+      // Group tags by name to find same-name different-ID connections
+      const nameToIds = new Map<string, string[]>();
+      Object.keys(masterTagMetadata).forEach(masterTagId => {
+        const meta = masterTagMetadata[masterTagId];
+        const name = meta.masterName;
+        if (!nameToIds.has(name)) {
+          nameToIds.set(name, []);
+        }
+        if (!nameToIds.get(name)!.includes(masterTagId)) {
+          nameToIds.get(name)!.push(masterTagId);
+        }
+      });
+
+      // For each name group, if there are multiple master instances, draw a dotted line
+      nameToIds.forEach((masterTagIds, name) => {
+        if (masterTagIds.length > 1) {
+          const anchorPositions: Array<{ masterTagId: string; anchorY: number; cardLeft: number }> = [];
+          
+          masterTagIds.forEach(masterTagId => {
+            // Find all root items for this specific master instance
+            const items = container.querySelectorAll(`[data-spine-item="${masterTagId}"][data-is-root="true"]`);
+            items.forEach(item => {
+                // Find the anchor element (the colored pill) for this specific master instance
+                const anchorEl = item.querySelector('[data-tag-anchor="true"]');
+                if (anchorEl) {
+                  const rect = anchorEl.getBoundingClientRect();
+                  const containerRect = container.getBoundingClientRect();
+                  // Calculate the exact vertical center of the anchor pill (Rule 2: Exact Anchor Points)
+                  const relativeTop = rect.top - containerRect.top + container.scrollTop;
+                  const centerY = relativeTop + (rect.height / 2);
+                  
+                  // Find the card element to get its CSS left position (matches cardLeft calculation)
+                  const cardElement = item.closest('[data-tag-id]') as HTMLElement;
+                  // Use CSS left value: Base 64px + master indentation 20px (matches card rendering)
+                  const cardLeft = 64 + 20;
+                  
+                  anchorPositions.push({
+                    masterTagId,
+                    anchorY: centerY,
+                    cardLeft
+                  });
+                }
+            });
+          });
+
+          if (anchorPositions.length > 1) {
+            // Sort by anchor Y position (top to bottom)
+            anchorPositions.sort((a, b) => a.anchorY - b.anchorY);
+            
+            // Rule 3.1: Dotted line connects FIRST anchor to LAST anchor
+            // Rule 1.1: Line exists ONLY between masters, never extending beyond
+            const firstAnchorY = Math.round(anchorPositions[0].anchorY);
+            const lastAnchorY = Math.round(anchorPositions[anchorPositions.length - 1].anchorY);
+
+            dottedOffsets[`name-${name}`] = {
+              top: firstAnchorY,
+              height: Math.max(lastAnchorY - firstAnchorY, 1),
+              masterTagIds: masterTagIds,
+              anchors: anchorPositions.map(ap => ({
+                masterTagId: ap.masterTagId,
+                anchorY: Math.round(ap.anchorY),
+                cardLeft: ap.cardLeft
+              }))
+            };
+          }
+        }
+      });
+
+      setDottedSpineOffsets(dottedOffsets);
     };
 
     // Use ResizeObserver for height changes (wrapping, reflows)
@@ -677,7 +841,7 @@ export default function Sessions() {
     };
   }, [masterTagMetadata, tags, displayItems]);
 
-  const [highlightedTexts, setHighlightedTexts] = useState<string[]>([]);
+
   const [highlightedBlockIds, setHighlightedBlockIds] = useState<Set<string>>(new Set());
 
   // Toast/Notification State
@@ -693,6 +857,13 @@ export default function Sessions() {
   const [hoveredBlockIds, setHoveredBlockIds] = useState<Set<string>>(new Set());
 
   // Track which master tag name is currently in "Edit Master" mode
+  // CRITICAL: Use masterTagId for isolation, NOT name
+  // This ensures closing one master doesn't affect others with the same name
+  const [activeMasterTagId, setActiveMasterTagId] = useState<string | null>(null);
+  const [visibleMasterIds, setVisibleMasterIds] = useState<string[]>([]); // Rule 4.1 - Tracking visibility independently
+
+  // Legacy: Keep editingMasterName for backward compatibility with some checks
+  // But prefer activeMasterTagId for isolation logic
   const [editingMasterName, setEditingMasterName] = useState<string | null>(null);
 
   // Refs for scrolling to blocks
@@ -807,9 +978,9 @@ export default function Sessions() {
 
     if (pending.length > 0) {
       referenceBlockIndex = pending[0].messageIndex;
-    } else if (editingMasterName) {
-      // Find the first tag with this master name to determine context
-      const tag = tags.find(t => t.master === editingMasterName);
+    } else if (activeMasterTagId) {
+      // Find the tag by ID to determine context (Rule 1.1)
+      const tag = tags.find(t => (t.masterTagId || t.id) === activeMasterTagId);
       if (tag && tag.blockIds.length > 0) {
         const blockItem = displayItems.find(d => d.type === 'data' && d.id === tag.blockIds[0]);
         if (blockItem && blockItem.originalIndex !== undefined) {
@@ -854,7 +1025,7 @@ export default function Sessions() {
       subSectionName: currentSubSectionName,
       masterTagName: currentMasterTagName,
     };
-  }, [pending, editingMasterName, tags, displayItems, findSectionContext, masterConfirmed, masterInput]);
+  }, [pending, editingMasterName, activeMasterTagId, tags, displayItems, findSectionContext, masterConfirmed, masterInput]);
 
   // Handle tag hover - highlight corresponding blocks in transcript
   const handleTagHover = useCallback((tagId: string | null, blockIds: string[] = []) => {
@@ -1055,7 +1226,7 @@ export default function Sessions() {
           // Convert transcript blocks to session data format with block IDs
           const convertedData: SessionDataItem[] = data.transcription.blocks.map((block: TranscriptBlock) => {
             const speakerLabel = block.speaker_label || "A";
-            
+
             // Assign color to speaker
             if (!speakerColorMap.has(speakerLabel)) {
               speakerColorMap.set(speakerLabel, speakerColors[colorIndex % speakerColors.length]);
@@ -1177,18 +1348,27 @@ export default function Sessions() {
           }
         });
 
+        // Sort tags by messageIndex to ensure consistent impression numbering (Rule 2.1)
+        loadedTags.sort((a, b) => {
+          const aIndex = a.primaryList[0]?.messageIndex ?? 0;
+          const bIndex = b.primaryList[0]?.messageIndex ?? 0;
+          return aIndex - bIndex;
+        });
+
         setTags(loadedTags);
+
+        // Initialize visibleMasterIds with all unique master IDs (Rule 4.1)
+        const uniqueMasterIds = Array.from(new Set(loadedTags.map(t => t.masterTagId || t.id)));
+        setVisibleMasterIds(uniqueMasterIds);
 
         // Set highlight texts to the actual selected texts (not full blocks)
         const allBlockIds = data.tagGroups.flatMap((g: DbTagGroup) => g.blockIds);
-        const allTexts = loadedTags.flatMap((t) => t.allText);
         setHighlightedBlockIds(new Set(allBlockIds));
-        setHighlightedTexts(allTexts);
       } else {
         // No tags in database, clear highlights
         setTags([]);
+        setVisibleMasterIds([]);
         setHighlightedBlockIds(new Set());
-        setHighlightedTexts([]);
       }
 
       // Load sections into displayItems (will be merged with data items)
@@ -1822,7 +2002,6 @@ export default function Sessions() {
       try {
         const parsed: TagItem[] = JSON.parse(saved);
         setTags(parsed || []);
-        setHighlightedTexts(parsed.flatMap((t) => t.allText || []));
         setHighlightedBlockIds(new Set(parsed.flatMap((t) => t.blockIds || [])));
       } catch {
         // ignore parse errors
@@ -2353,7 +2532,7 @@ export default function Sessions() {
 
     blockElements.forEach((el) => {
       const bId = el.getAttribute('data-block-id')!;
-      
+
       // Check if this block is part of the selection
       // We check if the range intersects the block element OR if the block contains start/end points
       if (range.intersectsNode(el) || el.contains(range.startContainer) || el.contains(range.endContainer)) {
@@ -2431,8 +2610,8 @@ export default function Sessions() {
     };
 
     // If we are currently editing a specific Master Tag, pre-fill it and confirm it
-    if (editingMasterName) {
-      const activeMaster = tags.find(t => t.master === editingMasterName);
+    if (activeMasterTagId) {
+      const activeMaster = tags.find(t => (t.masterTagId || t.id) === activeMasterTagId);
       if (activeMaster) {
         setMasterInput(activeMaster.master || "");
         setMasterConfirmed(true);
@@ -2441,8 +2620,8 @@ export default function Sessions() {
     }
 
     setPending((prev) => [...prev, newEntry]);
-    setHighlightedTexts((prev) => [...prev, text]);
-    
+
+
     // Track all highlighted block IDs
     setHighlightedBlockIds(prev => {
       const next = new Set(prev);
@@ -2451,7 +2630,7 @@ export default function Sessions() {
     });
 
     window.getSelection()?.removeAllRanges();
-  }, [pending, masterCancelled, editingMasterName, tags, displayItems, getOffsetInBlock]);
+  }, [pending, masterCancelled, activeMasterTagId, tags, displayItems, getOffsetInBlock]);
 
   const handlePrimaryChange = (id: string, value: string) => {
     setPending((prev) =>
@@ -2788,43 +2967,20 @@ export default function Sessions() {
       return;
     }
 
-    // Check if this Master Tag is closed and we are NOT in edit mode for it
+    // Rule 1.1 & 1.2: Same name does NOT mean same instance.
+    // We allow multiple Master Tags with the same name. They will be treated as separate entities.
+    // Unique ID (derived from the impression/database) will distinguish them.
+
+    // Check if this Master Tag is closed - but only if we are specifically editing it.
+    // If just typing a name, assume we might be creating a new one with same name if it's already used.
+    /*
     const existingMasterTag = tags.find(t => t.master?.toLowerCase() === trimmed.toLowerCase());
     if (existingMasterTag?.isClosed && editingMasterName !== existingMasterTag.master) {
       showToast(`Master Tag "${trimmed}" is closed. Enter "Edit Master" mode on the existing tag to add more primary tags.`, "error");
       return;
     }
+    */
 
-    // Validation: Master Tag names must be unique within the same Section scope (including all Subsections).
-    const firstPendingEntry = pending[0];
-    if (firstPendingEntry && editingMasterName !== trimmed) {
-      const currentScope = findSectionContext(firstPendingEntry.messageIndex);
-
-      const isDuplicate = tags.some(tag => {
-        if (!tag.master || tag.master.toLowerCase() !== trimmed.toLowerCase()) return false;
-
-        // Find the scope of this existing tag
-        const firstPrimary = tag.primaryList[0];
-        if (!firstPrimary) return false;
-        const tagScope = findSectionContext(firstPrimary.messageIndex);
-
-        // ❌ Rule: A Master Tag name used anywhere within a Section or its Subsections cannot be reused again in that Section.
-        if (currentScope.sectionId) {
-          // We are inside a section. Check if the existing tag is in the SAME section.
-          // This covers both tags directly in the section and tags in any of its subsections.
-          return tagScope.sectionId === currentScope.sectionId;
-        } else {
-          // We are not in any section. Check if the existing tag is also not in any section.
-          return !tagScope.sectionId;
-        }
-      });
-
-      if (isDuplicate) {
-        const scopeName = currentScope.sectionId ? 'Section' : 'untagged area';
-        showToast(`Master Tag "${trimmed}" already exists in this ${scopeName}. Uniqueness is enforced across the Section and its Subsections.`, "error");
-        return;
-      }
-    }
 
     // Confirm directly without popup
     confirmMasterAdd("");
@@ -2859,7 +3015,7 @@ export default function Sessions() {
     const taggedTexts = new Set(tags.flatMap(t => t.allText || []));
 
     // Remove only the highlights that aren't in saved tags
-    setHighlightedTexts(prev => prev.filter(t => taggedTexts.has(t) || !pendingTexts.includes(t)));
+
     setHighlightedBlockIds(prev => {
       const newSet = new Set(prev);
       pendingBlockIds.forEach(id => {
@@ -2875,6 +3031,7 @@ export default function Sessions() {
     setMasterConfirmed(false);
     setMasterCancelled(true);
     setDbPrimaryTags([]); // Clear suggestions
+    setActiveMasterTagId(null); // Clear active master (isolation fix)
     setEditingMasterName(null); // Clear editing context
   };
 
@@ -2890,9 +3047,13 @@ export default function Sessions() {
   // ------------------------------------------------------------------
 
   const handleOverallAdd = async () => {
-    // Always clear editing mode when finishing
+    // Rule 3.1 & 4.1: Only clear active master, don't affect visible masters
+    const currentActiveMasterId = activeMasterTagId;
+    setActiveMasterTagId(null);
+
     setEditingMasterName(null);
     cancelEditing();
+
 
     const masterToApply = masterCancelled
       ? null
@@ -2970,8 +3131,10 @@ export default function Sessions() {
             transcriptId,
             blockIds,
             masterTagName: masterToApply,
+            masterTagId: currentActiveMasterId, // Rule 1.1 & 1.2: Pass explicit ID to prevent auto-merge
             masterTagDescription: masterComment || null,
             branchNames: branchNamesToApply, // Pass branch tag names
+
             primaryTags: allPrimaries.map(p => ({
               id: p.id, // Send primary tag ID for reuse
               name: p.value,
@@ -3029,19 +3192,27 @@ export default function Sessions() {
       }
     }
 
-    // Use the first impression ID as the unique ID for this tag group
     // Create SEPARATE TagItems for DIFFERENT selections to allow independent positioning
     const newTags: TagItem[] = activeEntries.map((p, pIdx) => {
       const firstBlockId = p.blockId || (p.blockIds && p.blockIds[0]) || "";
-      const savedImp = p.primaryList.length > 0
-        ? savedImpressions.find(imp => {
-          const impBlockIds = imp.blockIds || [];
-          return imp.primaryTagName === p.primaryList[0]?.value && (
-            (p.blockId && impBlockIds.includes(p.blockId)) ||
-            (p.blockIds && p.blockIds.some(id => impBlockIds.includes(id)))
-          );
-        })
-        : null;
+      
+      // Find matching saved impression
+      const savedImp = savedImpressions.find(imp => {
+        const impBlockIds = imp.blockIds || [];
+        
+        // Match by block ID overlap
+        const hasBlockOverlap = (p.blockId && impBlockIds.includes(p.blockId)) ||
+                               (p.blockIds && p.blockIds.some(id => impBlockIds.includes(id)));
+        
+        if (p.primaryList.length > 0) {
+          // If has primaries, match by first primary name
+          return imp.primaryTagName === p.primaryList[0]?.value && hasBlockOverlap;
+        } else {
+          // If master-only, match by any null primary impression with block overlap
+          return imp.primaryTagName === null && hasBlockOverlap;
+        }
+      });
+
       const tagId = savedImp?.impressionId || Date.now().toString() + Math.random().toString(36).slice(2, 6) + pIdx;
 
       return {
@@ -3081,7 +3252,11 @@ export default function Sessions() {
     });
 
     setTags((prev) => [...prev, ...newTags]);
-    setHighlightedTexts((prev) => [...prev, ...activeEntries.map(p => p.selectedText)]);
+
+    // Add new master IDs to visible list (Rule 4.1)
+    const newMasterIds = newTags.map(t => t.masterTagId || t.id);
+    setVisibleMasterIds(prev => Array.from(new Set([...prev, ...newMasterIds])));
+
 
     // Track highlighted block IDs
     setHighlightedBlockIds(prev => {
@@ -3095,6 +3270,7 @@ export default function Sessions() {
     setMasterComment("");
     setMasterConfirmed(false);
     setMasterCancelled(false);
+    setActiveMasterTagId(null); // Clear active master (isolation fix)
     setEditingMasterName(null);
   };
 
@@ -3190,7 +3366,7 @@ export default function Sessions() {
           const hoveredTag = tags.find(t =>
             t.id === hoveredTagId &&
             (t.selectionRanges?.some(sr => sr.blockId === blockId && sr.startOffset === range.start) ||
-              t.primaryList.some(p => 
+              t.primaryList.some(p =>
                 (p.selectionRange?.blockId === blockId && p.selectionRange?.startOffset === range.start) ||
                 p.selectionRanges?.some(sr => sr.blockId === blockId && sr.startOffset === range.start)
               ))
@@ -3239,36 +3415,11 @@ export default function Sessions() {
       }
     }
 
-    // Fall back to text-based highlighting
-    if (!highlightedTexts || highlightedTexts.length === 0) {
-      return <>{text}</>;
-    }
+    // Rule: No automatic highlighting of similar texts (User request)
+    return <>{text}</>;
+  }, [getSelectionRangesForBlock, tags, hoveredTagId]);
 
-    const sorted = [...highlightedTexts]
-      .sort((a, b) => b.length - a.length)
-      .filter(Boolean);
-    const escaped = sorted.map((h) =>
-      h.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&")
-    );
-    if (escaped.length === 0) return <>{text}</>;
 
-    const regex = new RegExp(`(${escaped.join("|")})`, "gi");
-    const parts = text.split(regex);
-
-    return (
-      <>
-        {parts.map((part, i) =>
-          sorted.some((h) => h.toLowerCase() === part.toLowerCase()) ? (
-            <span key={i} className="bg-[#BFE8EB]">
-              {part}
-            </span>
-          ) : (
-            <span key={i}>{part}</span>
-          )
-        )}
-      </>
-    );
-  }, [highlightedTexts, getSelectionRangesForBlock]);
 
   // Legacy function for backward compatibility (text-only highlighting)
   const highlightTextJSX = (text: string) => {
@@ -3276,9 +3427,12 @@ export default function Sessions() {
   };
 
   // When user clicks the "Edit" button on a Master Tag row
+  // CRITICAL FIX: Use masterTagId for isolation, not name
   const handleMasterEditClick = (tag: TagItem) => {
     // 1. Enter Workspace Mode: Enable text selection for this Master Tag
-    setEditingMasterName(tag.master);
+    const masterTagId = tag.masterTagId || tag.id;
+    setActiveMasterTagId(masterTagId); // Use ID for isolation - ensures closing one master doesn't affect others
+    setEditingMasterName(tag.master); // Keep for backward compatibility
     setMasterInput(tag.master || "");
     setMasterComment(tag.masterComment || "");
     setMasterConfirmed(true); // Treat as confirmed so we can add primaries
@@ -3326,10 +3480,14 @@ export default function Sessions() {
             body: JSON.stringify({ id: masterTagId, name: trimmedVal })
           });
         }
-        // 2. Update local state
-        setTags(prev => prev.map(t => t.id === id ? { ...t, master: trimmedVal } : t));
+        // 2. Update local state for ALL tags sharing this masterTagId (Rule 2.2)
+        const targetMasterId = tags.find(t => t.id === id)?.masterTagId || id;
+        setTags(prev => prev.map(t => (t.masterTagId === targetMasterId || t.id === targetMasterId) ? { ...t, master: trimmedVal } : t));
 
         // 3. Exit Master Workspace Mode (Close Master)
+
+        // CRITICAL: Only clear activeMasterTagId, don't affect other masters
+        setActiveMasterTagId(null);
         setEditingMasterName(null);
       }
       else if (type === 'master_comment') {
@@ -3341,7 +3499,9 @@ export default function Sessions() {
             body: JSON.stringify({ id: masterTagId, description: trimmedVal })
           });
         }
-        setTags(prev => prev.map(t => t.id === id ? { ...t, masterComment: trimmedVal } : t));
+        const targetMasterId = tags.find(t => t.id === id)?.masterTagId || id;
+        setTags(prev => prev.map(t => (t.masterTagId === targetMasterId || t.id === targetMasterId) ? { ...t, masterComment: trimmedVal } : t));
+
       }
       else if (type === 'primary' && index !== null) {
         // 1. Update Primary Tag record in DB
@@ -3459,11 +3619,23 @@ export default function Sessions() {
     }
 
     // Collect ALL impression IDs from all related distinct UI items
-    const impressionIds = relatedTags.flatMap(t =>
-      t.primaryList
-        .map(p => p.impressionId)
-        .filter((impId): impId is string => !!impId)
-    );
+    const impressionIds = relatedTags.flatMap(t => {
+      const ids: string[] = [];
+      
+      // 1. If it has primary tags, collect those impression IDs
+      if (t.primaryList && t.primaryList.length > 0) {
+        t.primaryList.forEach(p => {
+          if (p.impressionId) ids.push(p.impressionId);
+        });
+      } else {
+        // 2. If it's a master-only tag, the tag.id itself is the impressionId
+        // (See loadTagsFromDatabase: id is set to group.id which is the first imp.id)
+        if (t.id && !t.id.startsWith('master-')) {
+          ids.push(t.id);
+        }
+      }
+      return ids;
+    });
 
     // Deduplicate IDs
     const uniqueImpressionIds = Array.from(new Set(impressionIds));
@@ -3477,92 +3649,127 @@ export default function Sessions() {
   };
 
   const handleConfirmDelete = async () => {
-    // Delete from database first
+    // 1. Delete Impressions from database first
     if (deleteState.impressionId && transcriptId) {
       try {
         const impressionIds = deleteState.impressionId.split(',').filter(Boolean);
-        // Execute deletions in parallel for speed
-        await Promise.all(impressionIds.map(impId =>
-          fetch(`/api/tags/impressions?id=${impId}`, { method: 'DELETE' })
-        ));
+        console.log(`Deleting ${impressionIds.length} impressions:`, impressionIds);
+        
+        // Execute deletions in parallel
+        const results = await Promise.all(impressionIds.map(async impId => {
+          try {
+            const res = await fetch(`/api/tags/impressions?id=${impId}`, { method: 'DELETE' });
+            if (!res.ok) {
+              const errData = await res.json();
+              console.error(`Failed to delete impression ${impId}:`, errData.error);
+              return false;
+            }
+            return true;
+          } catch (e) {
+            console.error(`Error fetching delete impression ${impId}:`, e);
+            return false;
+          }
+        }));
+        
+        const successCount = results.filter(Boolean).length;
+        console.log(`Successfully deleted ${successCount}/${impressionIds.length} impressions`);
       } catch (error) {
-        console.error("Failed to delete tag impression from database:", error);
+        console.error("Failed to delete tag impressions from database:", error);
       }
     }
 
     if (deleteState.type === 'master') {
       // Get the tag being deleted
       const deletedTag = tags.find(t => t.id === deleteState.tagId);
+      const masterTagIdToDelete = deletedTag?.masterTagId;
 
-      // 1. Delete Master Tag from DB
-      if (deletedTag?.masterTagId) {
+      // 2. Delete Master Tag from DB (if it exists)
+      // This is crucial for permanent deletion
+      if (masterTagIdToDelete) {
         try {
-          await fetch(`/api/tags/master?id=${deletedTag.masterTagId}`, { method: 'DELETE' });
+          console.log(`Deleting master tag record: ${masterTagIdToDelete}`);
+          const res = await fetch(`/api/tags/master?id=${masterTagIdToDelete}`, { method: 'DELETE' });
+          if (!res.ok) {
+            const errData = await res.json();
+            console.error(`Failed to delete master tag record ${masterTagIdToDelete}:`, errData.error);
+          } else {
+            console.log(`Successfully deleted master tag record ${masterTagIdToDelete}`);
+          }
         } catch (err) {
           console.error("Failed to delete master tag record:", err);
         }
       }
 
-      // 2. Remove ALL TagItems that match this Master Tag from local state
-      const masterTagIdToDelete = deletedTag?.masterTagId;
-      const masterNameToDelete = deletedTag?.master;
-
-      const updatedTags = tags.filter((t: TagItem) => {
-        // If IDs match, exclude it
-        if (masterTagIdToDelete && t.masterTagId === masterTagIdToDelete) return false;
-        // If no IDs but names match (legacy/unsaved), exclude it
-        if (masterNameToDelete && t.master === masterNameToDelete) return false;
-        // Fallback: exclude the specific ID clicked
-        if (t.id === deleteState.tagId) return false;
-
-        return true;
+      // 3. Remove ONLY TagItems that match this Master Tag ID from local state
+      // Rule 1.1: Master Tags are unique by ID, not by name.
+      setTags(prev => {
+        return prev.filter((t: TagItem) => {
+          // If IDs match, exclude it
+          if (masterTagIdToDelete && t.masterTagId === masterTagIdToDelete) return false;
+          // Fallback: exclude the specific ID clicked
+          if (t.id === deleteState.tagId) return false;
+          return true;
+        });
       });
+      
+      // Update visibleMasterIds
+      if (masterTagIdToDelete) {
+        setVisibleMasterIds(prev => prev.filter(id => id !== masterTagIdToDelete));
+      }
 
-      setTags(updatedTags);
-
-      // Recalculate highlighted texts - only keep texts that are still referenced by other tags
-      const remainingTexts = updatedTags.flatMap(t => t.allText);
-      setHighlightedTexts(remainingTexts);
-
-      // Recalculate highlighted block IDs - only keep blocks that are still referenced by other tags
-      const remainingBlockIds = new Set(updatedTags.flatMap(t => t.blockIds || []));
-      setHighlightedBlockIds(remainingBlockIds);
+      // Recalculate highlighted block IDs immediately using the new state logic
+      setHighlightedBlockIds(prev => {
+        const remaining = tags.filter((t: TagItem) => {
+          if (masterTagIdToDelete && t.masterTagId === masterTagIdToDelete) return false;
+          if (t.id === deleteState.tagId) return false;
+          return true;
+        }).flatMap(t => t.blockIds || []);
+        return new Set(remaining);
+      });
     }
     else if (deleteState.type === 'primary' && typeof deleteState.primaryIndex === 'number') {
-      const updatedTags: TagItem[] = tags.map((t: TagItem) => {
-        if (t.id !== deleteState.tagId) return t;
+      // Logic for deleting a single primary tag instance
+      setTags(prev => {
+        const updatedTags = prev.map((t: TagItem) => {
+          if (t.id !== deleteState.tagId) return t;
 
-        // Get the primary tag being deleted
-        const deletedPrimary = t.primaryList[deleteState.primaryIndex!];
-        const deletedBlockId = deletedPrimary?.blockId;
+          // Filter out the deleted primary tag
+          const newPrimaryList = t.primaryList.filter((_, idx) => idx !== deleteState.primaryIndex);
 
-        // Filter out the deleted primary tag
-        const newPrimaryList = t.primaryList.filter((_, idx) => idx !== deleteState.primaryIndex);
+          // Update blockIds
+          const remainingBlockIds = newPrimaryList
+            .map(p => p.blockId)
+            .filter((id): id is string => !!id);
 
-        // Update blockIds - remove the block if no other primary tags reference it
-        const remainingBlockIds = newPrimaryList
-          .map(p => p.blockId)
-          .filter((id): id is string => !!id);
+          return {
+            ...t,
+            primaryList: newPrimaryList,
+            blockIds: [...new Set(remainingBlockIds)],
+            allText: t.allText 
+          };
+        });
 
-        return {
-          ...t,
-          primaryList: newPrimaryList,
-          blockIds: [...new Set(remainingBlockIds)],
-          allText: t.allText // Keep text for now, could also filter
-        };
+        // Remove empty master tags
+        return updatedTags.filter(t =>
+          t.primaryList.length > 0 || (t.selectionRanges && t.selectionRanges.length > 0)
+        );
       });
-
-      // Remove empty master tags (those with no primary tags AND no selection ranges)
-      const nonEmptyTags = updatedTags.filter(t =>
-        t.primaryList.length > 0 || (t.selectionRanges && t.selectionRanges.length > 0)
-      );
-      setTags(nonEmptyTags);
-
-      // Recalculate highlights
-      setHighlightedTexts(nonEmptyTags.flatMap(t => t.allText));
-      setHighlightedBlockIds(new Set(nonEmptyTags.flatMap(t => t.blockIds || [])));
+      
+      // Update highlights immediately
+      setHighlightedBlockIds(prev => {
+        const remaining = tags.flatMap(t => {
+          if (t.id !== deleteState.tagId) return t.blockIds;
+          return t.primaryList
+            .filter((_, idx) => idx !== deleteState.primaryIndex)
+            .map(p => p.blockId)
+            .filter((id): id is string => !!id);
+        });
+        return new Set(remaining);
+      });
     }
+    
     setDeleteState({ ...deleteState, isOpen: false });
+    setActiveMasterTagId(null); 
     setEditingMasterName(null);
   };
 
@@ -3584,7 +3791,7 @@ export default function Sessions() {
     const entry = pending.find(p => p.id === entryId);
     if (entry) {
       // Remove the text from highlighted texts
-      setHighlightedTexts(prev => prev.filter(t => t !== entry.text));
+
 
       // Collect all block IDs associated with this entry
       const blocksToRemove = new Set<string>();
@@ -3762,8 +3969,8 @@ export default function Sessions() {
       <main className="flex-1 flex flex-col h-full overflow-hidden">
         <header className="w-full h-[60px] bg-white border-b border-[#F0F0F0] flex items-center justify-between px-5 shrink-0">
           <div className="flex items-center gap-3">
-            <button 
-              onClick={() => router.back()} 
+            <button
+              onClick={() => router.back()}
               className="hover:opacity-70 transition flex items-center"
               aria-label="Go back"
             >
@@ -3831,7 +4038,7 @@ export default function Sessions() {
             )}
             {(pending.length > 0 || editingMasterName) && (
               <button
-                onClick={pending.length > 0 ? handleOverallAdd : () => { setEditingMasterName(null); cancelEditing(); }}
+                onClick={pending.length > 0 ? handleOverallAdd : () => { setActiveMasterTagId(null); setEditingMasterName(null); cancelEditing(); }}
                 disabled={savingTags}
                 className={`px-4 py-2 text-white rounded-lg shadow-sm text-sm transition-all duration-200 flex items-center gap-2 ${savingTags
                   ? 'bg-gray-400 cursor-not-allowed'
@@ -3855,17 +4062,6 @@ export default function Sessions() {
             )}
           </div>
         </header>
-        
-        {/* Speaker Carousel */}
-        <div className="shrink-0 bg-gray-50 border-b border-[#F0F0F0] px-4 py-3">
-          <SpeakersCarousel
-            speakersData={speakers}
-            onUpload={handleFileUpload}
-            onUpdateAvatar={handleUpdateAvatar}
-            onUpdateSpeaker={handleUpdateSpeaker}
-            onDeleteSpeaker={handleDeleteSpeaker}
-          />
-        </div>
 
         <div className="flex-1 overflow-y-auto" ref={sharedScrollRootRef} data-transcript-scroll-root>
           {/* Senior Layout Engineer Fix: 
@@ -4197,11 +4393,11 @@ export default function Sessions() {
                             <img src={data.image} alt={data.name} className="w-[26px] h-[26px] rounded-full flex-shrink-0 object-cover" />
                           ) : (
                             <div className="w-[26px] h-[26px] rounded-full bg-gray-100 flex items-center justify-center flex-shrink-0 border border-gray-200">
-                              <NextImage 
-                                src={data.name.startsWith('Moderator') ? MicrophoneIcon : UserIcon} 
-                                alt="avatar" 
-                                width={16} 
-                                height={16} 
+                              <NextImage
+                                src={data.name.startsWith('Moderator') ? MicrophoneIcon : UserIcon}
+                                alt="avatar"
+                                width={16}
+                                height={16}
                                 className="opacity-60"
                               />
                             </div>
@@ -4326,335 +4522,447 @@ export default function Sessions() {
                   })}
 
                   {/* Render all tags with absolute positioning */}
-                  {tags.map((tag) => {
-                    const LANE_WIDTH = 12;
-                    // For independent master tags (no primaries), use the first block index for positioning
-                    const firstPrimary = tag.primaryList[0];
-                    let itemIndex = -1;
+                  {tags
+                    .filter(tag => {
+                      // Rule 4.1 - Visibility is independent
+                      const masterTagId = tag.masterTagId || tag.id;
+                      if (visibleMasterIds.length === 0) return true; // Default to showing all if list is empty
+                      return visibleMasterIds.includes(masterTagId);
+                    })
+                    .map((tag) => {
 
-                    if (firstPrimary) {
-                      itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === firstPrimary.messageIndex);
-                    } else if (tag.blockIds.length > 0) {
-                      // Fallback: use the first block associated with this master tag
-                      itemIndex = displayItems.findIndex(d => d.type === 'data' && d.id === tag.blockIds[0]);
-                    }
+                      const LANE_WIDTH = 48; // Significantly increased to prevent lane collision
+                      // For independent master tags (no primaries), use the first block index for positioning
+                      const firstPrimary = tag.primaryList[0];
+                      let itemIndex = -1;
 
-                    if (itemIndex < 0) return null;
+                      if (firstPrimary) {
+                        itemIndex = displayItems.findIndex(d => d.type === 'data' && d.originalIndex === firstPrimary.messageIndex);
+                      } else if (tag.blockIds.length > 0) {
+                        // Fallback: use the first block associated with this master tag
+                        itemIndex = displayItems.findIndex(d => d.type === 'data' && d.id === tag.blockIds[0]);
+                      }
 
-                    // Get position from coordinate system
-                    const elementPos = elementPositions.get(itemIndex);
-                    const tagPos = tagPositions.get(tag.id);
+                      if (itemIndex < 0) return null;
 
-                    if (!elementPos || !tagPos) return null; // Wait for position calculation
+                      // Get position from coordinate system
+                      const elementPos = elementPositions.get(itemIndex);
+                      const tagPos = tagPositions.get(tag.id);
 
-                    // Use adjusted top from collision detection
-                    const topPosition = tagPos.adjustedTop;
+                      if (!elementPos || !tagPos) return null; // Wait for position calculation
 
-                    const meta = masterTagMetadata[tag.master || 'No Master'];
-                    const masterLaneLeft = (meta?.uniqueIndex || 0) * LANE_WIDTH + 12;
-                    const tagColor = tag.masterColor || getMasterTagColor(tag.masterTagId || tag.id || tag.master || '');
+                      // Use adjusted top from collision detection
+                      const topPosition = tagPos.adjustedTop;
 
-                    // Check if this is the first occurrence
-                    const isFirstRowForTag = itemIndex === meta?.firstItemIndex;
-                    const isFirstInstance = tag.id === meta?.id || tags.find(t => t.master === tag.master)?.id === tag.id;
-                    const shouldShowHeader = isFirstRowForTag && isFirstInstance;
+                      // CRITICAL: Use masterTagId for connection logic (not name)
+                      // Rule: Solid line = same masterTagId, No connection = different masterTagId
+                      // Same name but different ID = separate masters (no connection by default)
+                    const masterTagId = tag.masterTagId || tag.id;
+                    const meta = masterTagMetadata[masterTagId];
+                    // Division of Lines: Offset solid lines within the same lane to avoid collision
+                    const laneBaseLeft = (meta?.uniqueIndex || 0) * LANE_WIDTH + 12;
+                    // First master is offset by 4px, subsequent ones by 6px increments
+                    const laneOffset = 4 + (meta?.idIndexWithinLane || 0) * 6; 
+                    const masterLaneLeft = laneBaseLeft + laneOffset;
+                    
+                    const tagColor = tag.masterColor || getMasterTagColor(masterTagId || tag.master || '');
+                    const isDuplicateName = meta?.hasDuplicateName || false;
 
-                    // Get all primaries for this tag
-                    const allPrimaries = tag.primaryList.map((p, i) => ({ ...p, originalIndex: i }));
+                      // Check if this is the first occurrence
+                      const isFirstRowForTag = itemIndex === meta?.firstItemIndex;
+                      const isFirstInstance = tag.id === meta?.id || tags.find(t => (t.masterTagId || t.id) === masterTagId)?.id === tag.id;
+                      const shouldShowHeader = isFirstRowForTag && isFirstInstance;
 
-                    // Calculate card indentation based on hierarchy
-                    // Master tags (with header) should be indented, primary-only cards should be more indented
-                    const cardIndentation = shouldShowHeader ? 20 : 40; // 20px for master, 40px for primary-only
-                    const cardLeft = 64 + cardIndentation; // Base left (64px for tree lines) + indentation
+                      // Get all primaries for this tag
+                      const allPrimaries = tag.primaryList.map((p, i) => ({ ...p, originalIndex: i }));
 
-                    return (
-                      <div
-                        key={tag.id}
-                        data-tag-id={tag.id}
-                        style={{
-                          position: 'absolute',
-                          top: `${topPosition}px`,
-                          left: `${cardLeft}px`, // Indent entire card based on hierarchy
-                          right: '24px',
-                          zIndex: hoveredTagId === tag.id ? 30 : 10
-                        }}
-                        className="relative cursor-pointer"
-                        data-spine-item={tag.master}
-                        data-is-root={shouldShowHeader}
-                        onClick={(e) => {
-                          // Prevent scroll when clicking interactive elements
-                          if ((e.target as HTMLElement).closest('button, input')) return;
-                          scrollToTagBlock(tag.blockIds);
-                        }}
-                      >
-                        {/* Vertical Spine - Anchored to Root Card Context */}
-                        {shouldShowHeader && spineOffsets[tag.master!] && (
-                          <div
-                            className="absolute w-[1.5px] transition-all duration-300 pointer-events-none z-0"
-                            style={{
-                              left: `-${64 + cardIndentation - masterLaneLeft}px`,
-                              top: '18px',
-                              height: `${spineOffsets[tag.master!].height}px`,
-                              backgroundColor: tagColor,
-                              opacity: 0.4
-                            }}
-                          />
-                        )}
+                      // Calculate card indentation based on hierarchy
+                      // Master tags (with header) should be indented, primary-only cards should be more indented
+                      const cardIndentation = shouldShowHeader ? 20 : 40; // 20px for master, 40px for primary-only
+                      const cardLeft = 64 + cardIndentation; // Base left (64px for tree lines) + indentation
 
-                        {/* Render all primary tags for this master tag */}
-                        <div className="flex flex-col gap-0.5 bg-white rounded-lg border border-gray-100 shadow-sm overflow-hidden">
-                          {/* 1. Header Logic: Rendered ONCE per tag group if it's the root */}
-                          <React.Fragment>
-                            {/* Horizontal Stem for the card's first row */}
+                      return (
+                        <div
+                          key={tag.id}
+                          data-tag-id={tag.id}
+                          style={{
+                            position: 'absolute',
+                            top: `${topPosition}px`,
+                            left: `${cardLeft}px`, // Indent entire card based on hierarchy
+                            right: '24px',
+                            zIndex: hoveredTagId === tag.id ? 30 : 10
+                          }}
+                          className="relative cursor-pointer"
+                          data-spine-item={masterTagId}
+                          data-spine-name={tag.master || 'No Master'}
+                          data-is-root={shouldShowHeader}
+                          onClick={(e) => {
+                            // Prevent scroll when clicking interactive elements
+                            if ((e.target as HTMLElement).closest('button, input')) return;
+                            scrollToTagBlock(tag.blockIds);
+                          }}
+                        >
+                          {/* Vertical Spine - Solid line for same masterTagId */}
+                          {shouldShowHeader && spineOffsets[masterTagId] && (
                             <div
-                              className="absolute h-[1.5px] pointer-events-none"
+                              className="absolute w-[1.5px] transition-all duration-300 pointer-events-none z-0"
                               style={{
-                                // Start from the right edge of the vertical spine (1.5px wide)
-                                left: `${-(64 + cardIndentation - masterLaneLeft) + 1.5}px`,
-                                // Width extends from spine to card edge (0px)
-                                width: `${64 + cardIndentation - masterLaneLeft - 1.5}px`,
+                                left: `-${64 + cardIndentation - masterLaneLeft}px`,
                                 top: '18px',
+                                height: `${spineOffsets[masterTagId].height}px`,
                                 backgroundColor: tagColor,
                                 opacity: 0.4
                               }}
                             />
+                          )}
 
-                            {shouldShowHeader && (
-                              <React.Fragment>
-                                <MasterTagRow
-                                  name={tag.master || "No Master"}
-                                  isEditing={editingItem.id === tag.id && editingItem.type === 'master'}
-                                  isHighlighted={editingMasterName === tag.master}
-                                  color={tagColor}
-                                  onEdit={() => handleMasterEditClick(tag)}
-                                  onClick={() => {
-                                    if (editingMasterName === tag.master) {
-                                      setEditingMasterName(null);
-                                    } else {
-                                      setEditingMasterName(tag.master);
-                                    }
-                                  }}
-                                  onDelete={() => initiateDeleteMaster(tag.id)}
-                                  onAdd={() => toggleBranchInput(tag.id)}
-                                  onAddPrimary={tag.primaryList.length === 0 ? () => togglePrimaryInput(tag.id) : undefined}
-                                  onSave={(newName) => {
-                                    setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                    saveEditing();
-                                  }}
-                                  onCancel={() => {
-                                    setEditingMasterName(null);
-                                    cancelEditing();
-                                  }}
-                                />
+                          {/* Render all primary tags for this master tag */}
+                          <div className="flex flex-col gap-0.5 bg-white rounded-lg border border-gray-100 shadow-sm overflow-hidden">
+                            {/* 1. Header Logic: Rendered ONCE per tag group if it's the root */}
+                            <React.Fragment>
+                               {/* Horizontal Stem for the card's first row */}
+                               {/* Division of Lines: Horizontal stems start from the base lane position to bridge dotted spine */}
+                               <div
+                                 className="absolute h-[1.5px] pointer-events-none"
+                                 style={{
+                                   // Start from the base lane (where the dotted spine is)
+                                   left: `${-(64 + cardIndentation - laneBaseLeft)}px`,
+                                   // Width extends from base lane to the card edge (0px)
+                                   width: `${64 + cardIndentation - laneBaseLeft}px`,
+                                   top: '18px',
+                                   backgroundColor: tagColor,
+                                   opacity: 0.4,
+                                   backgroundImage: 'none'
+                                 }}
+                               />
 
-                                {/* Branch Tags (Master level) */}
-                                {tag.branchTags && tag.branchTags.length > 0 && (
-                                  <TagRowLayout level={2} className="mt-0.5">
-                                    <div className="flex flex-wrap gap-1.5 py-1">
-                                      {(() => {
-                                        const groupId = `${tag.id}-master-branches`;
-                                        const isExpanded = expandedTagGroups.has(groupId);
-                                        const visibleTags = isExpanded ? tag.branchTags : tag.branchTags.slice(0, 3);
-                                        const remainingCount = tag.branchTags.length - visibleTags.length;
 
-                                        return (
-                                          <>
-                                            {visibleTags.map((b, idx) => (
-                                              <BranchTagChip
-                                                key={b.id || idx}
-                                                name={b.name}
-                                                variant="master"
-                                                isEditing={editingItem.id === tag.id && editingItem.type === 'master_branch' && editingItem.index === idx}
-                                                onEdit={() => startEditing(tag.id, 'master_branch', b.name, idx)}
-                                                onDelete={() => removeBranchTag(tag.id, b.id)}
-                                                onSave={(newName) => {
-                                                  setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                                  saveEditing();
-                                                }}
-                                                onCancel={cancelEditing}
-                                              />
-                                            ))}
-                                            {tag.branchTags.length > 3 && (
-                                              <button
-                                                onClick={() => toggleTagGroupExpansion(groupId)}
-                                                className="text-[10px] text-gray-400 hover:text-[#00A3AF] font-medium px-1 py-0.5 rounded hover:bg-cyan-50 transition-colors"
-                                              >
-                                                {isExpanded ? 'Show Less' : `+${remainingCount} more`}
-                                              </button>
-                                            )}
-                                          </>
-                                        );
-                                      })()}
-                                    </div>
-                                  </TagRowLayout>
-                                )}
-
-                                {/* Branch Input Slot */}
-                                {branchInput?.tagId === tag.id && (
-                                  <ReservedEditSlotRow
-                                    level={2}
-                                    placeholder="Add branch tag..."
-                                    onSave={(val: string) => addBranchTag(tag.id, val)}
-                                    onCancel={() => setBranchInput(null)}
-                                  />
-                                )}
-
-                                {/* Primary Input slot (for empty master) */}
-                                {tag.primaryList.length === 0 && savedPrimaryInput?.tagId === tag.id && (
-                                  <ReservedEditSlotRow
-                                    level={2}
-                                    placeholder="Add primary tag..."
-                                    onSave={(val: string) => addPrimaryToSavedTag(tag.id, val)}
-                                    onCancel={() => setSavedPrimaryInput(null)}
-                                  />
-                                )}
-                              </React.Fragment>
-                            )}
-                          </React.Fragment>
-
-                          {/* 2. Primaries Logic: Rendered ONLY if they exist */}
-                          {allPrimaries.map((p, i) => {
-                            // Calculate exact vertical position for each primary tag's horizontal stem
-                            // MasterTagRow: min-h-[32px], center at ~16px from row top
-                            // Gap between rows: 2px (gap-0.5)
-                            // PrimaryTagRow: min-h-[32px], center at ~16px from row top
-                            // Formula: master height + gap + (i * (primary height + gap)) + primary center
-                            let primaryTopPosition = 18; // Default for first primary when no header
-                            if (shouldShowHeader) {
-                              // Each primary tag gets its own horizontal stem connecting to the vertical line
-                              const masterRowHeight = 32;
-                              const gap = 2;
-                              const primaryRowHeight = 32;
-                              const primaryRowCenter = 16;
-                              // Position = master row + gap + cumulative primary rows + current primary center
-                              primaryTopPosition = masterRowHeight + gap + (i * (primaryRowHeight + gap)) + primaryRowCenter;
-                            } else {
-                              // No master header, calculate from start
-                              primaryTopPosition = 18 + (i * 34); // 32px row + 2px gap, center at 16px
-                            }
-
-                            return (
-                              <React.Fragment key={p.impressionId || `${p.value}-${i}`}>
-                                {/* Horizontal Stem connecting vertical spine to primary tag - L-shaped connection */}
-                                {/* Render for subsequent rows in the same card, or all primary rows if there is a master header */}
-                                {(i > 0 || shouldShowHeader) && (
-                                  <div
-                                    className="absolute h-[1.5px] pointer-events-none"
-                                    style={{
-                                      // Start from the right edge of the vertical spine (1.5px wide)
-                                      left: `${-(64 + cardIndentation - masterLaneLeft) + 1.5}px`,
-                                      // Width extends from spine to card edge (0px)
-                                      width: `${64 + cardIndentation - masterLaneLeft - 1.5}px`,
-                                      top: `${primaryTopPosition}px`,
-                                      backgroundColor: tagColor,
-                                      opacity: 0.4
+                              {shouldShowHeader && (
+                                <React.Fragment>
+                                  <MasterTagRow
+                                    name={tag.master || "No Master"}
+                                    selectedText={tag.primaryList.length === 0 ? (tag.allText?.[0] || '') : undefined}
+                                    isEditing={editingItem.id === tag.id && editingItem.type === 'master'}
+                                    isHighlighted={activeMasterTagId === masterTagId}
+                                    color={tagColor}
+                                    impressionCount={impressionIndexes[tag.id] || 1}
+                                    onEdit={() => handleMasterEditClick(tag)}
+                                    onClick={() => {
+                                      // CRITICAL: Use masterTagId for isolation
+                                      if (activeMasterTagId === masterTagId) {
+                                        setActiveMasterTagId(null);
+                                        setEditingMasterName(null);
+                                      } else {
+                                        const tagId = tag.masterTagId || tag.id;
+                                        setActiveMasterTagId(tagId);
+                                        setEditingMasterName(tag.master);
+                                      }
                                     }}
-                                  />
-                                )}
-
-                                {/* Primary Row */}
-                                {(() => {
-                                  const isEditingPrimary = editingItem.id === tag.id && editingItem.type === 'primary' && editingItem.index === p.originalIndex;
-                                  return (
-                                    <div data-primary-row>
-                                      <PrimaryTagRow
-                                        name={p.value}
-                                        isEditing={isEditingPrimary}
-                                        onEdit={() => startEditing(tag.id, 'primary', p.value, p.originalIndex)}
-                                        onDelete={() => initiateDeletePrimary(tag.id, p.originalIndex, p.impressionId)}
-                                        onComment={() => startEditing(tag.id, 'primary_comment', p.comment || "", p.originalIndex)}
-                                        onAdd={isEditingPrimary ? () => toggleSecondaryInput(tag.id, p.originalIndex) : undefined}
-                                        onSave={(newName) => {
-                                          setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                          saveEditing();
-                                        }}
-                                        onCancel={cancelEditing}
-                                      />
-                                    </div>
-                                  );
-                                })()}
-
-                                {/* Primary Comment (if exists and not editing) */}
-                                {p.comment && !(editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex) && (
-                                  <div className="pl-6 pr-2 py-1 bg-blue-50/30 border-l-2 border-blue-200">
-                                    <p className="text-[10px] text-blue-600 italic truncate">
-                                      "{p.comment}"
-                                    </p>
-                                  </div>
-                                )}
-
-                                {/* Secondary Tags (Primary level) - Horizontal Wrap */}
-                                {p.secondaryTags && p.secondaryTags.length > 0 && (
-                                  <TagRowLayout level={2}>
-                                    <div className="flex flex-wrap gap-1.5 py-1">
-                                      {(() => {
-                                        const groupId = `${tag.id}-${p.originalIndex}-secondary-branches`;
-                                        const isExpanded = expandedTagGroups.has(groupId);
-                                        const visibleTags = isExpanded ? p.secondaryTags : p.secondaryTags.slice(0, 3);
-                                        const remainingCount = p.secondaryTags.length - visibleTags.length;
-
-                                        return (
-                                          <>
-                                            {visibleTags.map((sec, secIdx) => (
-                                              <BranchTagChip
-                                                key={sec.id || secIdx}
-                                                name={sec.value}
-                                                variant="primary"
-                                                isEditing={editingItem.id === tag.id && editingItem.type === 'secondary' && editingItem.index === (p.originalIndex * 100 + secIdx)}
-                                                onEdit={() => startEditing(tag.id, 'secondary', sec.value, p.originalIndex * 100 + secIdx)}
-                                                onDelete={() => removeSecondaryTag(tag.id, p.originalIndex, secIdx)}
-                                                onSave={(newName) => {
-                                                  setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                                  saveEditing();
-                                                }}
-                                                onCancel={cancelEditing}
-                                              />
-                                            ))}
-                                            {p.secondaryTags.length > 3 && (
-                                              <button
-                                                onClick={() => toggleTagGroupExpansion(groupId)}
-                                                className="text-[10px] text-gray-400 hover:text-[#00A3AF] font-medium px-1 py-0.5 rounded hover:bg-cyan-50 transition-colors"
-                                              >
-                                                {isExpanded ? 'Show Less' : `+${remainingCount} more`}
-                                              </button>
-                                            )}
-                                          </>
-                                        );
-                                      })()}
-                                    </div>
-                                  </TagRowLayout>
-                                )}
-
-                                {/* Secondary Tag Input Slot */}
-                                {secondaryInput?.entryId === tag.id && secondaryInput?.primaryIndex === p.originalIndex && (
-                                  <ReservedEditSlotRow
-                                    level={2}
-                                    placeholder="Add secondary tag..."
-                                    onSave={(val: string) => addSecondaryTag(tag.id, p.originalIndex, val)}
-                                    onCancel={() => setSecondaryInput(null)}
-                                  />
-                                )}
-
-                                {/* Primary Comment Input Slot */}
-                                {editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex && (
-                                  <ReservedEditSlotRow
-                                    level={2}
-                                    isComment={true}
-                                    placeholder="Primary tag comment..."
-                                    initialValue={editingItem.tempValue}
-                                    onSave={(val: string) => {
-                                      setEditingItem(prev => ({ ...prev, tempValue: val }));
+                                    onDelete={() => initiateDeleteMaster(tag.id)}
+                                    onAdd={() => toggleBranchInput(tag.id)}
+                                    onAddPrimary={tag.primaryList.length === 0 ? () => togglePrimaryInput(tag.id) : undefined}
+                                    onSave={(newName) => {
+                                      setEditingItem(prev => ({ ...prev, tempValue: newName }));
                                       saveEditing();
                                     }}
-                                    onCancel={cancelEditing}
+                                    onCancel={() => {
+                                      // CRITICAL: Only clear activeMasterTagId if it matches this tag
+                                      if (activeMasterTagId === masterTagId) {
+                                        setActiveMasterTagId(null);
+                                        setEditingMasterName(null);
+                                      }
+                                      cancelEditing();
+                                    }}
                                   />
-                                )}
 
-                              </React.Fragment>
-                            );
-                          })}
+                                  {/* Branch Tags (Master level) */}
+                                  {tag.branchTags && tag.branchTags.length > 0 && (
+                                    <TagRowLayout level={2} className="mt-0.5">
+                                      <div className="flex flex-wrap gap-1.5 items-center min-h-[32px]">
+                                        {(() => {
+                                          const groupId = `${tag.id}-master-branches`;
+                                          const isExpanded = expandedTagGroups.has(groupId);
+                                          const visibleTags = isExpanded ? tag.branchTags : tag.branchTags.slice(0, 3);
+                                          const remainingCount = tag.branchTags.length - visibleTags.length;
+
+                                          return (
+                                            <>
+                                              {visibleTags.map((b, idx) => (
+                                                <BranchTagChip
+                                                  key={b.id || idx}
+                                                  name={b.name}
+                                                  variant="master"
+                                                  isEditing={editingItem.id === tag.id && editingItem.type === 'master_branch' && editingItem.index === idx}
+                                                  onEdit={() => startEditing(tag.id, 'master_branch', b.name, idx)}
+                                                  onDelete={() => removeBranchTag(tag.id, b.id)}
+                                                  onSave={(newName) => {
+                                                    setEditingItem(prev => ({ ...prev, tempValue: newName }));
+                                                    saveEditing();
+                                                  }}
+                                                  onCancel={cancelEditing}
+                                                />
+                                              ))}
+                                              {tag.branchTags.length > 3 && (
+                                                <button
+                                                  onClick={() => toggleTagGroupExpansion(groupId)}
+                                                  className="text-[10px] text-gray-400 hover:text-[#00A3AF] font-medium px-1 py-0.5 rounded hover:bg-cyan-50 transition-colors"
+                                                >
+                                                  {isExpanded ? 'Show Less' : `+${remainingCount} more`}
+                                                </button>
+                                              )}
+                                            </>
+                                          );
+                                        })()}
+                                      </div>
+                                    </TagRowLayout>
+                                  )}
+
+                                  {/* Branch Input Slot */}
+                                  {branchInput?.tagId === tag.id && (
+                                    <ReservedEditSlotRow
+                                      level={2}
+                                      placeholder="Add branch tag..."
+                                      onSave={(val: string) => addBranchTag(tag.id, val)}
+                                      onCancel={() => setBranchInput(null)}
+                                    />
+                                  )}
+
+                                  {/* Primary Input slot (for empty master) */}
+                                  {tag.primaryList.length === 0 && savedPrimaryInput?.tagId === tag.id && (
+                                    <ReservedEditSlotRow
+                                      level={2}
+                                      placeholder="Add primary tag..."
+                                      onSave={(val: string) => addPrimaryToSavedTag(tag.id, val)}
+                                      onCancel={() => setSavedPrimaryInput(null)}
+                                    />
+                                  )}
+                                </React.Fragment>
+                              )}
+                            </React.Fragment>
+
+                            {/* 2. Primaries Logic: Rendered ONLY if they exist */}
+                            {allPrimaries.map((p, i) => {
+                              // Calculate exact vertical position for each primary tag's horizontal stem
+                              // MasterTagRow: min-h-[32px], center at ~16px from row top
+                              // Gap between rows: 2px (gap-0.5)
+                              // PrimaryTagRow: min-h-[32px], center at ~16px from row top
+                              // Formula: master height + gap + (i * (primary height + gap)) + primary center
+                              let primaryTopPosition = 18; // Default for first primary when no header
+                              if (shouldShowHeader) {
+                                // Each primary tag gets its own horizontal stem connecting to the vertical line
+                                const masterRowHeight = 32;
+                                const gap = 2;
+                                const primaryRowHeight = 32;
+                                const primaryRowCenter = 16;
+                                // Position = master row + gap + cumulative primary rows + current primary center
+                                primaryTopPosition = masterRowHeight + gap + (i * (primaryRowHeight + gap)) + primaryRowCenter;
+                              } else {
+                                // No master header, calculate from start
+                                primaryTopPosition = 18 + (i * 34); // 32px row + 2px gap, center at 16px
+                              }
+
+                              return (
+                                <React.Fragment key={p.impressionId || `${p.value}-${i}`}>
+                                  {/* Horizontal Stem connecting vertical spine to primary tag - L-shaped connection */}
+                                  {/* Rule 3: Primary tags attach only to their parent master - use solid line */}
+                                  {(i > 0 || shouldShowHeader) && (
+                                    <div
+                                      className="absolute h-[1.5px] pointer-events-none"
+                                      style={{
+                                        // Start from the right edge of the vertical spine (1.5px wide)
+                                        left: `${-(64 + cardIndentation - masterLaneLeft) + 1.5}px`,
+                                        // Width extends from spine to card edge (0px)
+                                        width: `${64 + cardIndentation - masterLaneLeft - 1.5}px`,
+                                        top: `${primaryTopPosition}px`,
+                                        backgroundColor: tagColor,
+                                        opacity: 0.4,
+                                        backgroundImage: 'none'
+                                      }}
+                                    />
+                                  )}
+
+                                  {/* Primary Row */}
+                                  {(() => {
+                                    const isEditingPrimary = editingItem.id === tag.id && editingItem.type === 'primary' && editingItem.index === p.originalIndex;
+                                    return (
+                                      <div data-primary-row>
+                                        <PrimaryTagRow
+                                          name={p.value}
+                                          selectedText={p.selectedText}
+                                          isEditing={isEditingPrimary}
+                                          onEdit={() => startEditing(tag.id, 'primary', p.value, p.originalIndex)}
+                                          onDelete={() => initiateDeletePrimary(tag.id, p.originalIndex, p.impressionId)}
+                                          onComment={() => startEditing(tag.id, 'primary_comment', p.comment || "", p.originalIndex)}
+                                          onAdd={isEditingPrimary ? () => toggleSecondaryInput(tag.id, p.originalIndex) : undefined}
+                                          onSave={(newName) => {
+                                            setEditingItem(prev => ({ ...prev, tempValue: newName }));
+                                            saveEditing();
+                                          }}
+                                          onCancel={cancelEditing}
+                                        />
+                                      </div>
+                                    );
+                                  })()}
+
+                                  {/* Primary Comment (if exists and not editing) */}
+                                  {p.comment && !(editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex) && (
+                                    <div className="pl-6 pr-2 py-1 bg-blue-50/30 border-l-2 border-blue-200">
+                                      <p className="text-[10px] text-blue-600 italic truncate">
+                                        "{p.comment}"
+                                      </p>
+                                    </div>
+                                  )}
+
+                                  {/* Secondary Tags (Primary level) - Horizontal Wrap */}
+                                  {p.secondaryTags && p.secondaryTags.length > 0 && (
+                                    <TagRowLayout level={2}>
+                                      <div className="flex flex-wrap gap-1.5 items-center min-h-[32px]">
+                                        {(() => {
+                                          const groupId = `${tag.id}-${p.originalIndex}-secondary-branches`;
+                                          const isExpanded = expandedTagGroups.has(groupId);
+                                          const visibleTags = isExpanded ? p.secondaryTags : p.secondaryTags.slice(0, 3);
+                                          const remainingCount = p.secondaryTags.length - visibleTags.length;
+
+                                          return (
+                                            <>
+                                              {visibleTags.map((sec, secIdx) => (
+                                                <BranchTagChip
+                                                  key={sec.id || secIdx}
+                                                  name={sec.value}
+                                                  variant="primary"
+                                                  isEditing={editingItem.id === tag.id && editingItem.type === 'secondary' && editingItem.index === (p.originalIndex * 100 + secIdx)}
+                                                  onEdit={() => startEditing(tag.id, 'secondary', sec.value, p.originalIndex * 100 + secIdx)}
+                                                  onDelete={() => removeSecondaryTag(tag.id, p.originalIndex, secIdx)}
+                                                  onSave={(newName) => {
+                                                    setEditingItem(prev => ({ ...prev, tempValue: newName }));
+                                                    saveEditing();
+                                                  }}
+                                                  onCancel={cancelEditing}
+                                                />
+                                              ))}
+                                              {p.secondaryTags.length > 3 && (
+                                                <button
+                                                  onClick={() => toggleTagGroupExpansion(groupId)}
+                                                  className="text-[10px] text-gray-400 hover:text-[#00A3AF] font-medium px-1 py-0.5 rounded hover:bg-cyan-50 transition-colors"
+                                                >
+                                                  {isExpanded ? 'Show Less' : `+${remainingCount} more`}
+                                                </button>
+                                              )}
+                                            </>
+                                          );
+                                        })()}
+                                      </div>
+                                    </TagRowLayout>
+                                  )}
+
+                                  {/* Secondary Tag Input Slot */}
+                                  {secondaryInput?.entryId === tag.id && secondaryInput?.primaryIndex === p.originalIndex && (
+                                    <ReservedEditSlotRow
+                                      level={2}
+                                      placeholder="Add secondary tag..."
+                                      onSave={(val: string) => addSecondaryTag(tag.id, p.originalIndex, val)}
+                                      onCancel={() => setSecondaryInput(null)}
+                                    />
+                                  )}
+
+                                  {/* Primary Comment Input Slot */}
+                                  {editingItem.id === tag.id && editingItem.type === 'primary_comment' && editingItem.index === p.originalIndex && (
+                                    <ReservedEditSlotRow
+                                      level={2}
+                                      isComment={true}
+                                      placeholder="Primary tag comment..."
+                                      initialValue={editingItem.tempValue}
+                                      onSave={(val: string) => {
+                                        setEditingItem(prev => ({ ...prev, tempValue: val }));
+                                        saveEditing();
+                                      }}
+                                      onCancel={cancelEditing}
+                                    />
+                                  )}
+
+                                </React.Fragment>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
+                      );
+                    })}
+
+                  {/* Dotted Line Connections for Same-Name but Different-ID Masters */}
+                  {/* Rule 1.1: Dotted line exists ONLY between master anchors, never extending beyond */}
+                  {Object.entries(dottedSpineOffsets).map(([connectionKey, connection]) => {
+                    const LANE_WIDTH = 48; // Significantly increased to prevent lane collision
+                    if (connection.masterTagIds.length < 2 || !connection.anchors || connection.anchors.length < 2) return null;
+
+                    // Get all metadata for the same-name masters
+                    const sameNameMetas = connection.masterTagIds
+                      .map(id => masterTagMetadata[id])
+                      .filter(Boolean);
+                    if (sameNameMetas.length < 2) return null;
+
+                    // Find leftmost position for alignment
+                    const leftmostLane = Math.min(...sameNameMetas.map(m => (m.uniqueIndex || 0) * LANE_WIDTH + 12));
+
+                    // Get the color from the first master
+                    const firstMasterId = connection.masterTagIds[0];
+                    const firstTag = tags.find(t => (t.masterTagId || t.id) === firstMasterId);
+                    const connectionColor = firstTag?.masterColor || getMasterTagColor(firstMasterId || '');
+
+                    // Rule 3.1: Vertical line segment from first anchor to last anchor
+                    // Anchors are already sorted by Y position
+                    const firstAnchor = connection.anchors[0];
+                    const lastAnchor = connection.anchors[connection.anchors.length - 1];
+                    const firstAnchorY = firstAnchor.anchorY;
+                    const lastAnchorY = lastAnchor.anchorY;
+
+                    return (
+                      <React.Fragment key={connectionKey}>
+                        {/* Rule 3.1: Vertical Dotted Line - starts at first anchor, ends at last anchor */}
+                        {/* Rule 1.1: Never extends beyond these bounds */}
+                        <div
+                          className="absolute pointer-events-none z-[1] overflow-hidden"
+                          style={{
+                            left: `${leftmostLane}px`,
+                            top: `${firstAnchorY}px`,
+                            height: `${Math.max(lastAnchorY - firstAnchorY, 1)}px`,
+                            width: '1.5px'
+                          }}
+                        >
+                          <div
+                            className="absolute w-full h-full"
+                            style={{
+                              backgroundColor: 'transparent',
+                              backgroundImage: `repeating-linear-gradient(180deg, ${connectionColor} 0px, ${connectionColor} 3px, transparent 3px, transparent 7px)`,
+                              backgroundSize: '1.5px 7px',
+                              backgroundRepeat: 'repeat-y',
+                              opacity: 0.4 
+                            }}
+                          />
+                        </div>
+
+                        {/* Rule 4.1: Horizontal Stubs - Short connectors from dotted line to each anchor */}
+                        {/* Rule 4.2: Stubs end exactly at card boundary, never overshoot */}
+                        {connection.anchors.map((anchor, idx) => {
+                          // Stub length: from dotted line to card edge
+                          // Use actual cardLeft from anchor data, but ensure minimum 12px
+                          const stubLength = Math.max(anchor.cardLeft - leftmostLane - 1.5, 12);
+
+                          return (
+                            <div
+                              key={`stub-${anchor.masterTagId}-${idx}`}
+                              className="absolute pointer-events-none z-[1]"
+                              style={{
+                                left: `${leftmostLane}px`,
+                                top: `${anchor.anchorY}px`,
+                                width: `${stubLength}px`,
+                                height: '1.5px',
+                                backgroundColor: connectionColor,
+                                opacity: 0.4
+                              }}
+                            />
+                          );
+                        })}
+                      </React.Fragment>
                     );
                   })}
 

@@ -33,7 +33,7 @@ export const TagRowLayout: React.FC<TagRowLayoutProps> = ({
     return (
         <div
             className={`
-        group relative grid grid-cols-[1fr_60px] items-center gap-2 py-0.5 min-h-[32px]
+        group relative grid grid-cols-[1fr_60px] items-start gap-2 py-0.5 min-h-[32px]
         ${indentClass}
         ${isHighlighed ? 'bg-blue-50/50' : 'hover:bg-gray-50/50'}
         transition-colors duration-200

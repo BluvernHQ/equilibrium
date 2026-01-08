@@ -70,3 +70,9 @@ body {
 .flash-highlight {
   animation: flash-highlight 1.5s ease-out forwards;
 }
+
+/* Override Next.js portal positioning */
+nextjs-portal {
+  left: unset !important;
+  top: unset !important;
+}

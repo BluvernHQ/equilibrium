@@ -215,106 +215,123 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                 </button>
               </div>
             ) : (
-              <video
-              ref={internalVideoRef}
-              src={decodedUrl}
-              controls
-              autoPlay
-              playsInline
-              preload="auto"
-              className="w-full h-full rounded-2xl bg-black object-contain"
-            onLoadedData={() => {
-              // Ensure video plays when data is loaded
-              if (internalVideoRef.current && isPlaying) {
-                internalVideoRef.current.play().catch((err) => {
-                  console.error("Video play error on load:", err);
-                });
-              }
-            }}
-            onCanPlay={() => {
-              // Try to play when video can play
-              if (internalVideoRef.current && isPlaying) {
-                internalVideoRef.current.play().catch((err) => {
-                  console.error("Video play error on canplay:", err);
-                });
-              }
-            }}
-            onLoadedMetadata={() => {
-              console.log("Video metadata loaded:", {
-                duration: internalVideoRef.current?.duration,
-                videoWidth: internalVideoRef.current?.videoWidth,
-                videoHeight: internalVideoRef.current?.videoHeight,
-                readyState: internalVideoRef.current?.readyState
-              });
-            }}
-            onError={(e) => {
-              const video = e.currentTarget;
-              const error = video.error;
-              let errorMsg = "Unknown video error";
-              
-              if (error) {
-                switch (error.code) {
-                  case error.MEDIA_ERR_ABORTED:
-                    errorMsg = "Video loading aborted";
-                    break;
-                  case error.MEDIA_ERR_NETWORK:
-                    errorMsg = "Network error while loading video";
-                    break;
-                  case error.MEDIA_ERR_DECODE:
-                    errorMsg = "Video decoding error";
-                    break;
-                  case error.MEDIA_ERR_SRC_NOT_SUPPORTED:
-                    errorMsg = "Video source not accessible. This is likely a CORS configuration issue.";
-                    setHasError(true);
-                    setErrorMessage("CORS Error: Video cannot be loaded. Please configure CORS on your Digital Ocean Spaces bucket to allow video playback from this domain.");
-                    break;
-                  default:
-                    errorMsg = `Video error code: ${error.code}`;
-                }
-              }
-              
-              console.error("Video error:", {
-                message: errorMsg,
-                error: error,
-                networkState: video.networkState,
-                readyState: video.readyState,
-                src: video.src,
-                currentSrc: video.currentSrc,
-                errorCode: error?.code,
-                errorMessage: error?.message,
-                networkStateText: video.networkState === 0 ? 'EMPTY' : 
-                                  video.networkState === 1 ? 'IDLE' :
-                                  video.networkState === 2 ? 'LOADING' :
-                                  video.networkState === 3 ? 'NO_SOURCE' : 'UNKNOWN'
-              });
-              
-              // If it's a source not supported error, it might be a CORS issue
-              if (error?.code === error?.MEDIA_ERR_SRC_NOT_SUPPORTED) {
-                console.warn("⚠️ Video source not accessible. This might be a CORS issue.");
-                console.warn("Please ensure your Digital Ocean Spaces bucket has CORS configured to allow video playback from your domain.");
-                console.warn("CORS configuration should allow: GET, HEAD methods and include your domain in allowed origins.");
-                console.warn("Current origin:", window.location.origin);
-                console.warn("Video URL:", video.src);
-                
-                // Log detailed error for debugging
-                console.error("Full error details:", {
-                  errorCode: error?.code,
-                  networkState: video.networkState,
-                  readyState: video.readyState,
-                  src: video.src,
-                  currentSrc: video.currentSrc,
-                });
-              }
-            }}
-            onClick={(e) => {
-              // If video is paused, play it on click (user interaction)
-              if (internalVideoRef.current && internalVideoRef.current.paused) {
-                internalVideoRef.current.play().catch((err) => {
-                  console.error("Video play error on click:", err);
-                });
-              }
-            }}
-          />
+              <div 
+                className="relative w-full h-full"
+                onClick={(e) => {
+                  // Toggle play/pause when clicking on the video area (not on controls)
+                  // Check if the clicked element is not a control element (button, input, etc.)
+                  const target = e.target as HTMLElement;
+                  const isControlElement = target.tagName === 'BUTTON' || 
+                                         target.tagName === 'INPUT' || 
+                                         target.tagName === 'PROGRESS' ||
+                                         target.closest('button') ||
+                                         target.closest('input') ||
+                                         target.closest('progress');
+                  
+                  if (!isControlElement && internalVideoRef.current) {
+                    if (internalVideoRef.current.paused) {
+                      internalVideoRef.current.play().catch((err) => {
+                        console.error("Video play error on click:", err);
+                      });
+                    } else {
+                      internalVideoRef.current.pause();
+                    }
+                  }
+                }}
+              >
+                <video
+                  ref={internalVideoRef}
+                  src={decodedUrl}
+                  controls
+                  autoPlay
+                  playsInline
+                  preload="auto"
+                  className="w-full h-full rounded-2xl bg-black object-contain"
+                  onLoadedData={() => {
+                    // Ensure video plays when data is loaded
+                    if (internalVideoRef.current && isPlaying) {
+                      internalVideoRef.current.play().catch((err) => {
+                        console.error("Video play error on load:", err);
+                      });
+                    }
+                  }}
+                  onCanPlay={() => {
+                    // Try to play when video can play
+                    if (internalVideoRef.current && isPlaying) {
+                      internalVideoRef.current.play().catch((err) => {
+                        console.error("Video play error on canplay:", err);
+                      });
+                    }
+                  }}
+                  onLoadedMetadata={() => {
+                    console.log("Video metadata loaded:", {
+                      duration: internalVideoRef.current?.duration,
+                      videoWidth: internalVideoRef.current?.videoWidth,
+                      videoHeight: internalVideoRef.current?.videoHeight,
+                      readyState: internalVideoRef.current?.readyState
+                    });
+                  }}
+                  onError={(e) => {
+                    const video = e.currentTarget;
+                    const error = video.error;
+                    let errorMsg = "Unknown video error";
+                    
+                    if (error) {
+                      switch (error.code) {
+                        case error.MEDIA_ERR_ABORTED:
+                          errorMsg = "Video loading aborted";
+                          break;
+                        case error.MEDIA_ERR_NETWORK:
+                          errorMsg = "Network error while loading video";
+                          break;
+                        case error.MEDIA_ERR_DECODE:
+                          errorMsg = "Video decoding error";
+                          break;
+                        case error.MEDIA_ERR_SRC_NOT_SUPPORTED:
+                          errorMsg = "Video source not accessible. This is likely a CORS configuration issue.";
+                          setHasError(true);
+                          setErrorMessage("CORS Error: Video cannot be loaded. Please configure CORS on your Digital Ocean Spaces bucket to allow video playback from this domain.");
+                          break;
+                        default:
+                          errorMsg = `Video error code: ${error.code}`;
+                      }
+                    }
+                    
+                    console.error("Video error:", {
+                      message: errorMsg,
+                      error: error,
+                      networkState: video.networkState,
+                      readyState: video.readyState,
+                      src: video.src,
+                      currentSrc: video.currentSrc,
+                      errorCode: error?.code,
+                      errorMessage: error?.message,
+                      networkStateText: video.networkState === 0 ? 'EMPTY' : 
+                                        video.networkState === 1 ? 'IDLE' :
+                                        video.networkState === 2 ? 'LOADING' :
+                                        video.networkState === 3 ? 'NO_SOURCE' : 'UNKNOWN'
+                    });
+                    
+                    // If it's a source not supported error, it might be a CORS issue
+                    if (error?.code === error?.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+                      console.warn("⚠️ Video source not accessible. This might be a CORS issue.");
+                      console.warn("Please ensure your Digital Ocean Spaces bucket has CORS configured to allow video playback from your domain.");
+                      console.warn("CORS configuration should allow: GET, HEAD methods and include your domain in allowed origins.");
+                      console.warn("Current origin:", window.location.origin);
+                      console.warn("Video URL:", video.src);
+                      
+                      // Log detailed error for debugging
+                      console.error("Full error details:", {
+                        errorCode: error?.code,
+                        networkState: video.networkState,
+                        readyState: video.readyState,
+                        src: video.src,
+                        currentSrc: video.currentSrc,
+                      });
+                    }
+                  }}
+                />
+              </div>
             )}
             
             {/* ❌ Close button */}
