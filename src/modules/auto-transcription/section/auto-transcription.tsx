@@ -9,7 +9,8 @@ import UserIcon from "../../../../public/icons/profile-circle.png";
 import { TranscriptEntry, SegmentState } from "../templates/types";
 import { transcriptEntries as mockEntries } from "../data/transcript-datas";
 import { useSession } from "@/context/SessionContext";
-import { SparklesIcon, ArrowRightIcon, PencilSquareIcon, CheckIcon, XMarkIcon, StopIcon, PlusIcon } from "@heroicons/react/24/outline";
+import { SparklesIcon, ArrowRightIcon, PencilSquareIcon, CheckIcon, XMarkIcon, StopIcon, PlusIcon, QuestionMarkCircleIcon } from "@heroicons/react/24/outline";
+import KeyboardShortcutsModal from "@/modules/manual-transcription/components/keyboard-shortcuts-modal";
 import SpeakerHeader from "../components/speaker-header";
 import { LockClosedIcon } from "@heroicons/react/24/solid";
 
@@ -30,6 +31,7 @@ export default function AutoTranscription({
 }: AutoTranscriptionProps) {
   const { updateSpeakerName, setTranscriptionData, mediaUrl: sessionMediaUrl, file: sessionFile, videoId, transcriptionData: sessionTranscriptionData, spacesUrl, setVideoUrl } = useSession();
   const [isGlobalSaved, setIsGlobalSaved] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const [speakerCreationTriggerEntryIndex, setSpeakerCreationTriggerEntryIndex] = useState<number | null>(null);
@@ -59,11 +61,11 @@ export default function AutoTranscription({
   // Speaker Editing State
   const [editingSpeakerId, setEditingSpeakerId] = useState<string | null>(null);
   const [newSpeakerName, setNewSpeakerName] = useState("");
-  
+
   // Moderator/Coordinator state - track which speaker is the moderator
   const [moderatorName, setModeratorName] = useState<string | null>(null);
   const [moderatorAvatar, setModeratorAvatar] = useState<{ url: string; key: string } | null>(null);
-  
+
   // Speaker avatars state - map of speaker name to avatar data
   const [speakerAvatars, setSpeakerAvatars] = useState<Record<string, { url: string; key: string }>>({});
 
@@ -76,7 +78,7 @@ export default function AutoTranscription({
   useEffect(() => {
     if (videoId && hasData && !isSaving) {
       setIsGlobalSaved(true);
-      
+
       // Update URL with videoId if not already present, to support refresh
       if (typeof window !== 'undefined') {
         const currentUrl = new URL(window.location.href);
@@ -91,22 +93,41 @@ export default function AutoTranscription({
   // Let's say if it's undefined, we show mock (demo mode). If it's null, we show empty state.
   const entries = transcriptionData === undefined ? mockEntries : (transcriptionData || []);
 
+  const handleBack = () => {
+    if (isTranscribing) {
+      const confirmLeave = window.confirm("Transcription is in progress. If you leave, the process may stop. Are you sure you want to leave?");
+      if (!confirmLeave) return;
+    }
+    router.back();
+  };
+
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isTranscribing) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isTranscribing]);
+
   const handleStateSelect = (entryIndex: number, state: SegmentState) => {
     if (!currentTranscriptionData) return;
-    
+
     const updatedData = [...currentTranscriptionData];
     const entry = updatedData[entryIndex];
-    
+
     // Toggle state: if already selected, clear it
     const newState = entry.state === state ? null : state;
-    
+
     updatedData[entryIndex] = {
       ...entry,
       state: newState,
       // When a state is selected, it implicitly clears the speaker assignment in terms of display
       // but we keep the name for now as the session context expects it.
     };
-    
+
     // Update session context
     if (setTranscriptionData) {
       setTranscriptionData(updatedData);
@@ -127,7 +148,7 @@ export default function AutoTranscription({
     if (typeof window !== 'undefined') {
       const manualSegments = transcript.map((entry, idx) => {
         const speakerName = entry.state ? entry.state.replace('_', ' ').toUpperCase() : entry.name;
-        
+
         return {
           id: entry.id ? `auto-${entry.id}` : `auto-${idx}-${Date.now()}`,
           selectedSpeakerId: entry.state ? null : `speaker-${entry.name}`,
@@ -187,7 +208,7 @@ export default function AutoTranscription({
             uniqueSpeakerNames.add(entry.name);
           }
         });
-        
+
         // Prepare speaker data - include ALL speakers, not just those with avatars
         const speakerData = Array.from(uniqueSpeakerNames).map((name) => {
           const avatarData = speakerAvatars[name];
@@ -223,7 +244,7 @@ export default function AutoTranscription({
       } else {
         // If no videoId, create or find video record from Digital Ocean Spaces URL
         const videoUrl = spacesUrl || sessionMediaUrl;
-        
+
         if (!videoUrl) {
           alert("No video URL available. Please select a video first.");
           return;
@@ -269,7 +290,7 @@ export default function AutoTranscription({
             uniqueSpeakerNames.add(entry.name);
           }
         });
-        
+
         // Prepare speaker data - include ALL speakers with their avatars
         const speakerData = Array.from(uniqueSpeakerNames).map((name) => {
           const avatarData = speakerAvatars[name];
@@ -404,10 +425,10 @@ export default function AutoTranscription({
           if (data.success && data.speakers && Array.isArray(data.speakers)) {
             const avatarsMap: Record<string, { url: string; key: string }> = {};
             let foundModerator = false;
-            
+
             data.speakers.forEach((speaker: any) => {
               const speakerName = speaker.name || speaker.speaker_label;
-              
+
               // Store avatar for all speakers
               if (speaker.avatar_url && speaker.avatar_key && speakerName) {
                 avatarsMap[speakerName] = {
@@ -415,7 +436,7 @@ export default function AutoTranscription({
                   key: speaker.avatar_key
                 };
               }
-              
+
               // Set moderator if found (only one moderator per video)
               if (speaker.is_moderator && speakerName && !foundModerator) {
                 setModeratorName(speakerName);
@@ -428,7 +449,7 @@ export default function AutoTranscription({
                 foundModerator = true;
               }
             });
-            
+
             setSpeakerAvatars(avatarsMap);
           }
         })
@@ -473,7 +494,7 @@ export default function AutoTranscription({
           return match ? parseInt(match[1], 10) : 0;
         })
         .filter(n => !isNaN(n));
-      
+
       const nextNumber = roleNumbers.length > 0 ? Math.max(...roleNumbers) + 1 : 1;
       const speakerNameToUse = `${rolePrefix} ${nextNumber}`;
 
@@ -496,12 +517,12 @@ export default function AutoTranscription({
       }
 
       const data = await response.json();
-      
+
       if (role === 'coordinator') {
         setModeratorName(speakerNameToUse);
         setModeratorAvatar({ url: data.url, key: data.key });
       }
-      
+
       // Add to speaker avatars
       setSpeakerAvatars((prev) => ({
         ...prev,
@@ -519,7 +540,7 @@ export default function AutoTranscription({
         setTranscriptionData(updatedData);
         setSpeakerCreationTriggerEntryIndex(null);
       }
-      
+
       // Mark as unsaved when speaker is added
       setIsGlobalSaved(false);
     } catch (error: any) {
@@ -540,8 +561,8 @@ export default function AutoTranscription({
       <div className="shrink-0 bg-gray-50 z-30 shadow-sm lg:shadow-none">
         <header className="bg-white border-b border-[#F0F0F0] h-[50px] lg:h-[60px] flex items-center px-4 lg:px-6 justify-between">
           <div className="flex items-center gap-3 lg:gap-4">
-            <button 
-              onClick={() => router.back()} 
+            <button
+              onClick={handleBack}
               className="hover:opacity-70 transition flex items-center"
               aria-label="Go back"
             >
@@ -561,16 +582,23 @@ export default function AutoTranscription({
             {hasData && (
               <>
                 {videoId && (
-                  <Link 
+                  <Link
                     href={`/transcription/${videoId}`}
                     className="px-3 lg:px-4 py-1.5 lg:py-2 bg-blue-50 text-[#00A3AF] border border-[#00A3AF] rounded-lg text-xs lg:text-sm font-medium hover:bg-blue-100 transition flex items-center gap-2"
                   >
-                    View Session
+                    View Transcription
                     <ArrowRightIcon className="w-4 h-4" />
                   </Link>
                 )}
                 <button className="px-3 lg:px-4 py-1.5 lg:py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-xs lg:text-sm font-medium hover:bg-gray-50 transition">
                   Export
+                </button>
+                <button
+                  onClick={() => setShowShortcuts(true)}
+                  className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition"
+                  title="Keyboard Shortcuts"
+                >
+                  <QuestionMarkCircleIcon className="w-5 h-5 lg:w-6 lg:h-6" />
                 </button>
                 <button
                   onClick={handleGlobalSave}
@@ -591,7 +619,7 @@ export default function AutoTranscription({
 
         {/* TRANSCRIPT FEED AREA */}
         <div className="flex-1 w-full bg-white rounded-2xl shadow-sm border border-gray-100 overflow-y-auto p-4 sm:p-5 lg:p-6 custom-scrollbar relative">
-          
+
           {/* SPEAKER HEADER - Show when we have transcription data */}
           {hasData && currentTranscriptionData && currentTranscriptionData.length > 0 && (
             <SpeakerHeader
@@ -646,7 +674,7 @@ export default function AutoTranscription({
                   Stop Transcription
                 </button>
               </div>
-              
+
               {/* Shimmer placeholders */}
               <div className="w-full flex flex-col gap-6 animate-pulse">
                 {[1, 2, 3, 4].map((i) => (
@@ -672,7 +700,7 @@ export default function AutoTranscription({
                   : false;
 
                 const isEditing = editingSpeakerId === name;
-                
+
                 const isAssigned = !!state;
 
                 const stateOptions: { value: SegmentState; label: string }[] = [
@@ -740,7 +768,7 @@ export default function AutoTranscription({
                               {opt.label}
                             </button>
                           ))}
-                          
+
                           <button
                             onClick={() => handleAddSpeakerTrigger(index)}
                             className="px-2.5 py-1 rounded-lg text-[11px] border border-dashed border-[#00A3AF] text-[#00A3AF] hover:bg-[#00A3AF]/5 transition-all whitespace-nowrap flex items-center gap-1"
@@ -761,7 +789,7 @@ export default function AutoTranscription({
                     <div className="relative group">
                       {state && (
                         <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-50/20 backdrop-blur-[0.5px] rounded-lg">
-                           <div className="flex items-center gap-2 text-gray-400 text-xs bg-white px-3 py-1.5 rounded-full shadow-sm border border-gray-100">
+                          <div className="flex items-center gap-2 text-gray-400 text-xs bg-white px-3 py-1.5 rounded-full shadow-sm border border-gray-100">
                             <LockClosedIcon className="w-3.5 h-3.5 text-amber-400" />
                             <span className="font-medium italic">Content locked for {state.replace('_', ' ')}</span>
                           </div>
@@ -818,6 +846,10 @@ export default function AutoTranscription({
         </div>
 
       </div>
+      <KeyboardShortcutsModal
+        isOpen={showShortcuts}
+        onClose={() => setShowShortcuts(false)}
+      />
     </div>
   );
 }

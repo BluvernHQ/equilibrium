@@ -13,9 +13,10 @@ import ClockIcon from "../../../../../../public/icons/clock-1.png";
 import { useSession } from "@/context/SessionContext";
 import {
     ArrowPathIcon,
-    TagIcon,
     XMarkIcon,
+    QuestionMarkCircleIcon,
 } from "@heroicons/react/24/outline";
+import KeyboardShortcutsModal from "@/modules/manual-transcription/components/keyboard-shortcuts-modal";
 
 // Types
 interface TranscriptBlock {
@@ -94,20 +95,19 @@ export default function TranscriptionViewPage() {
     const [error, setError] = useState<string | null>(null);
     const [transcript, setTranscript] = useState<TranscriptData | null>(null);
     const [video, setVideo] = useState<VideoData | null>(null);
+    const [isGlobalSaved, setIsGlobalSaved] = useState(true); // Default to view mode
     const [isSaving, setIsSaving] = useState(false);
-    const [isGlobalSaved, setIsGlobalSaved] = useState(true); // Default to view mode (not edit mode)
 
     // Video player state
     const [isVideoPlaying, setIsVideoPlaying] = useState(false);
     const [videoUrlReady, setVideoUrlReady] = useState(false);
     const [currentVideoTime, setCurrentVideoTime] = useState(0);
     const videoRef = useRef<HTMLVideoElement>(null);
-    
-    // Floating video player state
-    const [videoPlayerPosition, setVideoPlayerPosition] = useState({ x: 0, y: 0 });
-    const [isDragging, setIsDragging] = useState(false);
-    const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-    const videoPlayerRef = useRef<HTMLDivElement>(null);
+    const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+    const [title, setTitle] = useState("");
+    const [initialTitle, setInitialTitle] = useState("");
+    const [isTitleEditing, setIsTitleEditing] = useState(false);
+
 
     // Snackbar state
     const [snackbar, setSnackbar] = useState({ show: false, message: "" });
@@ -128,6 +128,7 @@ export default function TranscriptionViewPage() {
     // Hard Behavioral Constraints States
     const [speakerSelectionDeadline, setSpeakerSelectionDeadline] = useState<number | null>(null);
     const [speakerCreationTriggerSegmentId, setSpeakerCreationTriggerSegmentId] = useState<string | null>(null);
+    const [showShortcuts, setShowShortcuts] = useState(false);
 
     // Keyboard shortcuts for media player
     useEffect(() => {
@@ -247,7 +248,7 @@ export default function TranscriptionViewPage() {
 
     const persistSpeakersToServer = async (currentSpeakers: Speaker[]) => {
         if (!videoId) return;
-        
+
         try {
             const speakerData = currentSpeakers.map((speaker) => {
                 let avatarKey: string | null = null;
@@ -329,7 +330,7 @@ export default function TranscriptionViewPage() {
                     // Extract unique speakers from blocks and merge with speaker data from database
                     const uniqueSpeakers = new Map<string, Speaker>();
                     const speakerMap = new Map<string, any>();
-                    
+
                     // Create a map of speaker labels to speaker data from database
                     if (data.speakers && Array.isArray(data.speakers)) {
                         data.speakers.forEach((speaker: any) => {
@@ -339,7 +340,7 @@ export default function TranscriptionViewPage() {
                             }
                         });
                     }
-                    
+
                     // First, add all speakers from database (including standalone moderators)
                     if (data.speakers && Array.isArray(data.speakers)) {
                         data.speakers.forEach((dbSpeaker: any) => {
@@ -348,8 +349,8 @@ export default function TranscriptionViewPage() {
                                 uniqueSpeakers.set(speakerLabel, {
                                     id: dbSpeaker.id,
                                     name: dbSpeaker.name || speakerLabel,
-                                    shortName: (dbSpeaker.name || speakerLabel).length > 10 
-                                        ? (dbSpeaker.name || speakerLabel).substring(0, 8) + "..." 
+                                    shortName: (dbSpeaker.name || speakerLabel).length > 10
+                                        ? (dbSpeaker.name || speakerLabel).substring(0, 8) + "..."
                                         : (dbSpeaker.name || speakerLabel),
                                     avatar: dbSpeaker.avatar_url || "",
                                     isDefault: false,
@@ -358,7 +359,7 @@ export default function TranscriptionViewPage() {
                             }
                         });
                     }
-                    
+
                     // Then, add speakers from transcription blocks (in case they're not in database yet)
                     data.transcription.blocks.forEach((block: TranscriptBlock) => {
                         const speakerLabel = block.speaker_label || "Unknown";
@@ -417,13 +418,17 @@ export default function TranscriptionViewPage() {
 
                     setSpeakers(finalSpeakers);
                     setSegments(finalSegments);
+
+                    const fileName = data.video?.fileName || "Transcription Editor";
+                    setTitle(fileName);
+                    setInitialTitle(fileName);
                 }
 
                 if (data.video) {
                     // Prefer direct public URL if available (works without CORS if file is public)
                     // Only use presigned URLs if direct URL is not available or is expired
                     let videoUrlToUse = data.video.source_url || data.video.fileUrl;
-                    
+
                     console.log("Video data from database:", {
                         hasSourceUrl: !!data.video.source_url,
                         hasFileUrl: !!data.video.fileUrl,
@@ -431,21 +436,21 @@ export default function TranscriptionViewPage() {
                         sourceUrl: data.video.source_url?.substring(0, 100),
                         fileUrl: data.video.fileUrl?.substring(0, 100),
                     });
-                    
+
                     // Check if we have a direct public URL (not a presigned URL)
                     const isPresignedUrl = videoUrlToUse && videoUrlToUse.includes('X-Amz-');
                     const hasDirectUrl = videoUrlToUse && !isPresignedUrl;
-                    
+
                     console.log("URL analysis:", {
                         videoUrlToUse: videoUrlToUse?.substring(0, 100),
                         isPresignedUrl,
                         hasDirectUrl,
                     });
-                    
+
                     // Extract fileKey from URL if not in database
                     let fileKeyToUse = data.video.fileKey;
                     let baseUrl = '';
-                    
+
                     if (!fileKeyToUse && videoUrlToUse) {
                         try {
                             const urlObj = new URL(videoUrlToUse);
@@ -473,18 +478,18 @@ export default function TranscriptionViewPage() {
                             // Ignore
                         }
                     }
-                    
+
                     // Try to construct a direct public URL first (like auto-transcription does)
                     // This works if the file is public and doesn't require CORS
                     if (fileKeyToUse && (!hasDirectUrl || isPresignedUrl) && baseUrl) {
                         // Construct direct public URL from fileKey (same format as upload API returns)
                         // This matches what auto-transcription uses: https://hiffi.blr1.digitaloceanspaces.com/Equilibrium/videoplayback.mp4
                         const directPublicUrl = `${baseUrl}/${fileKeyToUse}`;
-                        
+
                         console.log("🔄 Constructing direct public URL (like auto-transcription):", directPublicUrl.substring(0, 100));
                         videoUrlToUse = directPublicUrl;
                         console.log("✅ Using direct public URL (same format as auto-transcription - should work without CORS if file is public)");
-                        
+
                         // This should work the same way as auto-transcription since we're using the same URL format
                     } else if (hasDirectUrl) {
                         console.log("✅ Using existing direct public URL (no CORS needed if file is public)");
@@ -501,13 +506,13 @@ export default function TranscriptionViewPage() {
                     } else {
                         console.warn("⚠️ No video URL available");
                     }
-                    
+
                     // Update video state with the fresh URL
                     setVideo({
                         ...data.video,
                         source_url: videoUrlToUse || data.video.source_url || data.video.fileUrl || "",
                     });
-                    
+
                     if (videoUrlToUse && videoUrlToUse.trim()) {
                         setVideoUrl(videoUrlToUse, data.video.id);
                         setVideoUrlReady(true); // Mark URL as ready
@@ -549,7 +554,7 @@ export default function TranscriptionViewPage() {
 
         // Also resize after a short delay to ensure DOM is fully rendered
         const timeout = setTimeout(resizeAllTextareas, 100);
-        
+
         // Resize on window resize as well
         window.addEventListener('resize', resizeAllTextareas);
 
@@ -646,12 +651,136 @@ export default function TranscriptionViewPage() {
         };
     }, [videoUrlReady, isVideoPlaying]);
 
+    // Navigation protection for unsaved metadata
+    useEffect(() => {
+        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+            if (title !== initialTitle) {
+                e.preventDefault();
+                e.returnValue = "";
+            }
+        };
+        window.addEventListener("beforeunload", handleBeforeUnload);
+        return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+    }, [title, initialTitle]);
+
+    // Debounced Auto-save for transcription content
+    useEffect(() => {
+        if (loading || isSaving || isGlobalSaved) return;
+
+        const timer = setTimeout(async () => {
+            if (segments.length === 0) return;
+
+            setAutoSaveStatus('saving');
+            try {
+                const speakerData = speakers.map((speaker) => ({
+                    name: speaker.name,
+                    speaker_label: speaker.name,
+                    avatar_url: speaker.avatar || null,
+                    is_moderator: speaker.role === 'coordinator',
+                }));
+
+                const transcriptData = segments
+                    .filter(seg => seg.content.trim() !== "" || seg.state)
+                    .map((seg, idx) => {
+                        const speaker = speakers.find(s => s.id === seg.selectedSpeakerId);
+                        const speakerName = speaker ? speaker.name : (seg.state ? seg.state.replace('_', ' ').toUpperCase() : "Unknown");
+
+                        return {
+                            id: idx,
+                            name: speakerName,
+                            time: seg.timestamp || "00:00",
+                            text: seg.content || `[${speakerName}]`,
+                            startTime: seg.startTimeSeconds ?? parseTimeToSeconds(seg.timestamp),
+                            endTime: seg.endTimeSeconds ?? (parseTimeToSeconds(seg.timestamp) + 5),
+                        };
+                    });
+
+                const response = await fetch("/api/transcriptions/save", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        videoId: videoId,
+                        transcriptData: transcriptData,
+                        transcriptionType: transcript?.transcription_type || "auto",
+                        speakerData: speakerData,
+                    }),
+                });
+
+                if (response.ok) {
+                    setAutoSaveStatus('saved');
+                    setTimeout(() => setAutoSaveStatus('idle'), 3000);
+                } else {
+                    setAutoSaveStatus('error');
+                }
+            } catch (error) {
+                console.error("Auto-save failed:", error);
+                setAutoSaveStatus('error');
+            }
+        }, 2000);
+
+        return () => clearTimeout(timer);
+    }, [segments, speakers, videoId, loading, isSaving, transcript?.transcription_type, isGlobalSaved]);
+
+    const handleSaveMetadata = async () => {
+        if (!videoId || isSaving) return;
+
+        setIsSaving(true);
+        try {
+            const speakerData = speakers.map((speaker) => ({
+                name: speaker.name,
+                speaker_label: speaker.name,
+                avatar_url: speaker.avatar || null,
+                is_moderator: speaker.role === 'coordinator',
+            }));
+
+            const transcriptData = segments
+                .filter(seg => seg.content.trim() !== "" || seg.state)
+                .map((seg, idx) => {
+                    const speaker = speakers.find(s => s.id === seg.selectedSpeakerId);
+                    const speakerName = speaker ? speaker.name : (seg.state ? seg.state.replace('_', ' ').toUpperCase() : "Unknown");
+
+                    return {
+                        id: idx,
+                        name: speakerName,
+                        time: seg.timestamp || "00:00",
+                        text: seg.content || `[${speakerName}]`,
+                        startTime: seg.startTimeSeconds ?? parseTimeToSeconds(seg.timestamp),
+                        endTime: seg.endTimeSeconds ?? (parseTimeToSeconds(seg.timestamp) + 5),
+                    };
+                });
+
+            const response = await fetch("/api/transcriptions/save", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    videoId: videoId,
+                    videoMetadata: {
+                        fileName: title,
+                    },
+                    transcriptData: transcriptData,
+                    transcriptionType: transcript?.transcription_type || "auto",
+                    speakerData: speakerData,
+                }),
+            });
+
+            if (!response.ok) throw new Error("Failed to save metadata");
+
+            setInitialTitle(title);
+            showSnackbar("Saved");
+        } catch (error) {
+            console.error("Metadata save failed:", error);
+            showSnackbar("Failed to save metadata");
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
     // Determine active segment based on current video time (works continuously)
     const activeSegmentId = useMemo(() => {
         // Always try to find active segment, even if video is paused
         // This ensures highlighting works at all times
         if (segments.length === 0) return null;
-        
+
         // Find the segment that contains the current video time
         const activeSegment = segments.find(segment => {
             if (segment.startTimeSeconds === undefined || segment.endTimeSeconds === undefined) {
@@ -660,8 +789,8 @@ export default function TranscriptionViewPage() {
             // Segment is active if current time is between start and end (inclusive)
             // Use a small tolerance to handle edge cases
             const tolerance = 0.1; // 100ms tolerance
-            return currentVideoTime >= (segment.startTimeSeconds - tolerance) && 
-                   currentVideoTime <= (segment.endTimeSeconds + tolerance);
+            return currentVideoTime >= (segment.startTimeSeconds - tolerance) &&
+                currentVideoTime <= (segment.endTimeSeconds + tolerance);
         });
 
         return activeSegment?.id || null;
@@ -701,7 +830,7 @@ export default function TranscriptionViewPage() {
                     video.pause();
                     setIsVideoPlaying(false);
                     showSnackbar("Playback paused: Select a speaker or state to continue");
-                    
+
                     // Focus the unassigned segment
                     const element = document.querySelector(`[data-segment-id="${activeSegment.id}"] textarea`) as HTMLTextAreaElement;
                     if (element) element.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -713,7 +842,7 @@ export default function TranscriptionViewPage() {
             // 2. Forward Playback Restriction
             const MAX_FORWARD_WINDOW = 10;
             const currentBlockStart = activeSegment.startTimeSeconds || 0;
-            
+
             if (!isAssigned && currentTime > currentBlockStart + MAX_FORWARD_WINDOW) {
                 video.currentTime = currentBlockStart + MAX_FORWARD_WINDOW;
                 if (!video.paused) {
@@ -777,63 +906,6 @@ export default function TranscriptionViewPage() {
         return () => video.removeEventListener('seeking', handleSeeking);
     }, [segments, isGlobalSaved]);
 
-    // Initialize video player position on mount (right side)
-    useEffect(() => {
-        if (videoUrlReady && videoPlayerPosition.x === 0 && videoPlayerPosition.y === 0) {
-            // Position on the right side with some padding
-            const padding = 20; // 20px from right edge
-            const topPadding = 100; // 100px from top (below header)
-            const playerWidth = 350; // video player width
-            
-            setVideoPlayerPosition({
-                x: window.innerWidth - playerWidth - padding,
-                y: topPadding
-            });
-        }
-    }, [videoUrlReady, videoPlayerPosition]);
-
-    // Drag handlers for floating video player
-    const handleMouseDown = (e: React.MouseEvent) => {
-        if (!videoPlayerRef.current) return;
-        const rect = videoPlayerRef.current.getBoundingClientRect();
-        setDragOffset({
-            x: e.clientX - rect.left,
-            y: e.clientY - rect.top
-        });
-        setIsDragging(true);
-    };
-
-    useEffect(() => {
-        const handleMouseMove = (e: MouseEvent) => {
-            if (!isDragging) return;
-            
-            const newX = e.clientX - dragOffset.x;
-            const newY = e.clientY - dragOffset.y;
-            
-            // Keep within viewport bounds
-            const maxX = window.innerWidth - 350; // video player width
-            const maxY = window.innerHeight - 220; // video player height
-            
-            setVideoPlayerPosition({
-                x: Math.max(0, Math.min(newX, maxX)),
-                y: Math.max(0, Math.min(newY, maxY))
-            });
-        };
-
-        const handleMouseUp = () => {
-            setIsDragging(false);
-        };
-
-        if (isDragging) {
-            document.addEventListener('mousemove', handleMouseMove);
-            document.addEventListener('mouseup', handleMouseUp);
-        }
-
-        return () => {
-            document.removeEventListener('mousemove', handleMouseMove);
-            document.removeEventListener('mouseup', handleMouseUp);
-        };
-    }, [isDragging, dragOffset]);
 
     // Horizontal scroll handler for speaker pills
     const handleHorizontalScroll = (e: React.WheelEvent<HTMLDivElement>) => {
@@ -878,7 +950,7 @@ export default function TranscriptionViewPage() {
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, role: 'coordinator' | 'speaker') => {
         if (e.target.files && e.target.files.length > 0) {
             const file = e.target.files[0];
-            
+
             // Validate file type (images only)
             if (!file.type.startsWith('image/')) {
                 showSnackbar("Please select an image file");
@@ -894,14 +966,14 @@ export default function TranscriptionViewPage() {
                     return match ? parseInt(match[1], 10) : 0;
                 })
                 .filter(n => !isNaN(n));
-            
+
             const nextNumber = roleNumbers.length > 0 ? Math.max(...roleNumbers) + 1 : 1;
             const speakerName = `${rolePrefix} ${nextNumber}`;
 
             // 1. Optimistic UI Update: Add speaker immediately with a local preview
             const tempId = `uploaded-${Date.now()}-${file.name}`;
             const localPreviewUrl = URL.createObjectURL(file);
-            
+
             const newSpeaker: Speaker = {
                 id: tempId,
                 name: speakerName,
@@ -937,7 +1009,7 @@ export default function TranscriptionViewPage() {
                 }
 
                 const data = await response.json();
-                
+
                 // 3. Finalize: Replace local preview with permanent server URL
                 setSpeakers((prev) => {
                     const updated = prev.map(s => s.id === tempId ? { ...s, avatar: data.url } : s);
@@ -945,7 +1017,7 @@ export default function TranscriptionViewPage() {
                     persistSpeakersToServer(updated);
                     return updated;
                 });
-                
+
                 // Mark as unsaved when new speaker with avatar is added
                 setIsGlobalSaved(false);
             } catch (error: any) {
@@ -991,7 +1063,7 @@ export default function TranscriptionViewPage() {
             }
 
             const data = await response.json();
-            
+
             // 3. Finalize
             setSpeakers((prev) => {
                 const updated = prev.map(s => s.id === id ? { ...s, avatar: data.url } : s);
@@ -999,7 +1071,7 @@ export default function TranscriptionViewPage() {
                 persistSpeakersToServer(updated);
                 return updated;
             });
-            
+
             // Mark as unsaved when avatar changes
             setIsGlobalSaved(false);
         } catch (error: any) {
@@ -1150,11 +1222,11 @@ export default function TranscriptionViewPage() {
     const handleDeleteSegment = (id: string) => {
         if (isGlobalSaved) return;
         if (segments.length === 1) {
-            setSegments([{ 
-                id: "seg-" + Date.now(), 
-                selectedSpeakerId: null, 
+            setSegments([{
+                id: "seg-" + Date.now(),
+                selectedSpeakerId: null,
                 state: null,
-                timestamp: "00:00", 
+                timestamp: "00:00",
                 content: "",
                 startTimeSeconds: 0,
                 createdAt: Date.now()
@@ -1297,122 +1369,6 @@ export default function TranscriptionViewPage() {
         }
     };
 
-    // Save handler
-    const handleGlobalSave = async () => {
-        const transcriptData = segments
-            .filter(seg => seg.content.trim() !== "" || seg.state)
-            .map((seg, index) => {
-                const speaker = speakers.find(s => s.id === seg.selectedSpeakerId);
-                const speakerName = speaker ? speaker.name : (seg.state ? seg.state.replace('_', ' ').toUpperCase() : "Unknown");
-
-                let startTime = seg.startTimeSeconds ?? 0;
-                let endTime = seg.endTimeSeconds ?? (startTime + 5);
-
-                if (!startTime && seg.timestamp) {
-                    startTime = parseTimeToSeconds(seg.timestamp);
-                    endTime = startTime + 5;
-                }
-
-                return {
-                    id: index,
-                    name: speakerName,
-                    time: seg.timestamp || "00:00",
-                    text: seg.content || `[${speakerName}]`,
-                    startTime: startTime,
-                    endTime: endTime,
-                };
-            });
-
-        if (transcriptData.length === 0) {
-            showSnackbar("No transcription content to save");
-            return;
-        }
-
-        setIsSaving(true);
-        try {
-            // Prepare speaker data with avatars
-            const speakerData = speakers.map((speaker) => {
-                // Extract avatar key from URL if it's a Digital Ocean Spaces URL
-                let avatarKey: string | null = null;
-                if (speaker.avatar) {
-                    try {
-                        const url = new URL(speaker.avatar);
-                        const pathParts = url.pathname.split('/').filter(p => p);
-                        if (pathParts.length > 0) {
-                            // Remove 'Equilibrium' prefix if present
-                            const keyParts = pathParts.slice(pathParts[0] === 'Equilibrium' ? 1 : 0);
-                            avatarKey = keyParts.join('/');
-                        }
-                    } catch (e) {
-                        // If URL parsing fails, avatarKey remains null
-                    }
-                }
-
-                return {
-                    name: speaker.name,
-                    speaker_label: speaker.name,
-                    avatar_url: speaker.avatar || null,
-                    avatar_key: avatarKey,
-                    is_moderator: speaker.role === 'coordinator',
-                };
-            });
-
-            // Ensure video URL is included when saving
-            const saveBody: any = {
-                videoId: videoId,
-                transcriptData: transcriptData,
-                transcriptionType: transcript?.transcription_type || "auto",
-                speakerData: speakerData,
-            };
-
-            // Always include video metadata to ensure video URL is stored/updated correctly
-            if (video) {
-                saveBody.videoMetadata = {
-                    source_url: video.source_url,
-                    fileKey: video.fileKey,
-                    source_type: (video as any).source_type,
-                    fileName: video.fileName,
-                };
-
-                // If video doesn't have source_url but has fileKey, try to get presigned URL
-                if (!video.source_url && video.fileKey) {
-                    try {
-                        const keyResponse = await fetch(`/api/videos/${encodeURIComponent(video.fileKey)}`);
-                        if (keyResponse.ok) {
-                            const keyData = await keyResponse.json();
-                            if (keyData.url) {
-                                // Update video metadata with the presigned URL
-                                saveBody.videoMetadata.source_url = keyData.url;
-                                saveBody.videoMetadata.source_type = "s3";
-                            }
-                        }
-                    } catch (err) {
-                        console.error("Failed to get presigned URL:", err);
-                    }
-                }
-            }
-
-            const response = await fetch("/api/transcriptions/save", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(saveBody),
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || "Failed to save transcription");
-            }
-
-            setIsGlobalSaved(true);
-            showSnackbar("Transcription saved successfully!");
-            setTimeout(() => setIsGlobalSaved(false), 2000);
-        } catch (error: any) {
-            console.error("Error saving transcription:", error);
-            showSnackbar(`Failed to save: ${error.message || "Unknown error"}`);
-        } finally {
-            setIsSaving(false);
-        }
-    };
 
     // Handle retranscription (only for auto transcriptions)
     const handleRetranscribe = () => {
@@ -1422,10 +1378,6 @@ export default function TranscriptionViewPage() {
         }
     };
 
-    // Navigate to session (tagging)
-    const handleGoToSession = () => {
-        router.push(`/sessions?videoId=${videoId}`);
-    };
 
     // Get speaker pill style
     const getSpeakerPillStyle = (speakerIndex: number, speakerId: string, segment: TranscriptSegment, role: string) => {
@@ -1480,18 +1432,8 @@ export default function TranscriptionViewPage() {
     }
 
     return (
-        <div className="min-h-[100dvh] w-full bg-gray-50 flex flex-col font-sans text-[#111827] relative">
+        <div className="relative min-h-screen bg-gray-50 flex flex-col font-sans text-[#111827]">
 
-            {/* STYLE BLOCK FOR HIDDEN SCROLLBARS */}
-            <style jsx global>{`
-        .scrollbar-hide::-webkit-scrollbar {
-            display: none;
-        }
-        .scrollbar-hide {
-            -ms-overflow-style: none;
-            scrollbar-width: none;
-        }
-      `}</style>
 
             {/* SNACKBAR */}
             <div
@@ -1504,12 +1446,12 @@ export default function TranscriptionViewPage() {
                 </div>
             </div>
 
-            {/* HEADER & TOP SECTION */}
-            <div className="shrink-0 bg-gray-50 z-30 shadow-sm lg:shadow-none">
+            {/* HEADER & TOP SECTION - STICKY */}
+            <div className="sticky top-0 z-30 shrink-0 bg-white shadow-md border-b border-gray-100">
                 <header className="bg-white border-b border-[#F0F0F0] h-[50px] lg:h-[60px] flex items-center px-4 lg:px-6 justify-between">
                     <div className="flex items-center gap-3 lg:gap-4">
-                        <button 
-                            onClick={() => router.back()} 
+                        <button
+                            onClick={() => router.back()}
                             className="hover:opacity-70 transition flex items-center"
                             aria-label="Go back"
                         >
@@ -1520,42 +1462,66 @@ export default function TranscriptionViewPage() {
                 </header>
 
                 <div className="px-4 lg:px-6 py-2 lg:py-3 flex items-center justify-between h-auto lg:h-[40px]">
-                    <div className="flex items-center gap-3">
-                        <h2 className="text-[18px] lg:text-[20px] font-semibold text-[#111827]">
-                            {video?.fileName || "Transcription Editor"}
-                        </h2>
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                        {isTitleEditing ? (
+                            <input
+                                type="text"
+                                value={title}
+                                onChange={(e) => setTitle(e.target.value)}
+                                onBlur={() => setIsTitleEditing(false)}
+                                onKeyDown={(e) => e.key === 'Enter' && setIsTitleEditing(false)}
+                                className="text-[18px] lg:text-[20px] font-semibold text-[#111827] bg-transparent border-b border-[#00A3AF] focus:outline-none w-full max-w-[400px]"
+                                autoFocus
+                            />
+                        ) : (
+                            <h2
+                                onClick={() => !isGlobalSaved && setIsTitleEditing(true)}
+                                className={`text-[18px] lg:text-[20px] font-semibold text-[#111827] transition truncate ${!isGlobalSaved ? "cursor-pointer hover:text-[#00A3AF]" : ""}`}
+                                title={!isGlobalSaved ? "Click to edit title" : ""}
+                            >
+                                {title || "Transcription Editor"}
+                            </h2>
+                        )}
                         {/* Transcription Type Badge */}
                         <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${isAutoTranscription
-                                    ? "bg-blue-100 text-blue-700"
-                                    : "bg-purple-100 text-purple-700"
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ${isAutoTranscription
+                                ? "bg-blue-100 text-blue-700"
+                                : "bg-purple-100 text-purple-700"
                                 }`}
                         >
                             {isAutoTranscription ? "Auto" : "Manual"}
                         </span>
+
+                        {/* Auto-save Status Indicator */}
+                        <div className="flex items-center gap-1.5 ml-2 shrink-0">
+                            {autoSaveStatus === 'saving' && (
+                                <>
+                                    <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse" />
+                                    <span className="text-[10px] text-gray-500 font-medium">Saving...</span>
+                                </>
+                            )}
+                            {autoSaveStatus === 'saved' && (
+                                <>
+                                    <div className="w-1.5 h-1.5 bg-green-500 rounded-full" />
+                                    <span className="text-[10px] text-gray-500 font-medium">Auto-saved</span>
+                                </>
+                            )}
+                            {autoSaveStatus === 'error' && (
+                                <>
+                                    <div className="w-1.5 h-1.5 bg-red-500 rounded-full" />
+                                    <span className="text-[10px] text-red-500 font-medium">Save Error</span>
+                                </>
+                            )}
+                        </div>
                     </div>
-                    <div className="flex gap-2 lg:gap-3">
-                        {/* Retranscribe - Only for AUTO transcriptions */}
-                        {isAutoTranscription && (
-                            <button
-                                onClick={handleRetranscribe}
-                                disabled={isRetranscribing}
-                                className="flex items-center gap-1.5 px-3 lg:px-4 py-1.5 lg:py-2 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg text-xs lg:text-sm font-medium hover:bg-amber-100 transition disabled:opacity-50"
-                            >
-                                <ArrowPathIcon className="w-4 h-4" />
-                                Retranscribe
-                            </button>
-                        )}
-                        {/* Go to Session */}
+                    <div className="flex gap-2 lg:gap-3 items-center">
+                        {/* Keyboard Shortcuts Trigger */}
                         <button
-                            onClick={handleGoToSession}
-                            className="flex items-center gap-1.5 px-3 lg:px-4 py-1.5 lg:py-2 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-xs lg:text-sm font-medium hover:bg-emerald-100 transition"
+                            onClick={() => setShowShortcuts(true)}
+                            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition"
+                            title="Keyboard Shortcuts"
                         >
-                            <TagIcon className="w-4 h-4" />
-                            Session
-                        </button>
-                        <button className="px-3 lg:px-4 py-1.5 lg:py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-xs lg:text-sm font-medium hover:bg-gray-50 transition">
-                            Export
+                            <QuestionMarkCircleIcon className="w-5 h-5 lg:w-6 lg:h-6" />
                         </button>
                         {/* Edit Mode Toggle */}
                         <button
@@ -1568,17 +1534,28 @@ export default function TranscriptionViewPage() {
                         >
                             {isGlobalSaved ? "Edit" : "View"}
                         </button>
-                        <button
-                            onClick={handleGlobalSave}
-                            disabled={isGlobalSaved || isSaving}
-                            className={`px-3 lg:px-4 py-1.5 lg:py-2 rounded-lg text-xs lg:text-sm font-medium transition shadow-sm
-                        ${isGlobalSaved || isSaving
-                                    ? "bg-gray-300 text-gray-500 cursor-not-allowed"
-                                    : "bg-[#00A3AF] text-white hover:bg-[#008C97]"
-                                }`}
-                        >
-                            {isSaving ? "Saving..." : "Save"}
-                        </button>
+
+                        {/* Retranscribe - Only for AUTO transcriptions */}
+                        {isAutoTranscription && (
+                            <button
+                                onClick={handleRetranscribe}
+                                disabled={isRetranscribing}
+                                className="flex items-center gap-1.5 px-3 lg:px-4 py-1.5 lg:py-2 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg text-xs lg:text-sm font-medium hover:bg-amber-100 transition disabled:opacity-50"
+                            >
+                                <ArrowPathIcon className="w-4 h-4" />
+                                Retranscribe
+                            </button>
+                        )}
+                        {/* Metadata Save Button - Only visible when metadata is modified */}
+                        {title !== initialTitle && (
+                            <button
+                                onClick={handleSaveMetadata}
+                                disabled={isSaving}
+                                className="px-3 lg:px-4 py-1.5 lg:py-2 bg-[#00A3AF] text-white rounded-lg text-xs lg:text-sm font-medium hover:bg-[#008C97] transition shadow-sm disabled:opacity-50"
+                            >
+                                {isSaving ? "Saving..." : "Save"}
+                            </button>
+                        )}
                     </div>
                 </div>
 
@@ -1596,78 +1573,58 @@ export default function TranscriptionViewPage() {
                             />
                         </div>
 
-                        {/* VIDEO PLAYER - PLACEHOLDER (for initial position calculation) */}
-                        <div className="w-full lg:w-[350px] shrink-0 h-full opacity-0 pointer-events-none">
-                            <div className="h-full w-full rounded-2xl overflow-hidden shadow-md bg-black">
+                        {/* VIDEO PLAYER CONTAINER */}
+                        <div className="w-full lg:w-[400px] shrink-0 h-full">
+                            <div className="h-full w-full rounded-2xl overflow-hidden shadow-xl bg-black border border-gray-100 relative">
+                                {/* Playback Speed Indicator */}
+                                {playbackSpeed !== 1 && (
+                                    <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-sm text-white text-[10px] font-bold px-2 py-1 rounded-md z-20 pointer-events-none border border-white/10">
+                                        {playbackSpeed}x Speed
+                                    </div>
+                                )}
+                                {(() => {
+                                    const videoUrl = video?.source_url || video?.fileUrl;
+                                    if (videoUrl && videoUrl.trim()) {
+                                        return (
+                                            <SessionVideoPlayer
+                                                key={`${videoUrl}-${video?.id || ''}`}
+                                                ref={videoRef}
+                                                videoUrl={videoUrl}
+                                                isPlaying={isVideoPlaying}
+                                                onPlayStateChange={async (playing) => {
+                                                    setIsVideoPlaying(playing);
+                                                    if (playing && video?.fileKey) {
+                                                        try {
+                                                            const keyResponse = await fetch(`/api/videos/${encodeURIComponent(video.fileKey)}`);
+                                                            if (keyResponse.ok) {
+                                                                const keyData = await keyResponse.json();
+                                                                if (keyData.url && keyData.url.trim()) {
+                                                                    setVideo(prev => prev ? { ...prev, source_url: keyData.url } : null);
+                                                                    setVideoUrl(keyData.url, video.id);
+                                                                }
+                                                            }
+                                                        } catch (err) {
+                                                            console.error("Failed to refresh presigned URL:", err);
+                                                        }
+                                                    }
+                                                }}
+                                            />
+                                        );
+                                    }
+                                    return (
+                                        <div className="flex items-center justify-center h-full text-gray-400">
+                                            No video available
+                                        </div>
+                                    );
+                                })()}
                             </div>
                         </div>
                     </div>
                 </div>
+            </div>
 
-                {/* FLOATING VIDEO PLAYER */}
-                {videoUrlReady && (
-                    <div
-                        ref={videoPlayerRef}
-                        className="fixed z-50 w-[350px] h-[220px] cursor-move"
-                        style={{
-                            left: videoPlayerPosition.x > 0 ? `${videoPlayerPosition.x}px` : 'auto',
-                            top: videoPlayerPosition.y > 0 ? `${videoPlayerPosition.y}px` : 'auto',
-                        }}
-                        onMouseDown={handleMouseDown}
-                    >
-                        <div className="h-full w-full rounded-2xl overflow-hidden shadow-2xl bg-black border-2 border-gray-300 relative">
-                            {/* Playback Speed Indicator */}
-                            {playbackSpeed !== 1 && (
-                                <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-sm text-white text-[10px] font-bold px-2 py-1 rounded-md z-20 pointer-events-none border border-white/10">
-                                    {playbackSpeed}x Speed
-                                </div>
-                            )}
-                            {(() => {
-                                const videoUrl = video?.source_url || video?.fileUrl;
-                                // Check if videoUrl is a valid non-empty string
-                                if (videoUrl && videoUrl.trim()) {
-                                    return (
-                                        <SessionVideoPlayer
-                                            key={`${videoUrl}-${video?.id || ''}`} // Force re-render when URL or video changes
-                                            ref={videoRef}
-                                            videoUrl={videoUrl}
-                                            isPlaying={isVideoPlaying}
-                                            onPlayStateChange={async (playing) => {
-                                                setIsVideoPlaying(playing);
-                                                
-                                                // If starting to play and we have a fileKey, always refresh the presigned URL
-                                                // Presigned URLs expire after 1 hour, so we should get a fresh one
-                                                if (playing && video?.fileKey) {
-                                                    try {
-                                                        const keyResponse = await fetch(`/api/videos/${encodeURIComponent(video.fileKey)}`);
-                                                        if (keyResponse.ok) {
-                                                            const keyData = await keyResponse.json();
-                                                            if (keyData.url && keyData.url.trim()) {
-                                                                // Update video state with fresh URL
-                                                                setVideo(prev => prev ? { ...prev, source_url: keyData.url } : null);
-                                                                // Update the video URL in session context
-                                                                setVideoUrl(keyData.url, video.id);
-                                                            }
-                                                        }
-                                                    } catch (err) {
-                                                        console.error("Failed to refresh presigned URL:", err);
-                                                    }
-                                                }
-                                            }}
-                                        />
-                                    );
-                                }
-                                return (
-                                    <div className="flex items-center justify-center h-full text-gray-400">
-                                        No video available
-                                    </div>
-                                );
-                            })()}
-                        </div>
-                    </div>
-                )}
 
-                {/* TRANSCRIPT SEGMENTS */}
+            {/* TRANSCRIPT SEGMENTS */}
             <div
                 className="w-full px-4 lg:px-6 py-2 lg:py-4 bg-gray-50"
                 ref={scrollContainerRef}
@@ -1679,7 +1636,7 @@ export default function TranscriptionViewPage() {
                         const isStateSelected = !!segment.state;
                         const isAssigned = isSpeakerSelected || isStateSelected;
                         const hasStartedTyping = segment.content.length > 0;
-                        const isLocked = isGlobalSaved || (!isAssigned && !isGlobalSaved);
+                        const isLocked = isGlobalSaved; // Always editable in edit mode
                         const isLastSegment = index === segments.length - 1;
                         const isActive = activeSegmentId === segment.id;
 
@@ -1691,25 +1648,25 @@ export default function TranscriptionViewPage() {
                         ];
 
                         return (
-            <div
-                key={segment.id}
-                data-segment-id={segment.id}
-                className={`
+                            <div
+                                key={segment.id}
+                                data-segment-id={segment.id}
+                                className={`
                   relative flex flex-col p-3 rounded-xl border bg-white transition-all duration-300
                   ${isGlobalSaved ? 'opacity-80 border-gray-100' : 'opacity-100 border-gray-200 shadow-sm'}
                   ${isActive ? 'ring-2 ring-[#00A3AF] ring-offset-2 bg-[#E0F7FA] border-[#00A3AF] shadow-md' : ''}
                   ${!isAssigned && !isGlobalSaved ? 'border-dashed border-gray-300' : 'border-solid'}
                 `}
-            >
-                {/* TIMER OVERLAY */}
-                {isActive && !isAssigned && speakerSelectionDeadline && !isGlobalSaved && (
-                    <div className="absolute -top-2 left-1/2 -translate-x-1/2 z-40">
-                        <div className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-lg animate-pulse flex items-center gap-1">
-                            <Image src={ClockIcon} alt="clock" width={12} height={12} className="invert brightness-0" />
-                            {Math.ceil((speakerSelectionDeadline - Date.now()) / 1000)}s to assign speaker
-                        </div>
-                    </div>
-                )}
+                            >
+                                {/* TIMER OVERLAY */}
+                                {isActive && !isAssigned && speakerSelectionDeadline && !isGlobalSaved && (
+                                    <div className="absolute -top-2 left-1/2 -translate-x-1/2 z-40">
+                                        <div className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-lg animate-pulse flex items-center gap-1">
+                                            <Image src={ClockIcon} alt="clock" width={12} height={12} className="invert brightness-0" />
+                                            {Math.ceil((speakerSelectionDeadline - Date.now()) / 1000)}s to assign speaker
+                                        </div>
+                                    </div>
+                                )}
 
                                 {!isGlobalSaved && (
                                     <button
@@ -1859,7 +1816,12 @@ export default function TranscriptionViewPage() {
                     <div ref={bottomSpacerRef} className="h-10" />
                 </div>
             </div>
-            </div>
+
+            {/* Modals */}
+            <KeyboardShortcutsModal
+                isOpen={showShortcuts}
+                onClose={() => setShowShortcuts(false)}
+            />
         </div>
     );
 }

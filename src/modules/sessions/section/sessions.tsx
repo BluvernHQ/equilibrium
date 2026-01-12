@@ -554,7 +554,7 @@ export default function Sessions() {
 
     // First pass: collect all master tags by ID
     const itemsWithTags: { itemIndex: number, masterName: string, masterTagId: string }[] = [];
-    
+
     displayItems.forEach((item, itemIndex) => {
       if (item.type !== 'data') return;
       const dataIndex = item.originalIndex!;
@@ -648,10 +648,10 @@ export default function Sessions() {
 
     // Group tags by name and sort by messageIndex (creation order)
     const tagsByName = new Map<string, Array<{ id: string; messageIndex: number; tagIndex: number }>>();
-    
+
     tags.forEach((tag, tagIndex) => {
       const name = tag.master || 'No Master';
-      
+
       // Calculate messageIndex: use primary tag's messageIndex if available,
       // otherwise find the block's position in displayItems
       let messageIndex: number;
@@ -664,7 +664,7 @@ export default function Sessions() {
         // Fallback: use tag's position in array as tiebreaker
         messageIndex = Infinity;
       }
-      
+
       if (!tagsByName.has(name)) {
         tagsByName.set(name, []);
       }
@@ -680,7 +680,7 @@ export default function Sessions() {
         }
         return a.tagIndex - b.tagIndex;
       });
-      
+
       // Assign sequential impression numbers (1, 2, 3...) filling gaps after deletion
       tagList.forEach((tag, index) => {
         indexes[tag.id] = index + 1;
@@ -744,7 +744,7 @@ export default function Sessions() {
       // 2. Calculate DOTTED spines (Same name, different masterTagId) (Rule 2.2)
       // Rule 1.1: Dotted line exists ONLY between master anchors, never extending beyond
       const dottedOffsets: Record<string, { top: number; height: number; masterTagIds: string[]; anchors: Array<{ masterTagId: string; anchorY: number; cardLeft: number }> }> = {};
-      
+
       // Group tags by name to find same-name different-ID connections
       const nameToIds = new Map<string, string[]>();
       Object.keys(masterTagMetadata).forEach(masterTagId => {
@@ -762,38 +762,38 @@ export default function Sessions() {
       nameToIds.forEach((masterTagIds, name) => {
         if (masterTagIds.length > 1) {
           const anchorPositions: Array<{ masterTagId: string; anchorY: number; cardLeft: number }> = [];
-          
+
           masterTagIds.forEach(masterTagId => {
             // Find all root items for this specific master instance
             const items = container.querySelectorAll(`[data-spine-item="${masterTagId}"][data-is-root="true"]`);
             items.forEach(item => {
-                // Find the anchor element (the colored pill) for this specific master instance
-                const anchorEl = item.querySelector('[data-tag-anchor="true"]');
-                if (anchorEl) {
-                  const rect = anchorEl.getBoundingClientRect();
-                  const containerRect = container.getBoundingClientRect();
-                  // Calculate the exact vertical center of the anchor pill (Rule 2: Exact Anchor Points)
-                  const relativeTop = rect.top - containerRect.top + container.scrollTop;
-                  const centerY = relativeTop + (rect.height / 2);
-                  
-                  // Find the card element to get its CSS left position (matches cardLeft calculation)
-                  const cardElement = item.closest('[data-tag-id]') as HTMLElement;
-                  // Use CSS left value: Base 64px + master indentation 20px (matches card rendering)
-                  const cardLeft = 64 + 20;
-                  
-                  anchorPositions.push({
-                    masterTagId,
-                    anchorY: centerY,
-                    cardLeft
-                  });
-                }
+              // Find the anchor element (the colored pill) for this specific master instance
+              const anchorEl = item.querySelector('[data-tag-anchor="true"]');
+              if (anchorEl) {
+                const rect = anchorEl.getBoundingClientRect();
+                const containerRect = container.getBoundingClientRect();
+                // Calculate the exact vertical center of the anchor pill (Rule 2: Exact Anchor Points)
+                const relativeTop = rect.top - containerRect.top + container.scrollTop;
+                const centerY = relativeTop + (rect.height / 2);
+
+                // Find the card element to get its CSS left position (matches cardLeft calculation)
+                const cardElement = item.closest('[data-tag-id]') as HTMLElement;
+                // Use CSS left value: Base 64px + master indentation 20px (matches card rendering)
+                const cardLeft = 64 + 20;
+
+                anchorPositions.push({
+                  masterTagId,
+                  anchorY: centerY,
+                  cardLeft
+                });
+              }
             });
           });
 
           if (anchorPositions.length > 1) {
             // Sort by anchor Y position (top to bottom)
             anchorPositions.sort((a, b) => a.anchorY - b.anchorY);
-            
+
             // Rule 3.1: Dotted line connects FIRST anchor to LAST anchor
             // Rule 1.1: Line exists ONLY between masters, never extending beyond
             const firstAnchorY = Math.round(anchorPositions[0].anchorY);
@@ -2526,37 +2526,31 @@ export default function Sessions() {
 
     // Find all blocks spanned by the selection
     const blockElements = Array.from(document.querySelectorAll('[data-block-id]'));
-    const selectionRanges: SelectionRange[] = [];
-    const blockIds: string[] = [];
+    const initialSelectionRanges: SelectionRange[] = [];
     let firstMessageIndex: number | undefined;
 
     blockElements.forEach((el) => {
       const bId = el.getAttribute('data-block-id')!;
 
       // Check if this block is part of the selection
-      // We check if the range intersects the block element OR if the block contains start/end points
       if (range.intersectsNode(el) || el.contains(range.startContainer) || el.contains(range.endContainer)) {
         let startOffset = 0;
         let endOffset = el.textContent?.length || 0;
 
-        // If this is the start block
         if (el.contains(range.startContainer)) {
           startOffset = getOffsetInBlock(el, range.startContainer, range.startOffset);
         }
 
-        // If this is the end block
         if (el.contains(range.endContainer)) {
           endOffset = getOffsetInBlock(el, range.endContainer, range.endOffset);
         }
 
-        // Only add if there is actual text selected in this block
         if (endOffset > startOffset) {
-          selectionRanges.push({
+          initialSelectionRanges.push({
             blockId: bId,
             startOffset,
             endOffset
           });
-          blockIds.push(bId);
 
           // Find message index for this block
           const item = displayItems.find(i => i.originalData?.blockId === bId);
@@ -2568,20 +2562,76 @@ export default function Sessions() {
     });
 
     // Fallback if discovery failed but we have a direct blockId from the event
-    if (selectionRanges.length === 0 && blockId) {
-      selectionRanges.push({
+    if (initialSelectionRanges.length === 0 && blockId) {
+      initialSelectionRanges.push({
         blockId,
         startOffset: 0,
-        endOffset: text.length // This is a rough fallback
+        endOffset: text.length
       });
-      blockIds.push(blockId);
       firstMessageIndex = messageIndex;
     }
 
-    if (selectionRanges.length === 0) return;
+    if (initialSelectionRanges.length === 0) return;
+
+    // --- Boundary Enforcement Law ---
+    // A selection MUST NOT cross Section or Subsection boundaries.
+
+    const firstBlockId = initialSelectionRanges[0].blockId;
+    const firstBlockItem = displayItems.find(i => i.originalData?.blockId === firstBlockId);
+    const startIdx = firstBlockItem?.originalIndex ?? -1;
+
+    // Find containing section/subsection for the start point
+    const activeSection = dbSections.find(s =>
+      startIdx >= s.startBlockIndex &&
+      (s.endBlockIndex === null || startIdx <= s.endBlockIndex)
+    );
+
+    const activeSubsection = activeSection?.subsections?.find(sub =>
+      startIdx >= sub.startBlockIndex &&
+      (sub.endBlockIndex === null || startIdx <= sub.endBlockIndex)
+    );
+
+    // Filter ranges to stay within these boundaries
+    const filteredSelectionRanges: SelectionRange[] = [];
+    const finalBlockIds: string[] = [];
+    let textAfterFiltering = "";
+    let boundaryReached = false;
+
+    for (const sRange of initialSelectionRanges) {
+      if (boundaryReached) break;
+
+      const item = displayItems.find(i => i.originalData?.blockId === sRange.blockId);
+      const idx = item?.originalIndex ?? -1;
+
+      // Check if block is still within the SAME section
+      const isInSection = activeSection
+        ? (idx >= activeSection.startBlockIndex && (activeSection.endBlockIndex === null || idx <= activeSection.endBlockIndex))
+        : !dbSections.some(s => idx >= s.startBlockIndex && (s.endBlockIndex === null || idx <= s.endBlockIndex));
+
+      // Check if block is still within the SAME subsection
+      const isInSubsection = activeSubsection
+        ? (idx >= activeSubsection.startBlockIndex && (activeSubsection.endBlockIndex === null || idx <= activeSubsection.endBlockIndex))
+        : !activeSection?.subsections?.some(sub => idx >= sub.startBlockIndex && (sub.endBlockIndex === null || idx <= sub.endBlockIndex));
+
+      if (isInSection && isInSubsection) {
+        filteredSelectionRanges.push(sRange);
+        finalBlockIds.push(sRange.blockId);
+
+        const blockEl = blockElements.find(el => el.getAttribute('data-block-id') === sRange.blockId);
+        if (blockEl) {
+          const blockText = blockEl.textContent || "";
+          textAfterFiltering += blockText.substring(sRange.startOffset, sRange.endOffset) + " ";
+        }
+      } else {
+        boundaryReached = true;
+      }
+    }
+
+    const finalText = textAfterFiltering.trim();
+    if (filteredSelectionRanges.length === 0 || !finalText) return;
 
     // Check if this selection already exists in pending
-    const selectionKey = JSON.stringify(selectionRanges);
+    const selectionKey = JSON.stringify(filteredSelectionRanges);
     const exists = pending.some(p => JSON.stringify(p.selectionRanges) === selectionKey);
     if (exists) {
       window.getSelection()?.removeAllRanges();
@@ -2591,7 +2641,7 @@ export default function Sessions() {
     // Calculate vertical offset relative to the first block element
     let verticalOffset = 0;
     const rect = range.getBoundingClientRect();
-    const firstBlockEl = document.querySelector(`[data-block-id="${selectionRanges[0].blockId}"]`);
+    const firstBlockEl = document.querySelector(`[data-block-id="${filteredSelectionRanges[0].blockId}"]`);
     if (firstBlockEl) {
       const blockRect = firstBlockEl.getBoundingClientRect();
       verticalOffset = rect.top - blockRect.top;
@@ -2600,10 +2650,10 @@ export default function Sessions() {
     const newEntry: PendingEntry = {
       id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
       messageIndex: firstMessageIndex ?? messageIndex,
-      blockIds,
-      text,
-      selectedText: text,
-      selectionRanges,
+      blockIds: finalBlockIds,
+      text: finalText,
+      selectedText: finalText,
+      selectionRanges: filteredSelectionRanges,
       primaryInput: "",
       primaryList: [],
       verticalOffset,
@@ -2623,9 +2673,9 @@ export default function Sessions() {
 
 
     // Track all highlighted block IDs
-    setHighlightedBlockIds(prev => {
+    setHighlightedBlockIds((prev: Set<string>) => {
       const next = new Set(prev);
-      blockIds.forEach(id => next.add(id));
+      finalBlockIds.forEach((id: string) => next.add(id));
       return next;
     });
 
@@ -2760,6 +2810,32 @@ export default function Sessions() {
 
     // Clear input value but keep it open for adding more tags
     setSecondaryInput({ entryId, primaryIndex, value: '' });
+  };
+
+  const removePrimaryTag = async (entryId: string, primaryIndex: number) => {
+    // 1. Handle saved tag (database update logic via modal)
+    const tag = tags.find(t => t.id === entryId);
+    if (tag) {
+      const primary = tag.primaryList[primaryIndex];
+      if (primary) {
+        setDeleteState({
+          isOpen: true,
+          type: 'primary',
+          tagId: entryId,
+          primaryIndex: primaryIndex,
+          impressionId: primary.impressionId || ''
+        });
+        return;
+      }
+    }
+
+    // 2. Handle pending tag (state update directly)
+    setPending(prev => prev.map(p => {
+      if (p.id !== entryId) return p;
+
+      const newPrimaryList = p.primaryList.filter((_, idx) => idx !== primaryIndex);
+      return { ...p, primaryList: newPrimaryList };
+    }));
   };
 
   const removeSecondaryTag = async (entryId: string, primaryIndex: number, secondaryIndex: number) => {
@@ -3195,15 +3271,15 @@ export default function Sessions() {
     // Create SEPARATE TagItems for DIFFERENT selections to allow independent positioning
     const newTags: TagItem[] = activeEntries.map((p, pIdx) => {
       const firstBlockId = p.blockId || (p.blockIds && p.blockIds[0]) || "";
-      
+
       // Find matching saved impression
       const savedImp = savedImpressions.find(imp => {
         const impBlockIds = imp.blockIds || [];
-        
+
         // Match by block ID overlap
         const hasBlockOverlap = (p.blockId && impBlockIds.includes(p.blockId)) ||
-                               (p.blockIds && p.blockIds.some(id => impBlockIds.includes(id)));
-        
+          (p.blockIds && p.blockIds.some(id => impBlockIds.includes(id)));
+
         if (p.primaryList.length > 0) {
           // If has primaries, match by first primary name
           return imp.primaryTagName === p.primaryList[0]?.value && hasBlockOverlap;
@@ -3621,7 +3697,7 @@ export default function Sessions() {
     // Collect ALL impression IDs from all related distinct UI items
     const impressionIds = relatedTags.flatMap(t => {
       const ids: string[] = [];
-      
+
       // 1. If it has primary tags, collect those impression IDs
       if (t.primaryList && t.primaryList.length > 0) {
         t.primaryList.forEach(p => {
@@ -3654,7 +3730,7 @@ export default function Sessions() {
       try {
         const impressionIds = deleteState.impressionId.split(',').filter(Boolean);
         console.log(`Deleting ${impressionIds.length} impressions:`, impressionIds);
-        
+
         // Execute deletions in parallel
         const results = await Promise.all(impressionIds.map(async impId => {
           try {
@@ -3670,7 +3746,7 @@ export default function Sessions() {
             return false;
           }
         }));
-        
+
         const successCount = results.filter(Boolean).length;
         console.log(`Successfully deleted ${successCount}/${impressionIds.length} impressions`);
       } catch (error) {
@@ -3711,7 +3787,7 @@ export default function Sessions() {
           return true;
         });
       });
-      
+
       // Update visibleMasterIds
       if (masterTagIdToDelete) {
         setVisibleMasterIds(prev => prev.filter(id => id !== masterTagIdToDelete));
@@ -3745,7 +3821,7 @@ export default function Sessions() {
             ...t,
             primaryList: newPrimaryList,
             blockIds: [...new Set(remainingBlockIds)],
-            allText: t.allText 
+            allText: t.allText
           };
         });
 
@@ -3754,7 +3830,7 @@ export default function Sessions() {
           t.primaryList.length > 0 || (t.selectionRanges && t.selectionRanges.length > 0)
         );
       });
-      
+
       // Update highlights immediately
       setHighlightedBlockIds(prev => {
         const remaining = tags.flatMap(t => {
@@ -3767,9 +3843,9 @@ export default function Sessions() {
         return new Set(remaining);
       });
     }
-    
+
     setDeleteState({ ...deleteState, isOpen: false });
-    setActiveMasterTagId(null); 
+    setActiveMasterTagId(null);
     setEditingMasterName(null);
   };
 
@@ -3825,7 +3901,7 @@ export default function Sessions() {
   }, []);
 
   return (
-    <div className="flex h-full w-full bg-[#F9FAFB]">
+    <div className="flex h-screen w-full bg-[#F9FAFB]">
 
       {/* --- TOAST NOTIFICATION --- */}
       {toast && (
@@ -3967,7 +4043,7 @@ export default function Sessions() {
       />
 
       <main className="flex-1 flex flex-col h-full overflow-hidden">
-        <header className="w-full h-[60px] bg-white border-b border-[#F0F0F0] flex items-center justify-between px-5 shrink-0">
+        <header className="sticky top-0 z-50 w-full h-[60px] bg-white border-b border-[#F0F0F0] flex items-center justify-between px-5 shrink-0">
           <div className="flex items-center gap-3">
             <button
               onClick={() => router.back()}
@@ -4557,16 +4633,16 @@ export default function Sessions() {
                       // CRITICAL: Use masterTagId for connection logic (not name)
                       // Rule: Solid line = same masterTagId, No connection = different masterTagId
                       // Same name but different ID = separate masters (no connection by default)
-                    const masterTagId = tag.masterTagId || tag.id;
-                    const meta = masterTagMetadata[masterTagId];
-                    // Division of Lines: Offset solid lines within the same lane to avoid collision
-                    const laneBaseLeft = (meta?.uniqueIndex || 0) * LANE_WIDTH + 12;
-                    // First master is offset by 4px, subsequent ones by 6px increments
-                    const laneOffset = 4 + (meta?.idIndexWithinLane || 0) * 6; 
-                    const masterLaneLeft = laneBaseLeft + laneOffset;
-                    
-                    const tagColor = tag.masterColor || getMasterTagColor(masterTagId || tag.master || '');
-                    const isDuplicateName = meta?.hasDuplicateName || false;
+                      const masterTagId = tag.masterTagId || tag.id;
+                      const meta = masterTagMetadata[masterTagId];
+                      // Division of Lines: Offset solid lines within the same lane to avoid collision
+                      const laneBaseLeft = (meta?.uniqueIndex || 0) * LANE_WIDTH + 12;
+                      // First master is offset by 4px, subsequent ones by 6px increments
+                      const laneOffset = 4 + (meta?.idIndexWithinLane || 0) * 6;
+                      const masterLaneLeft = laneBaseLeft + laneOffset;
+
+                      const tagColor = tag.masterColor || getMasterTagColor(masterTagId || tag.master || '');
+                      const isDuplicateName = meta?.hasDuplicateName || false;
 
                       // Check if this is the first occurrence
                       const isFirstRowForTag = itemIndex === meta?.firstItemIndex;
@@ -4620,21 +4696,21 @@ export default function Sessions() {
                           <div className="flex flex-col gap-0.5 bg-white rounded-lg border border-gray-100 shadow-sm overflow-hidden">
                             {/* 1. Header Logic: Rendered ONCE per tag group if it's the root */}
                             <React.Fragment>
-                               {/* Horizontal Stem for the card's first row */}
-                               {/* Division of Lines: Horizontal stems start from the base lane position to bridge dotted spine */}
-                               <div
-                                 className="absolute h-[1.5px] pointer-events-none"
-                                 style={{
-                                   // Start from the base lane (where the dotted spine is)
-                                   left: `${-(64 + cardIndentation - laneBaseLeft)}px`,
-                                   // Width extends from base lane to the card edge (0px)
-                                   width: `${64 + cardIndentation - laneBaseLeft}px`,
-                                   top: '18px',
-                                   backgroundColor: tagColor,
-                                   opacity: 0.4,
-                                   backgroundImage: 'none'
-                                 }}
-                               />
+                              {/* Horizontal Stem for the card's first row */}
+                              {/* Division of Lines: Horizontal stems start from the base lane position to bridge dotted spine */}
+                              <div
+                                className="absolute h-[1.5px] pointer-events-none"
+                                style={{
+                                  // Start from the base lane (where the dotted spine is)
+                                  left: `${-(64 + cardIndentation - laneBaseLeft)}px`,
+                                  // Width extends from base lane to the card edge (0px)
+                                  width: `${64 + cardIndentation - laneBaseLeft}px`,
+                                  top: '18px',
+                                  backgroundColor: tagColor,
+                                  opacity: 0.4,
+                                  backgroundImage: 'none'
+                                }}
+                              />
 
 
                               {shouldShowHeader && (
@@ -4935,7 +5011,7 @@ export default function Sessions() {
                               backgroundImage: `repeating-linear-gradient(180deg, ${connectionColor} 0px, ${connectionColor} 3px, transparent 3px, transparent 7px)`,
                               backgroundSize: '1.5px 7px',
                               backgroundRepeat: 'repeat-y',
-                              opacity: 0.4 
+                              opacity: 0.4
                             }}
                           />
                         </div>
@@ -5031,7 +5107,7 @@ export default function Sessions() {
                                         </div>
                                       )}
                                     </div>
-                                    <button onClick={handleMasterAddClick} className="px-3 py-2 bg-[#00A3AF] text-white rounded-lg text-sm font-medium">Add</button>
+                                    <button onClick={handleMasterAddClick} className="px-4 py-2 bg-[#00A3AF] text-white rounded-lg text-sm font-medium">+</button>
                                     <button onClick={handleMasterCancelAction} className="px-3 py-2 border text-gray-600 rounded-lg text-sm bg-white hover:bg-gray-50">Cancel</button>
                                   </div>
                                 </div>
@@ -5206,7 +5282,7 @@ export default function Sessions() {
                                       </div>
                                     )}
                                   </div>
-                                  <button onClick={() => handleInitiateAddPrimary(entry.id)} className="px-3 py-2 bg-[#00A3AF] text-white rounded-lg text-sm font-medium">Add</button>
+                                  <button onClick={() => handleInitiateAddPrimary(entry.id)} className="px-4 py-2 bg-[#00A3AF] text-white rounded-lg text-sm font-medium">+</button>
                                 </div>
                               </div>
                             )}
@@ -5247,6 +5323,13 @@ export default function Sessions() {
                                             ) : (
                                               <div className="flex items-center gap-2 overflow-hidden">
                                                 <span className="font-semibold text-gray-700 truncate">{p.displayName || p.value}</span>
+                                                <button
+                                                  onClick={(e) => { e.stopPropagation(); removePrimaryTag(entry.id, pIndex); }}
+                                                  className="p-1 hover:bg-red-50 rounded text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                                                  title="Remove primary tag"
+                                                >
+                                                  <XMarkIcon className="w-3.5 h-3.5" />
+                                                </button>
 
                                                 {/* Inline Secondary Tags Display for Pending */}
                                                 {p.secondaryTags && p.secondaryTags.length > 0 && (

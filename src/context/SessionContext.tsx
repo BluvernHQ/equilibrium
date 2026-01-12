@@ -54,7 +54,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const [uploadStatus, setUploadStatus] = useState<UploadStatus>("idle");
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [uploadProgress, setUploadProgress] = useState(0);
-    
+
     // Abort controller for cancelling transcription
     const transcriptionAbortController = useRef<AbortController | null>(null);
 
@@ -115,7 +115,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             setSpacesUrl(data.url);
             setUploadStatus("success");
             console.log("File uploaded to Spaces:", data.url);
-            
+
             // Store video metadata for later database save (when transcribing)
             if (data.videoMetadata) {
                 setVideoMetadata(data.videoMetadata);
@@ -127,12 +127,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                     fileUrl: data.url,
                 });
             }
-            
+
             // If videoId is provided (from existing video), use it
             if (data.videoId) {
                 setVideoId(data.videoId);
             }
-            
+
             // Reset success status after 3 seconds
             setTimeout(() => {
                 setUploadStatus("idle");
@@ -140,7 +140,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         } catch (error: any) {
             console.error("Upload error:", error);
             setUploadProgress(0);
-            
+
             // Handle different error types
             let errorMessage = "Failed to upload file to storage";
             if (error.name === "TypeError" && error.message.includes("fetch")) {
@@ -148,7 +148,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             } else if (error.message) {
                 errorMessage = error.message;
             }
-            
+
             setUploadError(errorMessage);
             setUploadStatus("error");
         } finally {
@@ -178,7 +178,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
         try {
             const formData = new FormData();
-            
+
             if (file) {
                 // If we have a file object, use it (upload flow)
                 formData.append("file", file);
@@ -248,7 +248,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                     formattedData.forEach(entry => {
                         if (entry.name) uniqueSpeakerNames.add(entry.name);
                     });
-                    
+
                     const speakerData = Array.from(uniqueSpeakerNames).map(name => ({
                         name,
                         speaker_label: name,
@@ -285,7 +285,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                         } catch (e) {
                             // URL parsing failed, use default
                         }
-                        
+
                         saveBody.videoMetadata = {
                             fileName: extractedFileName,
                             source_url: url,
@@ -308,7 +308,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                                 setVideoId(newVideoId);
                             }
 
-                            // Update local storage for View Session compatibility
+                            // Update local storage for Tagging compatibility
                             if (typeof window !== 'undefined' && (newVideoId || videoId)) {
                                 const vId = newVideoId || videoId;
                                 const manualSegments = formattedData.map((entry: any, idx: number) => ({
@@ -364,7 +364,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             transcriptionAbortController.current = null;
         }
     };
-    
+
     const stopTranscription = () => {
         if (transcriptionAbortController.current) {
             transcriptionAbortController.current.abort();
@@ -378,7 +378,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setSpacesUrl(url);
         // Clear transcription data when setting a new video
         setTranscriptionData(null);
-        
+
         // If videoId is provided, use it; otherwise try to find it from URL
         let finalVideoId = videoIdParam;
         if (!finalVideoId) {
@@ -387,8 +387,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                 const response = await fetch("/api/videos/db");
                 if (response.ok) {
                     const data = await response.json();
-                    const video = data.videos?.find((v: any) => 
-                        v.fileUrl === url || 
+                    const video = data.videos?.find((v: any) =>
+                        v.fileUrl === url ||
                         v.source_url === url ||
                         (v.fileUrl && v.fileUrl.includes(url.split('/').pop() || '')) ||
                         (v.source_url && v.source_url.includes(url.split('/').pop() || ''))
@@ -401,10 +401,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                 console.error("Failed to fetch video ID:", error);
             }
         }
-        
+
         if (finalVideoId) {
             setVideoId(finalVideoId);
-            
+
             // Try to load existing transcription
             try {
                 const transcriptionResponse = await fetch(`/api/transcriptions/load/${finalVideoId}`);

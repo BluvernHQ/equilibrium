@@ -34,13 +34,13 @@ export default function Recordings() {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       let clickedInside = false;
-      
+
       menuRefs.current.forEach((menuElement) => {
         if (menuElement && menuElement.contains(target)) {
           clickedInside = true;
         }
       });
-      
+
       if (!clickedInside) {
         setOpenMenuId(null);
       }
@@ -313,8 +313,8 @@ export default function Recordings() {
                 className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-lg transition-shadow relative"
               >
                 {/* Three-dot menu button */}
-                <div 
-                  className="absolute top-2 right-2 z-10" 
+                <div
+                  className="absolute top-2 right-2 z-10"
                   ref={(el) => {
                     if (el) {
                       menuRefs.current.set(video.key, el);
@@ -333,7 +333,7 @@ export default function Recordings() {
                   >
                     <EllipsisVerticalIcon className="w-5 h-5 text-gray-600" />
                   </button>
-                  
+
                   {/* Dropdown menu */}
                   {openMenuId === video.key && (
                     <div className="absolute right-0 mt-1 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-20">
@@ -365,7 +365,7 @@ export default function Recordings() {
                   )}
                 </div>
 
-                <div 
+                <div
                   className="relative w-full h-48 bg-[#E0F7FA] rounded-lg flex items-center justify-center mb-3 overflow-hidden group cursor-pointer"
                   onClick={() => setSelectedVideo(video)}
                 >
@@ -424,7 +424,7 @@ export default function Recordings() {
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
                         </svg>
-                        View Session
+                        Tagging
                       </button>
                     </div>
                   )}

@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { LockClosedIcon, LockOpenIcon, TrashIcon, ExclamationCircleIcon, ArrowRightIcon } from "@heroicons/react/24/solid";
+import { LockClosedIcon, LockOpenIcon, TrashIcon, ExclamationCircleIcon, ArrowRightIcon, QuestionMarkCircleIcon } from "@heroicons/react/24/solid";
+import KeyboardShortcutsModal from "../components/keyboard-shortcuts-modal";
 import SpeakersCarousel, { Speaker } from "../components/speakers-carousel";
 import SessionVideoPlayer from "../components/session-video-player";
 import Image from "next/image";
@@ -83,16 +84,17 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
     }
   }, [videoId]);
   const [isGlobalSaved, setIsGlobalSaved] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const [speakerCreationTriggerSegmentId, setSpeakerCreationTriggerSegmentId] = useState<string | null>(null);
   const [showNavigationAfterSave, setShowNavigationAfterSave] = useState(false);
   const [savedVideoId, setSavedVideoId] = useState<string | null>(null);
-  
+
   // Strict Behavioral States
   const [playbackMode, setPlaybackMode] = useState<'locked' | 'unlocked'>('locked');
   const [speakerSelectionDeadline, setSpeakerSelectionDeadline] = useState<number | null>(null);
-  
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
 
@@ -273,7 +275,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
                 createdAt: Date.now()
               }));
               setSegments(converted);
-              
+
               if (data.speakers) {
                 const convertedSpeakers: Speaker[] = data.speakers.map((s: any) => ({
                   id: s.id,
@@ -307,7 +309,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
       const now = Date.now();
       const video = videoRef.current;
       if (!video) return;
-      
+
       // 1. Initial Speaker Prerequisite check (at least one speaker must exist)
       if (speakers.length === 0) {
         if (!video.paused) {
@@ -340,7 +342,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
           video.pause();
           setIsVideoPlaying(false);
           showSnackbar("Playback paused: Select a speaker or state to continue");
-          
+
           // Focus the unassigned segment for convenience
           const element = document.querySelector(`[data-segment-id="${activeSegment.id}"] textarea`) as HTMLTextAreaElement;
           if (element) element.focus();
@@ -352,7 +354,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
       // 3. Forward Playback Restriction (Prevent skipping ahead of the current unassigned block)
       const MAX_FORWARD_WINDOW = 10;
       const currentBlockStart = activeSegment.startTimeSeconds || 0;
-      
+
       if (!isAssigned && currentTime > currentBlockStart + MAX_FORWARD_WINDOW) {
         video.currentTime = currentBlockStart + MAX_FORWARD_WINDOW;
         if (!video.paused) {
@@ -481,7 +483,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, role: 'coordinator' | 'speaker') => {
     if (e.target.files && e.target.files.length > 0) {
       const file = e.target.files[0];
-      
+
       // Calculate next number based on role (Moderator vs Speaker)
       const rolePrefix = role === 'coordinator' ? 'Moderator' : 'Speaker';
       const roleNumbers = speakers
@@ -491,14 +493,14 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
           return match ? parseInt(match[1], 10) : 0;
         })
         .filter(n => !isNaN(n));
-      
+
       const nextNumber = roleNumbers.length > 0 ? Math.max(...roleNumbers) + 1 : 1;
       const speakerName = `${rolePrefix} ${nextNumber}`;
 
       // 1. Optimistic UI Update: Add speaker immediately with a local preview
       const tempId = `uploaded-${Date.now()}-${file.name}`;
       const localPreviewUrl = URL.createObjectURL(file);
-      
+
       const newSpeaker: Speaker = {
         id: tempId,
         name: speakerName,
@@ -510,7 +512,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
 
       setSpeakers((prev) => {
         const updated = [...prev, newSpeaker];
-        
+
         // If this was triggered by a specific segment, select this speaker for it
         if (speakerCreationTriggerSegmentId) {
           setSegments(prevSegments => {
@@ -520,9 +522,9 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
                 if (!capturedTimestamp && videoRef.current) {
                   capturedTimestamp = formatTime(videoRef.current.currentTime);
                 }
-                return { 
-                  ...seg, 
-                  selectedSpeakerId: tempId, 
+                return {
+                  ...seg,
+                  selectedSpeakerId: tempId,
                   state: null,
                   timestamp: capturedTimestamp
                 };
@@ -690,7 +692,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
     setSegments((prev) => {
       const updated = prev.map((seg) => {
         if (seg.id !== segmentId) return seg;
-        
+
         // Mutually exclusive: selecting a speaker clears any state
         const newSelection = seg.selectedSpeakerId === speakerId ? null : speakerId;
 
@@ -771,17 +773,17 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
   const handleDeleteSegment = (id: string) => {
     if (isGlobalSaved) return;
     setSegments((prev) => {
-      const updated = prev.length === 1 
-        ? [{ 
-            id: "seg-" + Date.now(), 
-            selectedSpeakerId: null, 
-            state: null, 
-            timestamp: "00:00", 
-            content: "", 
-            status: 'draft' as const, 
-            startTimeSeconds: 0,
-            createdAt: Date.now() 
-          }]
+      const updated = prev.length === 1
+        ? [{
+          id: "seg-" + Date.now(),
+          selectedSpeakerId: null,
+          state: null,
+          timestamp: "00:00",
+          content: "",
+          status: 'draft' as const,
+          startTimeSeconds: 0,
+          createdAt: Date.now()
+        }]
         : prev.filter((seg) => seg.id !== id);
       saveToLocal(updated, speakers);
       return updated;
@@ -795,7 +797,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
       .map((seg, index) => {
         const speaker = speakers.find(s => s.id === seg.selectedSpeakerId);
         const speakerName = speaker ? speaker.name : (seg.state ? seg.state.replace('_', ' ').toUpperCase() : "Unknown");
-        
+
         // Parse timestamp if available
         let startTime = seg.startTimeSeconds ?? 0;
         let endTime = seg.endTimeSeconds ?? (startTime + 5);
@@ -871,7 +873,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
       } else {
         // If no videoId, create or find video record from Digital Ocean Spaces URL
         const videoUrl = spacesUrl || sessionMediaUrl;
-        
+
         if (!videoUrl) {
           showSnackbar("No video URL available. Please select a video first.");
           return;
@@ -976,7 +978,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
 
   const persistSpeakersToServer = async (currentSpeakers: Speaker[]) => {
     if (!videoId) return;
-    
+
     try {
       const speakerData = currentSpeakers.map((speaker) => {
         let avatarKey: string | null = null;
@@ -1036,12 +1038,12 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
 
   const handleKeyDown = async (e: React.KeyboardEvent<HTMLTextAreaElement>, segmentId: string, index: number) => {
     if (isGlobalSaved) return;
-    
+
     const isLastSegment = index === segments.length - 1;
 
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      
+
       const currentSegment = segments[index];
       const video = videoRef.current;
 
@@ -1057,32 +1059,32 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
 
       // 2. Prepare updated segments
       const currentTime = video ? video.currentTime : (currentSegment.startTimeSeconds || 0) + 5;
-      
+
       let nextSegments: TranscriptSegment[];
-      
+
       if (isLastSegment) {
         const newId = `seg-${Date.now()}`;
         nextSegments = [
-          ...segments.map(s => s.id === segmentId ? { 
-            ...s, 
+          ...segments.map(s => s.id === segmentId ? {
+            ...s,
             status: 'committed' as const,
             lastSavedAt: Date.now(),
             endTimeSeconds: currentTime
           } : s),
-          { 
-            id: newId, 
-            selectedSpeakerId: null, 
+          {
+            id: newId,
+            selectedSpeakerId: null,
             state: null,
-            timestamp: formatTime(currentTime), 
-            content: "", 
+            timestamp: formatTime(currentTime),
+            content: "",
             status: 'draft',
             startTimeSeconds: currentTime,
             createdAt: Date.now()
           }
         ];
       } else {
-        nextSegments = segments.map(s => s.id === segmentId ? { 
-          ...s, 
+        nextSegments = segments.map(s => s.id === segmentId ? {
+          ...s,
           status: 'committed' as const,
           lastSavedAt: Date.now(),
           endTimeSeconds: currentTime
@@ -1119,7 +1121,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
             .map((seg, idx) => {
               const speaker = speakers.find(s => s.id === seg.selectedSpeakerId);
               const speakerName = speaker ? speaker.name : (seg.state ? seg.state.replace('_', ' ').toUpperCase() : "Unknown");
-              
+
               return {
                 id: idx,
                 name: speakerName,
@@ -1144,7 +1146,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
           console.error("Auto-save to server failed:", error);
         }
       };
-      
+
       if (videoId) {
         saveTranscript();
       }
@@ -1230,7 +1232,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
                   onClick={() => setShowNavigationAfterSave(false)}
                   className="w-full px-4 py-3 bg-blue-50 text-[#00A3AF] border border-[#00A3AF] rounded-lg font-medium hover:bg-blue-100 transition flex items-center justify-center gap-2"
                 >
-                  View Session
+                  Tagging
                   <ArrowRightIcon className="w-4 h-4" />
                 </Link>
                 <button
@@ -1249,8 +1251,8 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
       <div className="shrink-0 bg-gray-50 z-30 shadow-sm lg:shadow-none">
         <header className="bg-white border-b border-[#F0F0F0] h-[50px] lg:h-[60px] flex items-center px-4 lg:px-6 justify-between">
           <div className="flex items-center gap-3 lg:gap-4">
-            <button 
-              onClick={() => router.back()} 
+            <button
+              onClick={() => router.back()}
               className="hover:opacity-70 transition flex items-center"
               aria-label="Go back"
             >
@@ -1266,8 +1268,8 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
             <button
               onClick={togglePlaybackMode}
               className={`px-3 py-1 rounded-full text-xs font-bold transition-all flex items-center gap-2 border
-                ${playbackMode === 'unlocked' 
-                  ? "bg-amber-100 text-amber-700 border-amber-300 shadow-inner" 
+                ${playbackMode === 'unlocked'
+                  ? "bg-amber-100 text-amber-700 border-amber-300 shadow-inner"
                   : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50 shadow-sm"
                 }`}
             >
@@ -1286,11 +1288,11 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
           </div>
           <div className="flex gap-2 lg:gap-3">
             {videoId && (
-              <Link 
+              <Link
                 href={`/transcription/${videoId}`}
                 className="px-3 lg:px-4 py-1.5 lg:py-2 bg-blue-50 text-[#00A3AF] border border-[#00A3AF] rounded-lg text-xs lg:text-sm font-medium hover:bg-blue-100 transition flex items-center gap-2"
               >
-                View Session
+                View Transcription
                 <ArrowRightIcon className="w-4 h-4" />
               </Link>
             )}
@@ -1393,7 +1395,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
                 )}
 
                 {playbackMode === 'unlocked' && (
-                  <div 
+                  <div
                     className="absolute inset-0 z-40 cursor-pointer flex flex-col items-center justify-center bg-gray-50/10 backdrop-blur-[0.5px] rounded-xl"
                     onClick={togglePlaybackMode}
                   >
@@ -1511,7 +1513,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
 
                 <div className="relative group">
                   {!isAssigned && !isGlobalSaved && (
-                    <div 
+                    <div
                       className="absolute inset-0 z-10 flex items-center justify-center bg-gray-50/20 backdrop-blur-[0.5px] rounded-lg cursor-pointer"
                       onClick={() => showSnackbar("Please assign a speaker or state to continue")}
                     >
