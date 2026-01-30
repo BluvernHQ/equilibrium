@@ -59,7 +59,11 @@ export const BranchTagChip: React.FC<BranchTagChipProps> = ({
                     onBlur={handleSave}
                     className="text-[10px] w-20 outline-none bg-transparent font-medium"
                 />
-                <button onMouseDown={handleSave} className="text-emerald-500 hover:text-emerald-600">
+                <button 
+                    onMouseDown={handleSave} 
+                    className="text-emerald-500 hover:text-emerald-600"
+                    title="Save branch tag"
+                >
                     <CheckIcon className="w-3 h-3" />
                 </button>
             </div>
@@ -80,6 +84,7 @@ export const BranchTagChip: React.FC<BranchTagChipProps> = ({
                     onDelete();
                 }}
                 className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-all duration-200"
+                title="Delete branch tag"
             >
                 <XMarkIcon className="w-2.5 h-2.5" />
             </button>

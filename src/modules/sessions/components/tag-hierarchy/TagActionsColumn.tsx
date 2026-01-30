@@ -20,6 +20,8 @@ interface TagActionsColumnProps {
     onAdd?: () => void;
     onAddPrimary?: () => void;
     hideComment?: boolean;
+    addButtonTitle?: string; // Custom title for the add button (defaults to "Add branch tag")
+    saveButtonTitle?: string; // Custom title for the save button
 }
 
 /**
@@ -36,6 +38,8 @@ export const TagActionsColumn: React.FC<TagActionsColumnProps> = ({
     onAdd,
     onAddPrimary,
     hideComment = false,
+    addButtonTitle,
+    saveButtonTitle,
 }) => {
     if (isEditing) {
         return (
@@ -55,7 +59,7 @@ export const TagActionsColumn: React.FC<TagActionsColumnProps> = ({
                     <button
                         onClick={(e) => { e.stopPropagation(); onAdd(); }}
                         className="p-1 text-gray-400 hover:text-[#00A3AF] hover:bg-cyan-50 rounded transition-colors"
-                        title="Add branch tag"
+                        title={addButtonTitle || "Add branch tag"}
                     >
                         <PlusIcon className="w-3.5 h-3.5" />
                     </button>
@@ -72,7 +76,7 @@ export const TagActionsColumn: React.FC<TagActionsColumnProps> = ({
                 <button
                     onClick={onSave}
                     className="p-1 text-white bg-emerald-500 hover:bg-emerald-600 rounded transition-colors shadow-sm"
-                    title="Close Master (Auto-Saves)"
+                    title={saveButtonTitle || "Close Master (Auto-Saves)"}
                 >
                     <CheckIcon className="w-4 h-4 stroke-2" />
                 </button>
@@ -96,7 +100,7 @@ export const TagActionsColumn: React.FC<TagActionsColumnProps> = ({
                 <button
                     onClick={(e) => { e.stopPropagation(); onAdd(); }}
                     className="p-1 text-gray-400 hover:text-[#00A3AF] hover:bg-cyan-50 rounded transition-colors"
-                    title="Add branch tag"
+                    title={addButtonTitle || "Add branch tag"}
                 >
                     <PlusIcon className="w-3.5 h-3.5" />
                 </button>

@@ -179,13 +179,6 @@ export const PrimaryTagRow: React.FC<PrimaryTagRowProps> = ({
                 </p>
             )}
 
-            {/* Selected Text Preview */}
-            {tag.selectedText && (
-                <p className="text-[10px] text-gray-400 italic mt-1 line-clamp-1 border-l border-gray-200 pl-2 ml-1">
-                    "{tag.selectedText}"
-                </p>
-            )}
-
             {/* Secondary Tags List */}
             {tag.secondaryTags && tag.secondaryTags.length > 0 && (
                 <div className="mt-2">
@@ -228,6 +221,7 @@ export const PrimaryTagRow: React.FC<PrimaryTagRowProps> = ({
                         onToggleSecondaryInput();
                     }}
                     className="ml-9 mt-2 text-[10px] text-purple-500 hover:text-purple-700 flex items-center gap-1 transition-colors"
+                    title="Add secondary tag"
                 >
                     <PlusIcon className="w-3 h-3" />
                     <span>Add secondary tag</span>

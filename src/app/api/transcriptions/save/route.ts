@@ -1,6 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { S3Client, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import {
+    ValidationError,
+    NotFoundError,
+    DatabaseError,
+    handleError,
+    ErrorCode,
+} from "@/lib/errors";
+import { logger } from "@/lib/logger";
+
+// UUID validation regex
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidUUID(uuid: string): boolean {
+    return UUID_REGEX.test(uuid);
+}
 
 interface TranscriptBlockData {
     speaker_label?: string;
@@ -27,10 +42,9 @@ export async function POST(req: NextRequest) {
         } = body;
 
         if (!transcriptData) {
-            return NextResponse.json(
-                { error: "Missing required field: transcriptData" },
-                { status: 400 }
-            );
+            throw new ValidationError("Missing required field: transcriptData", {
+                field: "transcriptData",
+            });
         }
 
         // If videoId provided, verify video exists
@@ -39,16 +53,21 @@ export async function POST(req: NextRequest) {
         let finalVideoId: string;
 
         if (videoId) {
+            // Validate UUID format to prevent SQL injection
+            if (!isValidUUID(videoId)) {
+                throw new ValidationError("Invalid video ID format", {
+                    field: "videoId",
+                    value: videoId,
+                });
+            }
+
             // @ts-ignore - Prisma types generated at runtime
             video = await prisma.video.findUnique({
                 where: { id: videoId },
             });
 
             if (!video) {
-                return NextResponse.json(
-                    { error: "Video not found" },
-                    { status: 404 }
-                );
+                throw new NotFoundError("Video not found", "video");
             }
             
             // If video exists and we have videoMetadata, update it to ensure video URL is current
@@ -92,10 +111,10 @@ export async function POST(req: NextRequest) {
             const { fileName, fileKey, fileUrl, fileSize, source_type, source_url, provider_video_id, duration_seconds } = videoMetadata;
             
             if (!fileUrl && !source_url) {
-                return NextResponse.json(
-                    { error: "Missing video URL in metadata" },
-                    { status: 400 }
-                );
+                throw new ValidationError("Missing video URL in metadata", {
+                    field: "videoMetadata",
+                    required: ["fileUrl", "source_url"],
+                });
             }
 
             // Determine source_type if not provided
@@ -144,10 +163,9 @@ export async function POST(req: NextRequest) {
                 finalVideoId = video.id;
             }
         } else {
-            return NextResponse.json(
-                { error: "Missing videoId or videoMetadata" },
-                { status: 400 }
-            );
+            throw new ValidationError("Missing videoId or videoMetadata", {
+                required: ["videoId", "videoMetadata"],
+            });
         }
 
         // Normalize transcript data into blocks
@@ -222,7 +240,15 @@ export async function POST(req: NextRequest) {
         const transcript = await prisma.$transaction(async (tx: any) => {
             // LOCK the video record to serialize saves for this video
             // This prevents race conditions on version calculation when multiple rapid saves occur
-            await tx.$executeRawUnsafe(`SELECT id FROM "Video" WHERE id = '${finalVideoId}'::uuid FOR UPDATE`);
+            // Using parameterized query to prevent SQL injection
+            // Validate finalVideoId is a valid UUID before using it
+            if (!isValidUUID(finalVideoId)) {
+                throw new ValidationError("Invalid video ID format", {
+                    field: "finalVideoId",
+                    value: finalVideoId,
+                });
+            }
+            await tx.$executeRaw`SELECT id FROM "Video" WHERE id = ${finalVideoId}::uuid FOR UPDATE`;
 
             // Get the latest transcript version for this video INSIDE the transaction
             const latestTranscript = await tx.transcript.findFirst({
@@ -303,7 +329,11 @@ export async function POST(req: NextRequest) {
                                         Key: s.avatar_key,
                                     }));
                                 } catch (e) {
-                                    console.error("Failed to delete avatar from storage during sync:", e);
+                                    logger.error(
+                                        "Failed to delete avatar from storage during sync",
+                                        e instanceof Error ? e : new Error(String(e)),
+                                        { speakerId: s.id, avatarKey: s.avatar_key }
+                                    );
                                 }
                             }
                         }
@@ -317,17 +347,19 @@ export async function POST(req: NextRequest) {
                                 }
                             });
                         } else {
-                            await tx.$executeRaw`
-                                DELETE FROM "Speaker" 
-                                WHERE video_id = ${finalVideoId}::uuid 
-                                AND speaker_label IN (${providedLabels.length > 0 ? providedLabels : ''})
-                            `;
-                            // Correction: The above logic is wrong for raw SQL. Let's use a simpler approach.
+                            // Use parameterized queries in a loop to safely delete speakers
+                            // This prevents SQL injection and handles the IN clause correctly
                             for (const s of speakersToDelete) {
+                                // Validate UUID before using in query
+                                if (s.id && isValidUUID(s.id)) {
                                 await tx.$executeRaw`DELETE FROM "Speaker" WHERE id = ${s.id}::uuid`;
+                                }
                             }
                         }
-                        console.log(`Deleted ${speakersToDelete.length} stale speaker(s)`);
+                        logger.info(`Deleted ${speakersToDelete.length} stale speaker(s)`, {
+                            videoId: finalVideoId,
+                            deletedCount: speakersToDelete.length,
+                        });
                     }
 
                     // 3. Upsert provided speakers
@@ -379,10 +411,18 @@ export async function POST(req: NextRequest) {
                                 })
                             );
                         }
-                        console.log(`Successfully saved ${speakerData.length} speaker(s)`);
+                        logger.info(`Successfully saved ${speakerData.length} speaker(s)`, {
+                            videoId: finalVideoId,
+                            savedCount: speakerData.length,
+                        });
                     }
                 } catch (speakerError: any) {
-                    console.error("Could not sync speakers:", speakerError.message);
+                    logger.error(
+                        "Could not sync speakers",
+                        speakerError instanceof Error ? speakerError : new Error(speakerError?.message || "Unknown error"),
+                        { videoId: finalVideoId }
+                    );
+                    // Continue execution - speaker sync failure shouldn't block transcript save
                 }
             }
 
@@ -406,12 +446,13 @@ export async function POST(req: NextRequest) {
             video_id: finalVideoId, // Also return at top level for convenience
         });
 
-    } catch (error: any) {
-        console.error("Save transcription error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to save transcription" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Save transcription error",
+            error instanceof Error ? error : new Error(String(error)),
+            { endpoint: "/api/transcriptions/save" }
         );
+        return handleError(error);
     }
 }
 

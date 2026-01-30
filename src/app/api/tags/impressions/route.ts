@@ -92,55 +92,56 @@ export async function POST(req: NextRequest) {
 
             // 2. Create Primary Tags and Tag Impressions
             const impressions = [];
-            const primaryNameCounters: Record<string, number> = {};
 
-            // Check if we have primary tags
-            const hasPrimaryTags = primaryTags && Array.isArray(primaryTags) && primaryTags.length > 0 && primaryTags.some(pt => pt.name?.trim());
+            // Check if we have primary tags or highlights
+            const hasTagsToCreate = primaryTags && Array.isArray(primaryTags) && primaryTags.length > 0;
 
-            if (hasPrimaryTags) {
-                // Create impressions with primary tags
+            if (hasTagsToCreate) {
+                // Create impressions for each tag (primary tag or highlight)
                 for (const primaryTag of primaryTags) {
-                    if (!primaryTag.name?.trim()) continue;
+                    const name = primaryTag.name?.trim() || null;
 
-                    const name = primaryTag.name.trim();
-
-                    // Determine if we should reuse an existing primary tag or create a new one
                     let primary = null;
+                    let instanceIndex = null;
+                    let displayName = null;
 
-                    if (primaryTag.id) {
-                        // Use existing primary tag instance
-                        primary = await tx.primaryTag.findUnique({
-                            where: { id: primaryTag.id }
-                        });
-                    }
-
-                    if (!primary) {
-                        // Create NEW primary tag instance
-                        primary = await tx.primaryTag.create({
-                            data: {
-                                master_tag: {
-                                    connect: { id: masterTag.id }
-                                },
-                                name: name,
-                            }
-                        });
-                    }
-
-                    // Calculate instance index for this primary tag name under this master tag
-                    // We count all primary tags with this name that were created at or before this one
-                    const instanceIndex = await tx.primaryTag.count({
-                        where: {
-                            master_tag_id: masterTag.id,
-                            name: name,
-                            created_at: {
-                                lte: primary.created_at
-                            }
+                    if (name) {
+                        // Determine if we should reuse an existing primary tag or create a new one
+                        if (primaryTag.id) {
+                            // Use existing primary tag instance
+                            primary = await tx.primaryTag.findUnique({
+                                where: { id: primaryTag.id }
+                            });
                         }
-                    });
 
-                    // Create secondary tags if provided
+                        if (!primary) {
+                            // Create NEW primary tag instance
+                            primary = await tx.primaryTag.create({
+                                data: {
+                                    master_tag: {
+                                        connect: { id: masterTag.id }
+                                    },
+                                    name: name,
+                                }
+                            });
+                        }
+
+                        // Calculate instance index for this primary tag name under this master tag
+                        instanceIndex = await tx.primaryTag.count({
+                            where: {
+                                master_tag_id: masterTag.id,
+                                name: name,
+                                created_at: {
+                                    lte: primary.created_at
+                                }
+                            }
+                        });
+                        displayName = `${name} (${instanceIndex})`;
+                    }
+
+                    // Create secondary tags if provided (only for primary tags)
                     const secondaryTagIds: string[] = [];
-                    if (primaryTag.secondaryTags && Array.isArray(primaryTag.secondaryTags)) {
+                    if (primary && primaryTag.secondaryTags && Array.isArray(primaryTag.secondaryTags)) {
                         for (const secondaryName of primaryTag.secondaryTags) {
                             if (!secondaryName?.trim()) continue;
 
@@ -157,82 +158,67 @@ export async function POST(req: NextRequest) {
                         }
                     }
 
-                    // Create tag impression - using connect syntax for relations
+                    // Create tag impression
+                    const impressionData: any = {
+                        transcript: {
+                            connect: { id: transcriptId }
+                        },
+                        block_ids: primaryTag.blockId ? [primaryTag.blockId] : (primaryTag.blockIds || blockIds),
+                        selected_text: primaryTag.selectedText || selectedText || null,
+                        selection_ranges: primaryTag.selectionRange
+                            ? [primaryTag.selectionRange]
+                            : (primaryTag.selectionRanges || selectionRanges || null),
+                        master_tag: {
+                            connect: { id: masterTag.id }
+                        },
+                        secondary_tag_ids: secondaryTagIds,
+                        created_by: createdBy || null,
+                        section_id: sectionId || null,
+                        subsection_id: subsectionId || null,
+                        comment: primaryTag.comment || null,
+                    };
+
+                    if (primary) {
+                        impressionData.primary_tag = {
+                            connect: { id: primary.id }
+                        };
+                    }
+
                     const impression = await tx.tagImpression.create({
-                        data: {
-                            transcript: {
-                                connect: { id: transcriptId }
-                            },
-                            // Use specific block ID for this primary tag if provided, 
-                            // otherwise fallback to the session-wide blockIds list
-                            block_ids: primaryTag.blockId ? [primaryTag.blockId] : blockIds,
-                            // Selection data for precise highlight persistence
-                            selected_text: primaryTag.selectedText || selectedText || null,
-                            selection_ranges: primaryTag.selectionRange
-                                ? [primaryTag.selectionRange]
-                                : (selectionRanges || null),
-                            master_tag: {
-                                connect: { id: masterTag.id }
-                            },
-                            primary_tag: {
-                                connect: { id: primary.id }
-                            },
-                            secondary_tag_ids: secondaryTagIds,
-                            created_by: createdBy || null,
-                            // Optional section context for analytics
-                            section_id: sectionId || null,
-                            subsection_id: subsectionId || null,
-                            comment: primaryTag.comment || null,
-                        }
+                        data: impressionData
                     });
 
                     impressions.push({
                         id: impression.id,
                         masterTagId: masterTag.id,
                         masterTagName: masterTag.name,
-                        primaryTagId: primary.id,
+                        primaryTagId: primary ? primary.id : null,
                         primaryTagName: name,
                         instanceIndex,
-                        displayName: `${name} (${instanceIndex})`,
-                        comment: primaryTag.comment,
+                        displayName,
+                        comment: primaryTag.comment || null,
                         secondaryTagIds: secondaryTagIds,
-                        blockIds: primaryTag.blockId ? [primaryTag.blockId] : blockIds,
-                        selectedText: primaryTag.selectedText || selectedText || null,
-                        selectionRanges: primaryTag.selectionRange
-                            ? [primaryTag.selectionRange]
-                            : (selectionRanges || null),
+                        blockIds: impressionData.block_ids,
+                        selectedText: impressionData.selected_text,
+                        selectionRanges: impressionData.selection_ranges,
                     });
                 }
             } else {
-                // No primary tags - create a TagImpression with only master tag
-                // This allows master tags without primary tags to persist
-                // Note: We omit primary_tag field entirely (don't set it to null)
+                // No tags at all - fallback to just a master tag impression if possible
                 const impressionData: any = {
-                    transcript: {
-                        connect: { id: transcriptId }
-                    },
+                    transcript: { connect: { id: transcriptId } },
                     block_ids: blockIds,
                     selected_text: selectedText || null,
                     selection_ranges: selectionRanges || null,
-                    master_tag: {
-                        connect: { id: masterTag.id }
-                    },
-                    // primary_tag is omitted - no primary tag for this master tag
-                    // Don't include primary_tag field at all when it's null
+                    master_tag: { connect: { id: masterTag.id } },
                     secondary_tag_ids: [],
                     created_by: createdBy || null,
-                    // Optional section context for analytics
                     section_id: sectionId || null,
                     subsection_id: subsectionId || null,
                     comment: null,
                 };
 
-                // Only include primary_tag_id if we have one (we don't in this case)
-                // Omitting it entirely allows Prisma to set it to null in the database
-
-                const impression = await tx.tagImpression.create({
-                    data: impressionData
-                });
+                const impression = await tx.tagImpression.create({ data: impressionData });
 
                 impressions.push({
                     id: impression.id,

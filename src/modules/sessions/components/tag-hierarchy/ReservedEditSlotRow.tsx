@@ -10,8 +10,10 @@ interface ReservedEditSlotRowProps {
     placeholder?: string;
     initialValue?: string;
     isComment?: boolean;
+    saveButtonTitle?: string; // Custom tooltip for the save button
     onSave: (value: string) => void;
     onCancel: () => void;
+    noIndent?: boolean;
 }
 
 /**
@@ -23,8 +25,10 @@ export const ReservedEditSlotRow: React.FC<ReservedEditSlotRowProps> = ({
     placeholder = 'Add new...',
     initialValue = '',
     isComment = false,
+    saveButtonTitle,
     onSave,
     onCancel,
+    noIndent = false,
 }) => {
     const [value, setValue] = useState(initialValue);
 
@@ -40,12 +44,14 @@ export const ReservedEditSlotRow: React.FC<ReservedEditSlotRowProps> = ({
     return (
         <TagRowLayout
             level={level}
+            noIndent={noIndent}
             className={isComment ? "bg-blue-50/30 border-l-2 border-blue-200" : "bg-cyan-50/30"}
             actions={
                 <TagActionsColumn
                     isEditing={true}
                     onSave={handleSave}
                     onCancel={onCancel}
+                    saveButtonTitle={saveButtonTitle}
                 />
             }
         >

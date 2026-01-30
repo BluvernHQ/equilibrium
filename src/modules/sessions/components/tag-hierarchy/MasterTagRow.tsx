@@ -9,6 +9,7 @@ interface MasterTagRowProps {
     name: string;
     isEditing: boolean;
     isHighlighted?: boolean;
+    isUnfocused?: boolean;
     color?: string;
     impressionCount?: number; // Number of impressions for this master tag
     selectedText?: string; // The selected phrase/text that was tagged (for master-only tags)
@@ -26,6 +27,7 @@ export const MasterTagRow: React.FC<MasterTagRowProps> = ({
     name,
     isEditing,
     isHighlighted = false,
+    isUnfocused = false,
     color = '#00A3AF',
     impressionCount,
     selectedText,
@@ -61,10 +63,12 @@ export const MasterTagRow: React.FC<MasterTagRowProps> = ({
                 onSave(name); // Save with current name (no change) to allow parent to close
             }
         } else {
-            // If user cleared name, revert
+            // If user cleared name, revert and show indication
             setTempName(name);
             setIsRenaming(false);
-            // Don't close workspace mode necessarily? Or treat as cancel?
+            // We could use a toast here if we had access to a toast hook, 
+            // but since this is a shared component, we'll let the parent handle it or just revert.
+            // Reverting is standard behavior for many inline editors if empty.
         }
     };
 
@@ -81,6 +85,7 @@ export const MasterTagRow: React.FC<MasterTagRowProps> = ({
         <TagRowLayout
             level={0}
             isHighlighed={isHighlighted}
+            isUnfocused={isUnfocused}
             className={`border-b border-gray-100 mb-1 ${isEditing ? 'ring-1 ring-[#00A3AF] rounded-sm bg-[#F0FDFA]' : ''}`}
             actions={
                 <TagActionsColumn
@@ -148,14 +153,6 @@ export const MasterTagRow: React.FC<MasterTagRowProps> = ({
                             </button>
                         )}
                     </div>
-                    {/* Selected text display - shown below the tag name (for master-only tags) */}
-                    {selectedText && (
-                        <div className="pl-6 pr-2 py-1 border-l-2 border-gray-200">
-                            <p className="text-[10px] text-gray-500 italic">
-                                "{selectedText}"
-                            </p>
-                        </div>
-                    )}
                 </>
             )}
         </TagRowLayout>

@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import {
+    ValidationError,
+    ConflictError,
+    DatabaseError,
+    handleError,
+} from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // GET - List all master tags (optionally filter by transcript)
 export async function GET(req: NextRequest) {
@@ -53,12 +60,13 @@ export async function GET(req: NextRequest) {
                 primaryTagCount: tag._count.primary_tags,
             })),
         });
-    } catch (error: any) {
-        console.error("Get master tags error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to get master tags" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Get master tags error",
+            error instanceof Error ? error : new Error(String(error)),
+            { endpoint: "/api/tags/master", method: "GET" }
         );
+        return handleError(error);
     }
 }
 
@@ -69,10 +77,9 @@ export async function POST(req: NextRequest) {
         const { name, description, color, icon, created_by, forceNew } = body;
 
         if (!name?.trim()) {
-            return NextResponse.json(
-                { error: "Master tag name is required" },
-                { status: 400 }
-            );
+            throw new ValidationError("Master tag name is required", {
+                field: "name",
+            });
         }
 
         const trimmedName = name.trim();
@@ -90,18 +97,13 @@ export async function POST(req: NextRequest) {
 
         // If master tag exists and forceNew is true, return error (uniqueness violation)
         if (masterTag && forceNew) {
-            return NextResponse.json(
-                { 
-                    error: `Master tag "${trimmedName}" already exists`, 
-                    exists: true,
+            throw new ConflictError(`Master tag "${trimmedName}" already exists`, {
                     existingTag: {
                         id: masterTag.id,
                         name: masterTag.name,
                         isClosed: (masterTag as any).is_closed || false,
-                    }
                 },
-                { status: 409 } // Conflict
-            );
+            });
         }
 
         let isNew = false;
@@ -134,12 +136,13 @@ export async function POST(req: NextRequest) {
                 isNew,
             },
         });
-    } catch (error: any) {
-        console.error("Create master tag error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to create master tag" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Create master tag error",
+            error instanceof Error ? error : new Error(String(error)),
+            { endpoint: "/api/tags/master", method: "POST" }
         );
+        return handleError(error);
     }
 }
 

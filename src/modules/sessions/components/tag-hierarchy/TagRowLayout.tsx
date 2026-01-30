@@ -8,6 +8,8 @@ interface TagRowLayoutProps {
     actions?: React.ReactNode;
     className?: string;
     isHighlighed?: boolean;
+    noIndent?: boolean;
+    isUnfocused?: boolean;
 }
 
 /**
@@ -23,12 +25,14 @@ export const TagRowLayout: React.FC<TagRowLayoutProps> = ({
     actions,
     className = '',
     isHighlighed = false,
+    noIndent = false,
+    isUnfocused = false,
 }) => {
     // Indentation levels: 
     // 0 = Section (0px) - but sections are rendered separately
     // 1 = Master Tag (0px internal - card is already indented)
     // 2 = Primary Tag (20px internal - additional indentation within card)
-    const indentClass = level === 2 ? 'pl-5' : 'pl-0';
+    const indentClass = (level === 2 && !noIndent) ? 'pl-5' : 'pl-0';
 
     return (
         <div
@@ -36,7 +40,8 @@ export const TagRowLayout: React.FC<TagRowLayoutProps> = ({
         group relative grid grid-cols-[1fr_60px] items-start gap-2 py-0.5 min-h-[32px]
         ${indentClass}
         ${isHighlighed ? 'bg-blue-50/50' : 'hover:bg-gray-50/50'}
-        transition-colors duration-200
+        ${isUnfocused ? 'opacity-40 grayscale-[0.8] pointer-events-none' : ''}
+        transition-all duration-200
         ${className}
       `}
         >
