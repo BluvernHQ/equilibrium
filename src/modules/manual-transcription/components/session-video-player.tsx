@@ -4,211 +4,189 @@ import { forwardRef, useEffect, useRef, useState } from "react";
 import { PlayCircleIcon, XMarkIcon } from "@heroicons/react/24/solid";
 
 interface SessionVideoPlayerProps {
+  videoId?: string | null;
   videoUrl: string;
   isPlaying: boolean; // Controlled by parent
   onPlayStateChange: (playing: boolean) => void; // Notify parent
 }
 
 const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>(
-  ({ videoUrl, isPlaying, onPlayStateChange }, ref) => {
+  ({ videoId, videoUrl, isPlaying, onPlayStateChange }, ref) => {
     const internalVideoRef = useRef<HTMLVideoElement>(null);
     const [hasError, setHasError] = useState(false);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
+    const isInitialSeekDone = useRef(false);
+    const [isLoaded, setIsLoaded] = useState(false);
+
+    // Persistence logic
+    const saveCurrentTime = () => {
+      if (videoId && internalVideoRef.current) {
+        const time = internalVideoRef.current.currentTime;
+        // Only save if it's a valid positive number
+        if (typeof time === 'number' && time > 0) {
+          localStorage.setItem(`video-time-${videoId}`, time.toString());
+        }
+      }
+    };
+
+    // Restore time
+    const restoreTime = () => {
+      if (!videoId || !internalVideoRef.current || isInitialSeekDone.current) return;
+
+      const savedTime = localStorage.getItem(`video-time-${videoId}`);
+      if (savedTime) {
+        const time = parseFloat(savedTime);
+        if (!isNaN(time) && time > 0) {
+          console.log(`Restoring video time for ${videoId}: ${time}`);
+          
+          // Seek immediately if possible
+          try {
+            internalVideoRef.current.currentTime = time;
+          } catch (e) {
+            console.warn("Immediate seek failed, will retry in timeout", e);
+          }
+
+          // And also after a delay to be safe (for some browsers/formats)
+          setTimeout(() => {
+            if (internalVideoRef.current) {
+              internalVideoRef.current.currentTime = time;
+            }
+          }, 150);
+        }
+      }
+      isInitialSeekDone.current = true;
+    };
+
+    // Throttle time update saves
+    const lastSaveTime = useRef(0);
+    const handleTimeUpdate = () => {
+      const now = Date.now();
+      if (now - lastSaveTime.current > 2000) { // Save every 2 seconds
+        saveCurrentTime();
+        lastSaveTime.current = now;
+      }
+    };
+
+    // Reset initial seek if videoId changes
+    useEffect(() => {
+      isInitialSeekDone.current = false;
+      setIsLoaded(false);
+    }, [videoId]);
 
     // Decode HTML entities in URL (e.g., &amp; -> &)
-    // Only process if videoUrl is a valid non-empty string
     const decodedUrl = videoUrl && videoUrl.trim() ? videoUrl.replace(/&amp;/g, '&') : null;
 
-    // Reset error state when URL changes or when closing
+    // Reset error state when URL changes
     useEffect(() => {
-      if (!isPlaying) {
-        setHasError(false);
-        setErrorMessage(null);
-      }
-    }, [isPlaying, decodedUrl]);
+      setHasError(false);
+      setErrorMessage(null);
+    }, [decodedUrl]);
 
-    // Sync refs - forward ref to the playing video element
+    // Sync refs
     useEffect(() => {
       if (typeof ref === 'function') {
         ref(internalVideoRef.current);
       } else if (ref) {
         ref.current = internalVideoRef.current;
       }
-    }, [ref, isPlaying, internalVideoRef.current]);
+    }, [ref]); 
     
-    // Update playing video src when URL changes and video is playing
+    // Explicit cleanup on component unmount
     useEffect(() => {
-      if (isPlaying && internalVideoRef.current && decodedUrl && decodedUrl.trim()) {
-        const currentSrc = internalVideoRef.current.src || internalVideoRef.current.getAttribute('src') || '';
-        if (currentSrc !== decodedUrl) {
-          // Set the src and load the video
-          internalVideoRef.current.src = decodedUrl;
-          // Load the video (this will clear any previous error state)
+      const handleBeforeUnload = () => saveCurrentTime();
+      window.addEventListener('beforeunload', handleBeforeUnload);
+
+      return () => {
+        saveCurrentTime();
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+        if (internalVideoRef.current) {
+          internalVideoRef.current.pause();
+          internalVideoRef.current.src = "";
           internalVideoRef.current.load();
         }
-      }
-    }, [decodedUrl, isPlaying]);
+      };
+    }, [videoId]); 
 
-    const handlePlayClick = async (e: React.MouseEvent) => {
+    // Update playing video src when URL changes
+    useEffect(() => {
+      const video = internalVideoRef.current;
+      if (video && decodedUrl && decodedUrl.trim()) {
+        const currentSrc = video.src || video.getAttribute('src') || '';
+        
+        // Only reload if the URL has actually changed significantly
+        // For presigned URLs, we check if the base part (before query) is the same
+        const getBaseUrl = (url: string) => url.split('?')[0];
+        const isNewSource = getBaseUrl(currentSrc) !== getBaseUrl(decodedUrl) && 
+                           !currentSrc.endsWith(decodedUrl);
+
+        if (isNewSource || hasError) {
+          console.log("Source URL changed or recovering from error, reloading video...");
+          
+          // CRITICAL: Save current time before switching source to prevent reset to 0
+          saveCurrentTime();
+          
+          isInitialSeekDone.current = false; // Prepare for new seek
+          video.src = decodedUrl;
+          video.load();
+          setIsLoaded(false);
+        }
+      }
+    }, [decodedUrl, videoId, hasError]);
+
+    // Handle video play/pause when isPlaying prop changes
+    useEffect(() => {
+      const video = internalVideoRef.current;
+      if (!video || !isLoaded) return;
+
+      if (isPlaying) {
+        if (video.paused) {
+          video.play().catch((err) => {
+            console.warn("Play request interrupted or failed:", err.message);
+          });
+        }
+      } else {
+        if (!video.paused) {
+          video.pause();
+        }
+      }
+    }, [isPlaying, isLoaded]);
+
+    const handlePlayClick = (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
       
-      // Change state first to show the video element
+      if (!decodedUrl || !decodedUrl.trim()) {
+        alert("No valid video URL available");
+        return;
+      }
+
       onPlayStateChange(true);
-      
-      // Immediately try to play the video (user interaction context)
-      // Use requestAnimationFrame to ensure DOM is updated
-      requestAnimationFrame(() => {
-        setTimeout(async () => {
-          if (internalVideoRef.current) {
-            try {
-              // Ensure video src is set (only if we have a valid URL)
-              if (decodedUrl && decodedUrl.trim() && (!internalVideoRef.current.src || internalVideoRef.current.src !== decodedUrl)) {
-                internalVideoRef.current.src = decodedUrl;
-              } else if (!decodedUrl || !decodedUrl.trim()) {
-                throw new Error("No valid video URL available");
-              }
-              
-              // Load the video
-              internalVideoRef.current.load();
-              
-              // Wait for video to be ready
-              if (internalVideoRef.current.readyState < 2) {
-                await new Promise<void>((resolve, reject) => {
-                  const timeout = setTimeout(() => {
-                    reject(new Error("Video load timeout"));
-                  }, 10000);
-                  
-                  const videoEl = internalVideoRef.current;
-                  if (!videoEl) {
-                    clearTimeout(timeout);
-                    reject(new Error("Video element not found"));
-                    return;
-                  }
-                  
-                  const onCanPlay = () => {
-                    clearTimeout(timeout);
-                    videoEl.removeEventListener('canplay', onCanPlay);
-                    videoEl.removeEventListener('error', onError);
-                    resolve();
-                  };
-                  
-                  const onError = () => {
-                    clearTimeout(timeout);
-                    videoEl.removeEventListener('canplay', onCanPlay);
-                    videoEl.removeEventListener('error', onError);
-                    reject(new Error("Video load error"));
-                  };
-                  
-                  videoEl.addEventListener('canplay', onCanPlay, { once: true });
-                  videoEl.addEventListener('error', onError, { once: true });
-                });
-              }
-              
-              // Play the video
-              await internalVideoRef.current.play();
-              console.log("Video playing successfully");
-            } catch (err) {
-              console.error("Video play error on click:", err);
-              // Show user-friendly error with CORS guidance
-              const errorMessage = err instanceof Error && err.message.includes("CORS")
-                ? "Video cannot be played due to CORS restrictions. Please configure CORS on your Digital Ocean Spaces bucket."
-                : "Unable to play video. This may be due to CORS configuration. Please check the console for details.";
-              alert(errorMessage);
-            }
-          }
-        }, 100);
-      });
     };
 
     const handleCloseClick = () => {
-      onPlayStateChange(false);
-      // Pause video when closing
       if (internalVideoRef.current) {
         internalVideoRef.current.pause();
       }
+      onPlayStateChange(false);
     };
-
-    // Handle video play when isPlaying changes
-    useEffect(() => {
-      if (isPlaying && internalVideoRef.current) {
-        const video = internalVideoRef.current;
-        
-        // Ensure video is loaded before playing
-        const tryPlay = () => {
-          if (video.readyState >= 2) { // HAVE_CURRENT_DATA
-            video.play().catch((err) => {
-              console.error("Video play error:", err);
-              // If autoplay fails, show error or try again on user interaction
-            });
-          } else {
-            // Wait for video to be ready
-            video.addEventListener('loadeddata', tryPlay, { once: true });
-            video.addEventListener('canplay', tryPlay, { once: true });
-            video.load(); // Force reload if needed
-          }
-        };
-
-        // Small delay to ensure video element is ready
-        const timer = setTimeout(tryPlay, 100);
-        return () => {
-          clearTimeout(timer);
-          video.removeEventListener('loadeddata', tryPlay);
-          video.removeEventListener('canplay', tryPlay);
-        };
-      } else if (!isPlaying && internalVideoRef.current) {
-        internalVideoRef.current.pause();
-      }
-    }, [isPlaying]);
 
     return (
       <div className="relative w-full h-full">
-        {/* 🎬 Show Video First Frame as Thumbnail */}
-        {!isPlaying && (
-          <div
-            className="w-full h-full relative group cursor-pointer rounded-2xl overflow-hidden bg-black"
-            onClick={handlePlayClick}
-          >
-            {/* Video thumbnail preview - use a placeholder instead of trying to load video */}
-            <div className="w-full h-full bg-gradient-to-br from-gray-800 to-gray-900 flex items-center justify-center">
-              <div className="w-16 h-16 bg-white/10 rounded-full flex items-center justify-center backdrop-blur-sm">
-                <PlayCircleIcon className="w-10 h-10 text-white/80" />
-              </div>
-            </div>
-            {/* Play icon */}
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-lg transition-transform transform group-hover:scale-110">
-                <PlayCircleIcon className="w-8 h-8 text-[#00A3AF] ml-0.5" />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 🎥 When playing - Only render when playing and we have a valid URL */}
-        {isPlaying && decodedUrl && decodedUrl.trim() ? (
+        {decodedUrl && decodedUrl.trim() ? (
           <div className="relative w-full h-full">
             {hasError ? (
               <div className="w-full h-full flex items-center justify-center bg-black rounded-2xl">
                 <div className="text-white text-center p-6 max-w-md">
-                  <div className="mb-4">
-                    <svg className="w-12 h-12 mx-auto text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <div className="mb-4 text-red-400">
+                    <svg className="w-12 h-12 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                   </div>
                   <h3 className="text-lg font-semibold mb-2">Video Playback Error</h3>
                   <p className="text-sm text-gray-300 mb-4">{errorMessage || "Unable to load video"}</p>
-                  <div className="text-xs text-gray-400 bg-gray-900/50 p-3 rounded">
-                    <p className="font-semibold mb-2">To fix this:</p>
-                    <ol className="list-decimal list-inside space-y-1 text-left">
-                      <li>Go to Digital Ocean Spaces dashboard</li>
-                      <li>Select your bucket and go to Settings → CORS</li>
-                      <li>Add your domain ({window.location.origin}) to allowed origins</li>
-                      <li>Allow GET and HEAD methods</li>
-                    </ol>
-                  </div>
                 </div>
                 <button
-                  className="absolute top-2 right-2 bg-white/80 hover:bg-white p-1 rounded-full shadow-lg backdrop-blur-sm transition-colors z-10"
+                  className="absolute top-2 right-2 bg-white/80 hover:bg-white p-1 rounded-full shadow-lg"
                   onClick={handleCloseClick}
                 >
                   <XMarkIcon className="w-5 h-5 text-black" />
@@ -216,26 +194,14 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
               </div>
             ) : (
               <div 
-                className="relative w-full h-full"
+                className="relative w-full h-full group bg-black rounded-2xl overflow-hidden"
                 onClick={(e) => {
-                  // Toggle play/pause when clicking on the video area (not on controls)
-                  // Check if the clicked element is not a control element (button, input, etc.)
                   const target = e.target as HTMLElement;
-                  const isControlElement = target.tagName === 'BUTTON' || 
-                                         target.tagName === 'INPUT' || 
-                                         target.tagName === 'PROGRESS' ||
-                                         target.closest('button') ||
-                                         target.closest('input') ||
-                                         target.closest('progress');
+                  const isControlElement = target.closest('button, input, progress') || 
+                                         ['BUTTON', 'INPUT', 'PROGRESS'].includes(target.tagName);
                   
                   if (!isControlElement && internalVideoRef.current) {
-                    if (internalVideoRef.current.paused) {
-                      internalVideoRef.current.play().catch((err) => {
-                        console.error("Video play error on click:", err);
-                      });
-                    } else {
-                      internalVideoRef.current.pause();
-                    }
+                    onPlayStateChange(internalVideoRef.current.paused);
                   }
                 }}
               >
@@ -243,119 +209,81 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                   ref={internalVideoRef}
                   src={decodedUrl}
                   controls
-                  autoPlay
                   playsInline
                   preload="auto"
-                  className="w-full h-full rounded-2xl bg-black object-contain"
+                  className="w-full h-full object-contain"
+                  onPlay={() => onPlayStateChange(true)}
+                  onPause={() => {
+                    onPlayStateChange(false);
+                    saveCurrentTime();
+                  }}
+                  onTimeUpdate={handleTimeUpdate}
+                  onLoadedMetadata={() => {
+                    restoreTime();
+                  }}
                   onLoadedData={() => {
-                    // Ensure video plays when data is loaded
-                    if (internalVideoRef.current && isPlaying) {
-                      internalVideoRef.current.play().catch((err) => {
-                        console.error("Video play error on load:", err);
-                      });
+                    setIsLoaded(true);
+                    restoreTime();
+                    if (isPlaying) {
+                      internalVideoRef.current?.play().catch(() => {});
                     }
                   }}
                   onCanPlay={() => {
-                    // Try to play when video can play
-                    if (internalVideoRef.current && isPlaying) {
-                      internalVideoRef.current.play().catch((err) => {
-                        console.error("Video play error on canplay:", err);
-                      });
+                    setIsLoaded(true);
+                    if (isPlaying) {
+                      internalVideoRef.current?.play().catch(() => {});
                     }
-                  }}
-                  onLoadedMetadata={() => {
-                    console.log("Video metadata loaded:", {
-                      duration: internalVideoRef.current?.duration,
-                      videoWidth: internalVideoRef.current?.videoWidth,
-                      videoHeight: internalVideoRef.current?.videoHeight,
-                      readyState: internalVideoRef.current?.readyState
-                    });
                   }}
                   onError={(e) => {
-                    const video = e.currentTarget;
-                    const error = video.error;
-                    let errorMsg = "Unknown video error";
-                    
-                    if (error) {
-                      switch (error.code) {
-                        case error.MEDIA_ERR_ABORTED:
-                          errorMsg = "Video loading aborted";
-                          break;
-                        case error.MEDIA_ERR_NETWORK:
-                          errorMsg = "Network error while loading video";
-                          break;
-                        case error.MEDIA_ERR_DECODE:
-                          errorMsg = "Video decoding error";
-                          break;
-                        case error.MEDIA_ERR_SRC_NOT_SUPPORTED:
-                          errorMsg = "Video source not accessible. This is likely a CORS configuration issue.";
-                          setHasError(true);
-                          setErrorMessage("CORS Error: Video cannot be loaded. Please configure CORS on your Digital Ocean Spaces bucket to allow video playback from this domain.");
-                          break;
-                        default:
-                          errorMsg = `Video error code: ${error.code}`;
-                      }
-                    }
-                    
-                    console.error("Video error:", {
-                      message: errorMsg,
-                      error: error,
-                      networkState: video.networkState,
-                      readyState: video.readyState,
-                      src: video.src,
-                      currentSrc: video.currentSrc,
-                      errorCode: error?.code,
-                      errorMessage: error?.message,
-                      networkStateText: video.networkState === 0 ? 'EMPTY' : 
-                                        video.networkState === 1 ? 'IDLE' :
-                                        video.networkState === 2 ? 'LOADING' :
-                                        video.networkState === 3 ? 'NO_SOURCE' : 'UNKNOWN'
-                    });
-                    
-                    // If it's a source not supported error, it might be a CORS issue
+                    const error = e.currentTarget.error;
                     if (error?.code === error?.MEDIA_ERR_SRC_NOT_SUPPORTED) {
-                      console.warn("⚠️ Video source not accessible. This might be a CORS issue.");
-                      console.warn("Please ensure your Digital Ocean Spaces bucket has CORS configured to allow video playback from your domain.");
-                      console.warn("CORS configuration should allow: GET, HEAD methods and include your domain in allowed origins.");
-                      console.warn("Current origin:", window.location.origin);
-                      console.warn("Video URL:", video.src);
-                      
-                      // Log detailed error for debugging
-                      console.error("Full error details:", {
-                        errorCode: error?.code,
-                        networkState: video.networkState,
-                        readyState: video.readyState,
-                        src: video.src,
-                        currentSrc: video.currentSrc,
-                      });
+                      setHasError(true);
+                      setErrorMessage("Video source not accessible. Check CORS settings on your storage bucket.");
                     }
                   }}
                 />
+
+                {/* Overlay Play Button when paused by system OR not playing */}
+                {!isPlaying && isLoaded && (
+                  <div 
+                    className="absolute inset-0 flex items-center justify-center bg-black/30 transition-opacity group-hover:bg-black/40 cursor-pointer"
+                    onClick={handlePlayClick}
+                  >
+                    <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-md shadow-2xl scale-100 group-hover:scale-110 transition-transform">
+                      <PlayCircleIcon className="w-12 h-12 text-white" />
+                    </div>
+                  </div>
+                )}
+                
+                {/* Initial Loading state */}
+                {!isLoaded && (
+                  <div className="absolute inset-0 w-full h-full bg-gray-900 flex items-center justify-center">
+                    <div className="w-12 h-12 border-4 border-white/20 border-t-white rounded-full animate-spin" />
+                  </div>
+                )}
               </div>
             )}
             
-            {/* ❌ Close button */}
             <button
-              className="absolute top-2 right-2 bg-white/80 hover:bg-white p-1 rounded-full shadow-lg backdrop-blur-sm transition-colors z-10"
+              className="absolute top-2 right-2 bg-white/80 hover:bg-white p-1 rounded-full shadow-lg z-10"
               onClick={handleCloseClick}
             >
               <XMarkIcon className="w-5 h-5 text-black" />
             </button>
           </div>
-        ) : isPlaying ? (
-          // Show error message if trying to play but no valid URL
-          <div className="relative w-full h-full flex items-center justify-center bg-black rounded-2xl">
-            <div className="text-white text-center p-4">
-              <p className="text-sm">No video URL available</p>
+        ) : videoId ? (
+          // Loading state if we have a videoId but no URL yet
+          <div className="relative w-full h-full flex items-center justify-center bg-gray-900 rounded-2xl">
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-12 h-12 border-4 border-white/20 border-t-[#00A3AF] rounded-full animate-spin" />
+              <p className="text-white text-xs font-medium">Loading session...</p>
             </div>
-            <button
-              className="absolute top-2 right-2 bg-white/80 hover:bg-white p-1 rounded-full shadow-lg backdrop-blur-sm transition-colors z-10"
-              onClick={handleCloseClick}
-            >
-              <XMarkIcon className="w-5 h-5 text-black" />
-            </button>
           </div>
-        ) : null}
+        ) : (
+          <div className="relative w-full h-full flex items-center justify-center bg-black rounded-2xl">
+            <p className="text-white text-sm">No video URL available</p>
+          </div>
+        )}
       </div>
     );
   }

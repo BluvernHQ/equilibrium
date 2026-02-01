@@ -24,10 +24,15 @@ export default function Recordings() {
   const [selectedVideo, setSelectedVideo] = useState<VideoItem | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(6);
+  const itemsPerLoad = 6;
+  
   const router = useRouter();
   const { setVideoUrl, uploadFile, isUploading, uploadStatus } = useSession();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const menuRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const gridContainerRef = useRef<HTMLDivElement>(null);
+  const loadMoreRef = useRef<HTMLDivElement>(null);
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -54,8 +59,8 @@ export default function Recordings() {
 
   // Handle delete recording (video)
   const handleDeleteRecording = async (video: VideoItem) => {
-    if (!video.id) {
-      alert("Cannot delete: Video ID not found");
+    if (!video.id && !video.key) {
+      alert("Cannot delete: Video identifier not found");
       return;
     }
 
@@ -63,9 +68,14 @@ export default function Recordings() {
       return;
     }
 
-    setDeleting(video.id);
+    const deleteId = video.id || video.key;
+    setDeleting(deleteId);
     try {
-      const response = await fetch(`/api/videos/delete/${video.id}`, {
+      const url = video.id 
+        ? `/api/videos/delete/${video.id}` 
+        : `/api/videos/delete/none?fileKey=${encodeURIComponent(video.key)}`;
+        
+      const response = await fetch(url, {
         method: 'DELETE',
       });
 
@@ -177,6 +187,10 @@ export default function Recordings() {
       });
 
       setVideos(mergedVideos);
+      // Reset visible count if needed
+      if (mergedVideos.length < visibleCount) {
+        setVisibleCount(Math.max(itemsPerLoad, mergedVideos.length));
+      }
     } catch (error) {
       console.error("Failed to fetch videos:", error);
     } finally {
@@ -187,6 +201,24 @@ export default function Recordings() {
   useEffect(() => {
     fetchVideos();
   }, []);
+
+  // Infinite scroll observer
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && visibleCount < videos.length) {
+          setVisibleCount((prev) => prev + itemsPerLoad);
+        }
+      },
+      { threshold: 0.1, root: gridContainerRef.current }
+    );
+
+    if (loadMoreRef.current) {
+      observer.observe(loadMoreRef.current);
+    }
+
+    return () => observer.disconnect();
+  }, [videos.length, visibleCount]);
 
   // Refresh videos list after successful upload
   useEffect(() => {
@@ -212,6 +244,8 @@ export default function Recordings() {
   const handleUploadClick = () => {
     fileInputRef.current?.click();
   };
+
+  const visibleVideos = videos.slice(0, visibleCount);
 
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return bytes + " B";
@@ -306,12 +340,16 @@ export default function Recordings() {
             <div className="text-sm text-gray-500">Upload videos to see them here</div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 overflow-y-auto">
-            {videos.map((video) => (
-              <div
-                key={video.key}
-                className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-lg transition-shadow relative"
-              >
+          <>
+            <div 
+              ref={gridContainerRef}
+              className="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 overflow-y-auto mb-6"
+            >
+              {visibleVideos.map((video) => (
+                <div
+                  key={video.key}
+                  className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-lg transition-shadow relative"
+                >
                 {/* Three-dot menu button */}
                 <div
                   className="absolute top-2 right-2 z-10"
@@ -342,11 +380,11 @@ export default function Recordings() {
                           e.stopPropagation();
                           handleDeleteRecording(video);
                         }}
-                        disabled={deleting === video.id}
+                        disabled={deleting === video.id || deleting === video.key}
                         className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <TrashIcon className="w-4 h-4" />
-                        {deleting === video.id ? "Deleting..." : "Delete Recording"}
+                        {(deleting === video.id || deleting === video.key) ? "Deleting..." : "Delete Recording"}
                       </button>
                       {video.hasTranscription && video.id && (
                         <button
@@ -490,9 +528,26 @@ export default function Recordings() {
                 </div>
               </div>
             ))}
+            
+            {/* Infinite Scroll Sentinel */}
+            {visibleCount < videos.length && (
+              <div 
+                ref={loadMoreRef} 
+                className="col-span-full h-20 flex items-center justify-center"
+              >
+                <div className="flex items-center gap-2 text-gray-500">
+                  <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  <span>Loading more...</span>
+                </div>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
+    </div>
 
       {/* Video Modal */}
       {selectedVideo && (

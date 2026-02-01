@@ -839,6 +839,7 @@ export default function AutoTranscription({
         >
           <SessionVideoPlayer
             ref={videoRef}
+            videoId={videoId}
             videoUrl={mediaUrl}
             isPlaying={isVideoPlaying}
             onPlayStateChange={setIsVideoPlaying}

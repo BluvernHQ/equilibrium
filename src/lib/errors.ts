@@ -218,7 +218,7 @@ export function handleError(error: unknown): NextResponse {
     
     // Other Prisma errors
     return NextResponse.json(
-      new DatabaseError('Database operation failed', error as Error).toJSON(),
+      new DatabaseError('Database operation failed', error instanceof Error ? error : undefined).toJSON(),
       { status: 500 }
     );
   }

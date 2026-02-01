@@ -87,12 +87,12 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [currentVideoTime, setCurrentVideoTime] = useState(0);
   const [speakerCreationTriggerSegmentId, setSpeakerCreationTriggerSegmentId] = useState<string | null>(null);
   const [showNavigationAfterSave, setShowNavigationAfterSave] = useState(false);
   const [savedVideoId, setSavedVideoId] = useState<string | null>(null);
 
   // Strict Behavioral States
-  const [playbackMode, setPlaybackMode] = useState<'locked' | 'unlocked'>('locked');
   const [speakerSelectionDeadline, setSpeakerSelectionDeadline] = useState<number | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -161,7 +161,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
           break;
         case "ArrowRight":
           e.preventDefault();
-          if (playbackMode === 'locked' && !isAssigned) {
+          if (!isAssigned) {
             const MAX_FORWARD_WINDOW = 10;
             const blockStart = activeSegment?.startTimeSeconds || 0;
             const targetTime = Math.min(video.duration, video.currentTime + 5);
@@ -175,14 +175,12 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
           break;
         case "ArrowLeft":
           e.preventDefault();
-          if (playbackMode === 'locked') {
-            const blockStart = activeSegment?.startTimeSeconds || 0;
-            const targetTime = Math.max(0, video.currentTime - 5);
-            if (targetTime < blockStart) {
-              video.currentTime = blockStart;
-              showSnackbar("Rewind limited to current block. Use 'Unlock Video' for full exploration.");
-              return;
-            }
+          const blockStart = activeSegment?.startTimeSeconds || 0;
+          const targetTime = Math.max(0, video.currentTime - 5);
+          if (targetTime < blockStart) {
+            video.currentTime = blockStart;
+            showSnackbar("Rewind limited to current block.");
+            return;
           }
           video.currentTime = Math.max(0, video.currentTime - 5);
           break;
@@ -207,7 +205,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isVideoPlaying, segments, speakers.length, playbackMode, playbackSpeed]);
+  }, [isVideoPlaying, segments, speakers.length, playbackSpeed]);
 
   // Show snackbar helper
   const showSnackbar = (message: string) => {
@@ -298,9 +296,32 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
     restoreSession();
   }, [videoId, initialTranscript]);
 
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const updateTime = () => {
+      if (video.readyState >= 2) {
+        setCurrentVideoTime(video.currentTime);
+      }
+    };
+
+    video.addEventListener('timeupdate', updateTime);
+    video.addEventListener('seeked', updateTime);
+    video.addEventListener('play', updateTime);
+    video.addEventListener('pause', updateTime);
+
+    return () => {
+      video.removeEventListener('timeupdate', updateTime);
+      video.removeEventListener('seeked', updateTime);
+      video.removeEventListener('play', updateTime);
+      video.removeEventListener('pause', updateTime);
+    };
+  }, [isVideoPlaying]);
+
   // Mandatory Selection Monitor (10s Timeout & Forward Restriction)
   useEffect(() => {
-    if (!isVideoPlaying || playbackMode === 'unlocked' || isGlobalSaved) {
+    if (!isVideoPlaying || isGlobalSaved) {
       setSpeakerSelectionDeadline(null);
       return;
     }
@@ -366,12 +387,12 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
     }, 100);
 
     return () => clearInterval(checkInterval);
-  }, [segments, isVideoPlaying, playbackMode, speakers.length, isGlobalSaved]);
+  }, [segments, isVideoPlaying, speakers.length, isGlobalSaved]);
 
   // Behavioral Laws Enforcement (Seeking Logic)
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || playbackMode === 'unlocked' || isGlobalSaved) return;
+    if (!video || isGlobalSaved) return;
 
     const handleSeeking = () => {
       const currentTime = video.currentTime;
@@ -391,7 +412,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
       // 1. Rewind Restriction
       if (currentTime < blockStart) {
         video.currentTime = blockStart;
-        showSnackbar("Rewind limited to current block. Use 'Unlock Video' for full exploration.");
+        showSnackbar("Rewind limited to current block.");
       }
 
       // 2. Forward Restriction
@@ -403,23 +424,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
 
     video.addEventListener('seeking', handleSeeking);
     return () => video.removeEventListener('seeking', handleSeeking);
-  }, [segments, playbackMode, isGlobalSaved]);
-
-  const togglePlaybackMode = () => {
-    if (playbackMode === 'locked') {
-      setPlaybackMode('unlocked');
-      setIsVideoPlaying(false);
-      if (videoRef.current) videoRef.current.pause();
-      showSnackbar("Unlock Mode Active: Scrubbing enabled, transcription disabled");
-    } else {
-      setPlaybackMode('locked');
-      const activeSegment = segments.find(s => s.status === 'draft');
-      if (activeSegment && videoRef.current) {
-        videoRef.current.currentTime = activeSegment.startTimeSeconds || 0;
-      }
-      showSnackbar("Locked Mode Active: Snapped back to current block");
-    }
-  };
+  }, [segments, isGlobalSaved]);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomSpacerRef = useRef<HTMLDivElement>(null);
@@ -754,19 +759,18 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
     if (!timeStr || timeStr === "--:--") return;
     const seconds = parseTimeToSeconds(timeStr);
 
-    if (!isVideoPlaying) {
+    if (isVideoPlaying && videoRef.current) {
+      videoRef.current.currentTime = seconds;
+      videoRef.current.play().catch(() => { });
+    } else {
       setIsVideoPlaying(true);
+      // Wait for mounting and ref sync
       setTimeout(() => {
         if (videoRef.current) {
           videoRef.current.currentTime = seconds;
           videoRef.current.play().catch(() => { });
         }
-      }, 100);
-    } else {
-      if (videoRef.current) {
-        videoRef.current.currentTime = seconds;
-        videoRef.current.play().catch(() => { });
-      }
+      }, 300);
     }
   };
 
@@ -820,8 +824,8 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
         };
       });
 
-    if (transcriptData.length === 0) {
-      showSnackbar("No transcription content to save");
+    if (transcriptData.length === 0 && speakers.length === 0) {
+      showSnackbar("No content or speakers to save");
       return;
     }
 
@@ -948,21 +952,29 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
     }
   };
 
+  const activeSegment = segments.find(segment => {
+    if (segment.startTimeSeconds === undefined) return false;
+    const end = segment.endTimeSeconds || (segment.startTimeSeconds + 10);
+    return currentVideoTime >= segment.startTimeSeconds && currentVideoTime <= end;
+  }) || segments[segments.length - 1];
+
+  const activeSpeakerId = activeSegment?.selectedSpeakerId;
+
   const getSpeakerPillStyle = (speakerIndex: number, speakerId: string, segment: TranscriptSegment, role: string) => {
     const isSelected = segment.selectedSpeakerId === speakerId;
 
     if (role === "coordinator") {
       if (isSelected) {
-        return "bg-[#FFF4C0] text-black border-[#FFE79E] ring-1 ring-[#FFD966]/40 font-bold";
+        return "bg-[#FFF4C0] text-black border-[#FFE79E] ring-2 ring-[#FFD966] font-black shadow-sm";
       }
-      return "bg-[#FFF4C0] text-black border-transparent hover:bg-[#FFEFB0]";
+      return "bg-[#FFF4C0]/50 text-black/70 border-transparent hover:bg-[#FFF4C0]";
     }
 
     if (isSelected) {
-      return "bg-[#F0FAFA] text-[#00A3AF] border-[#F0FAFA] font-medium ring-1 ring-[#00A3AF]/20";
+      return "bg-[#00A3AF] text-white border-[#00A3AF] font-bold shadow-md ring-2 ring-[#00A3AF]/20";
     }
 
-    return "bg-gray-100 text-gray-600 border-transparent hover:bg-gray-200";
+    return "bg-gray-100 text-gray-600 border-transparent hover:bg-gray-200 hover:text-gray-900";
   };
 
 
@@ -977,7 +989,10 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
   };
 
   const persistSpeakersToServer = async (currentSpeakers: Speaker[]) => {
-    if (!videoId) return;
+    if (!videoId) {
+      console.log("No videoId yet, speakers will be saved with the transcription");
+      return;
+    }
 
     try {
       const speakerData = currentSpeakers.map((speaker) => {
@@ -1002,7 +1017,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
       // We send an empty transcriptData to just update speakers
       // Or we can send the current segments too.
       // For now, let's just update speakers in the database for this video.
-      await fetch("/api/transcriptions/save", {
+      const response = await fetch("/api/transcriptions/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1024,8 +1039,13 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
           speakerData: speakerData,
         }),
       });
+
+      if (response.ok) {
+        showSnackbar("Speakers updated");
+      }
     } catch (error) {
       console.error("Failed to persist speakers to server:", error);
+      showSnackbar("Failed to update speakers");
     }
   };
 
@@ -1166,12 +1186,6 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
   const handleSegmentFocus = (segmentId: string) => {
     if (isGlobalSaved) return;
 
-    // Exit unlock mode if active
-    if (playbackMode === 'unlocked') {
-      setPlaybackMode('locked');
-      showSnackbar("Returning to Locked Mode");
-    }
-
     // Snap video to segment start
     const segment = segments.find(s => s.id === segmentId);
     if (segment && videoRef.current) {
@@ -1265,26 +1279,6 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
         <div className="px-4 lg:px-6 py-2 lg:py-3 flex items-center justify-between h-auto lg:h-[40px]">
           <div className="flex items-center gap-4">
             <h2 className="text-[18px] lg:text-[20px] font-semibold text-[#111827]">Manual Editor</h2>
-            <button
-              onClick={togglePlaybackMode}
-              className={`px-3 py-1 rounded-full text-xs font-bold transition-all flex items-center gap-2 border
-                ${playbackMode === 'unlocked'
-                  ? "bg-amber-100 text-amber-700 border-amber-300 shadow-inner"
-                  : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50 shadow-sm"
-                }`}
-            >
-              {playbackMode === 'unlocked' ? (
-                <>
-                  <LockOpenIcon className="w-3.5 h-3.5" />
-                  Video Unlocked
-                </>
-              ) : (
-                <>
-                  <LockClosedIcon className="w-3.5 h-3.5" />
-                  Unlock Video
-                </>
-              )}
-            </button>
           </div>
           <div className="flex gap-2 lg:gap-3">
             {videoId && (
@@ -1320,6 +1314,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
             <div className="w-full flex-1 h-full min-w-0">
               <SpeakersCarousel
                 speakersData={speakers}
+                activeSpeakerId={activeSpeakerId}
                 onUpload={handleFileUpload}
                 onUpdateAvatar={handleUpdateAvatar}
                 onUpdateSpeaker={handleUpdateSpeaker}
@@ -1332,6 +1327,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
               <div className="h-full w-full rounded-2xl overflow-hidden shadow-md bg-black relative">
                 <SessionVideoPlayer
                   ref={videoRef}
+                  videoId={videoId}
                   videoUrl={mediaUrl}
                   isPlaying={isVideoPlaying}
                   onPlayStateChange={setIsVideoPlaying}
@@ -1361,7 +1357,7 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
             const isStateSelected = !!segment.state;
             const isAssigned = isSpeakerSelected || isStateSelected;
             const hasStartedTyping = segment.content.length > 0;
-            const isLocked = isGlobalSaved || (!isAssigned && !isGlobalSaved) || playbackMode === 'unlocked';
+            const isLocked = isGlobalSaved || (!isAssigned && !isGlobalSaved);
             const isLastSegment = index === segments.length - 1;
             const isCurrentDraft = segment.status === 'draft';
 
@@ -1380,28 +1376,15 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
                   relative flex flex-col p-3 rounded-xl border bg-white transition-all duration-300
                   ${isGlobalSaved ? 'opacity-80 border-gray-100' : 'opacity-100 border-gray-200 shadow-sm'}
                   ${!isAssigned && !isGlobalSaved ? 'border-dashed border-gray-300' : 'border-solid'}
-                  ${playbackMode === 'unlocked' ? 'opacity-50 grayscale-[0.2]' : ''}
                 `}
               >
 
                 {/* TIMER OVERLAY FOR DRAFT BLOCKS */}
-                {isCurrentDraft && !isAssigned && speakerSelectionDeadline && !isGlobalSaved && playbackMode === 'locked' && (
+                {isCurrentDraft && !isAssigned && speakerSelectionDeadline && !isGlobalSaved && (
                   <div className="absolute -top-2 left-1/2 -translate-x-1/2 z-40">
                     <div className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-lg animate-pulse flex items-center gap-1">
                       <Image src={ClockIcon} alt="clock" width={12} height={12} className="invert brightness-0" />
                       {Math.ceil((speakerSelectionDeadline - Date.now()) / 1000)}s to assign speaker
-                    </div>
-                  </div>
-                )}
-
-                {playbackMode === 'unlocked' && (
-                  <div
-                    className="absolute inset-0 z-40 cursor-pointer flex flex-col items-center justify-center bg-gray-50/10 backdrop-blur-[0.5px] rounded-xl"
-                    onClick={togglePlaybackMode}
-                  >
-                    <div className="bg-white/90 px-4 py-2 rounded-full shadow-xl border border-amber-200 flex items-center gap-2 scale-90">
-                      <LockOpenIcon className="w-4 h-4 text-amber-500" />
-                      <span className="text-xs font-bold text-amber-700 uppercase tracking-wider">Video Unlocked — Click to return</span>
                     </div>
                   </div>
                 )}

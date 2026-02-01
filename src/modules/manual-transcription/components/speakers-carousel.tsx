@@ -14,6 +14,7 @@ export interface Speaker {
 
 interface SpeakersCarouselProps {
   speakersData: Speaker[];
+  activeSpeakerId?: string | null;
   onUpload: (e: React.ChangeEvent<HTMLInputElement>, role: 'coordinator' | 'speaker') => void;
   onUpdateAvatar: (id: string, file: File) => void;
   onUpdateSpeaker: (id: string, newName: string) => void;
@@ -22,6 +23,7 @@ interface SpeakersCarouselProps {
 
 export default function SpeakersCarousel({
   speakersData,
+  activeSpeakerId,
   onUpload,
   onUpdateAvatar,
   onUpdateSpeaker,
@@ -216,25 +218,31 @@ export default function SpeakersCarousel({
           {speakersData.map((speaker) => (
             <div key={speaker.id} className="mt-[10px] speaker-item flex flex-col items-center w-[120px] group relative shrink-0">
 
-              <div className="relative w-25 h-25 mb-3">
+              <div className={`relative w-25 h-25 mb-3 transition-all duration-300 ${activeSpeakerId === speaker.id ? 'scale-110' : ''}`}>
                 {speaker.avatar && speaker.avatar.trim() ? (
                   <img
                     src={speaker.avatar}
                     alt={speaker.name}
-                    className={`w-full h-full rounded-full object-cover shadow-sm transition-transform group-hover:scale-105 border-4
-                      ${speaker.role === 'coordinator' ? "border-[#FFF4C0]" : "border-white"}
+                    className={`w-full h-full rounded-full object-cover shadow-sm transition-all border-4
+                      ${activeSpeakerId === speaker.id 
+                        ? "border-[#00A3AF] shadow-[0_0_15px_rgba(0,163,175,0.4)]" 
+                        : speaker.role === 'coordinator' ? "border-[#FFF4C0]" : "border-white"}
                     `}
                   />
                 ) : (
-                  <div className={`w-full h-full rounded-full flex items-center justify-center shadow-sm transition-transform group-hover:scale-105 border-4 bg-gray-200
-                    ${speaker.role === 'coordinator' ? "border-[#FFF4C0]" : "border-white"}
+                  <div className={`w-full h-full rounded-full flex items-center justify-center shadow-sm transition-all border-4 bg-gray-200
+                    ${activeSpeakerId === speaker.id 
+                      ? "border-[#00A3AF] shadow-[0_0_15px_rgba(0,163,175,0.4)]" 
+                      : speaker.role === 'coordinator' ? "border-[#FFF4C0]" : "border-white"}
                   `}>
                     <UserIcon className="w-7 h-7 text-gray-400" />
                   </div>
                 )}
 
                 {speaker.role === 'coordinator' && (
-                  <span className="absolute -top-1 -right-1 bg-[#FFF4C0] text-black text-[8px] font-bold px-2 py-0.5 rounded-full shadow-sm z-10 border-2 border-white">
+                  <span className={`absolute -top-1 -right-1 text-black text-[8px] font-bold px-2 py-0.5 rounded-full shadow-sm z-10 border-2 border-white transition-colors
+                    ${activeSpeakerId === speaker.id ? "bg-[#00A3AF] text-white" : "bg-[#FFF4C0]"}
+                  `}>
                     MODERATOR
                   </span>
                 )}

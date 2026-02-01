@@ -97,6 +97,7 @@ export default function TranscriptionViewPage() {
     const [video, setVideo] = useState<VideoData | null>(null);
     const [isGlobalSaved, setIsGlobalSaved] = useState(true); // Default to view mode
     const [isSaving, setIsSaving] = useState(false);
+    const lastUrlRefreshTime = useRef<number>(0); // Track last refresh to avoid redundant loads
 
     // Video player state
     const [isVideoPlaying, setIsVideoPlaying] = useState(false);
@@ -270,20 +271,21 @@ export default function TranscriptionViewPage() {
             });
 
             const transcriptData = segments
-                .filter(seg => seg.content.trim() !== "")
+                .filter(seg => seg.content.trim() !== "" || seg.state)
                 .map((seg, idx) => {
                     const speaker = currentSpeakers.find(s => s.id === seg.selectedSpeakerId);
+                    const speakerName = speaker ? speaker.name : (seg.state ? seg.state.replace('_', ' ').toUpperCase() : "Unknown");
                     return {
                         id: idx,
-                        name: speaker ? speaker.name : "Unknown",
+                        name: speakerName,
                         time: seg.timestamp || "00:00",
-                        text: seg.content,
+                        text: seg.content || `[${speakerName}]`,
                         startTime: seg.startTimeSeconds ?? parseTimeToSeconds(seg.timestamp),
                         endTime: seg.endTimeSeconds ?? (parseTimeToSeconds(seg.timestamp) + 5),
                     };
                 });
 
-            await fetch("/api/transcriptions/save", {
+            const response = await fetch("/api/transcriptions/save", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -293,8 +295,13 @@ export default function TranscriptionViewPage() {
                     speakerData: speakerData,
                 }),
             });
+
+            if (response.ok) {
+                showSnackbar("Speakers updated");
+            }
         } catch (error) {
             console.error("Failed to persist speakers to server:", error);
+            showSnackbar("Failed to update speakers");
         }
     };
 
@@ -796,6 +803,11 @@ export default function TranscriptionViewPage() {
         return activeSegment?.id || null;
     }, [currentVideoTime, segments]);
 
+    const activeSpeakerId = useMemo(() => {
+        const activeSegment = segments.find(s => s.id === activeSegmentId);
+        return activeSegment?.selectedSpeakerId || null;
+    }, [activeSegmentId, segments]);
+
     // Mandatory Selection Monitor (10s Timeout & Forward Restriction)
     useEffect(() => {
         if (!isVideoPlaying || isGlobalSaved) {
@@ -1203,20 +1215,19 @@ export default function TranscriptionViewPage() {
         if (!timeStr || timeStr === "--:--") return;
         const seconds = parseTimeToSeconds(timeStr);
 
-        // Ensure video is playing
-        if (!isVideoPlaying) {
+        if (isVideoPlaying && videoRef.current) {
+            videoRef.current.currentTime = seconds;
+            videoRef.current.play().catch(() => { });
+        } else {
             setIsVideoPlaying(true);
+            // Wait for mounting and ref sync
+            setTimeout(() => {
+                if (videoRef.current) {
+                    videoRef.current.currentTime = seconds;
+                    videoRef.current.play().catch(() => { });
+                }
+            }, 300);
         }
-
-        // Set time and play
-        setTimeout(() => {
-            if (videoRef.current) {
-                videoRef.current.currentTime = seconds;
-                videoRef.current.play().catch((err) => {
-                    console.error("Video play error:", err);
-                });
-            }
-        }, 100);
     };
 
     const handleDeleteSegment = (id: string) => {
@@ -1247,17 +1258,7 @@ export default function TranscriptionViewPage() {
             const currentSegment = segments[index];
             const video = videoRef.current;
 
-            // 1. Mandatory Selection Validation
-            if (!currentSegment.selectedSpeakerId && !currentSegment.state) {
-                if (video && !video.paused) {
-                    video.pause();
-                    setIsVideoPlaying(false);
-                }
-                showSnackbar("Mandatory: Select a speaker or state before continuing");
-                return;
-            }
-
-            // 2. Prepare updated segments
+            // 1. Prepare updated segments
             const currentTime = video ? video.currentTime : (currentSegment.startTimeSeconds || 0) + 5;
 
             let nextSegments: TranscriptSegment[];
@@ -1385,16 +1386,16 @@ export default function TranscriptionViewPage() {
 
         if (role === "coordinator") {
             if (isSelected) {
-                return "bg-[#FFF4C0] text-black border-[#FFE79E] ring-1 ring-[#FFD966]/40 font-bold";
+                return "bg-[#FFF4C0] text-black border-[#FFE79E] ring-2 ring-[#FFD966] font-black shadow-sm";
             }
-            return "bg-[#FFF4C0] text-black border-transparent hover:bg-[#FFEFB0]";
+            return "bg-[#FFF4C0]/50 text-black/70 border-transparent hover:bg-[#FFF4C0]";
         }
 
         if (isSelected) {
-            return "bg-[#F0FAFA] text-[#00A3AF] border-[#F0FAFA] font-medium ring-1 ring-[#00A3AF]/20";
+            return "bg-[#00A3AF] text-white border-[#00A3AF] font-bold shadow-md ring-2 ring-[#00A3AF]/20";
         }
 
-        return "bg-gray-100 text-gray-600 border-transparent hover:bg-gray-200";
+        return "bg-gray-100 text-gray-600 border-transparent hover:bg-gray-200 hover:text-gray-900";
     };
 
     const isAutoTranscription = transcript?.transcription_type === "auto";
@@ -1566,6 +1567,7 @@ export default function TranscriptionViewPage() {
                         <div className="w-full flex-1 h-full min-w-0">
                             <SpeakersCarousel
                                 speakersData={speakers}
+                                activeSpeakerId={activeSpeakerId}
                                 onUpload={handleFileUpload}
                                 onUpdateAvatar={handleUpdateAvatar}
                                 onUpdateSpeaker={handleUpdateSpeaker}
@@ -1587,13 +1589,20 @@ export default function TranscriptionViewPage() {
                                     if (videoUrl && videoUrl.trim()) {
                                         return (
                                             <SessionVideoPlayer
-                                                key={`${videoUrl}-${video?.id || ''}`}
+                                                key={videoId}
                                                 ref={videoRef}
+                                                videoId={videoId}
                                                 videoUrl={videoUrl}
                                                 isPlaying={isVideoPlaying}
                                                 onPlayStateChange={async (playing) => {
                                                     setIsVideoPlaying(playing);
-                                                    if (playing && video?.fileKey) {
+                                                    
+                                                    // Only refresh presigned URL if playing AND it's been more than 45 minutes since last refresh
+                                                    // This prevents redundant video.load() calls on every play click
+                                                    const now = Date.now();
+                                                    const needsRefresh = now - lastUrlRefreshTime.current > 45 * 60 * 1000;
+                                                    
+                                                    if (playing && video?.fileKey && needsRefresh) {
                                                         try {
                                                             const keyResponse = await fetch(`/api/videos/${encodeURIComponent(video.fileKey)}`);
                                                             if (keyResponse.ok) {
@@ -1601,6 +1610,7 @@ export default function TranscriptionViewPage() {
                                                                 if (keyData.url && keyData.url.trim()) {
                                                                     setVideo(prev => prev ? { ...prev, source_url: keyData.url } : null);
                                                                     setVideoUrl(keyData.url, video.id);
+                                                                    lastUrlRefreshTime.current = now;
                                                                 }
                                                             }
                                                         } catch (err) {

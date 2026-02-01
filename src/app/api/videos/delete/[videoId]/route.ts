@@ -45,6 +45,42 @@ export async function DELETE(
 ) {
     try {
         const { videoId } = await params;
+        const { searchParams } = new URL(req.url);
+        const fileKey = searchParams.get("fileKey");
+
+        // If videoId is "none" and we have a fileKey, delete directly from S3
+        if (videoId === "none" && fileKey) {
+            try {
+                const DO_SPACES_ENDPOINT = process.env.DO_SPACES_ENDPOINT;
+                const DO_SPACES_ORIGIN_ENDPOINT = process.env.DO_SPACES_ORIGIN_ENDPOINT;
+                const DO_SPACES_BUCKET = process.env.DO_SPACES_BUCKET;
+                const DO_SPACES_REGION = process.env.DO_SPACES_REGION || "nyc3";
+
+                if (DO_SPACES_BUCKET) {
+                    const formattedEndpoint = formatEndpoint(DO_SPACES_ENDPOINT, DO_SPACES_ORIGIN_ENDPOINT, DO_SPACES_BUCKET, DO_SPACES_REGION);
+                    const s3Client = createS3Client(formattedEndpoint);
+
+                    const deleteCommand = new DeleteObjectCommand({
+                        Bucket: DO_SPACES_BUCKET,
+                        Key: fileKey,
+                    });
+
+                    await s3Client.send(deleteCommand);
+                    console.log(`Deleted orphaned video file: ${fileKey}`);
+                    
+                    return NextResponse.json({
+                        success: true,
+                        message: "Video file deleted successfully from storage",
+                    });
+                }
+            } catch (s3Error: any) {
+                console.error("Failed to delete orphaned video file from Spaces:", s3Error);
+                return NextResponse.json(
+                    { error: `Failed to delete file from storage: ${s3Error.message}` },
+                    { status: 500 }
+                );
+            }
+        }
 
         // Get video from database
         // @ts-ignore - Prisma types generated at runtime
