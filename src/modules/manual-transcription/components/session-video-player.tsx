@@ -17,6 +17,8 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const isInitialSeekDone = useRef(false);
     const [isLoaded, setIsLoaded] = useState(false);
+    const [isMetadataLoaded, setIsMetadataLoaded] = useState(false);
+    const [bufferingProgress, setBufferingProgress] = useState(0);
 
     // Persistence logic
     const saveCurrentTime = () => {
@@ -24,7 +26,10 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
         const time = internalVideoRef.current.currentTime;
         // Only save if it's a valid positive number
         if (typeof time === 'number' && time > 0) {
-          localStorage.setItem(`video-time-${videoId}`, time.toString());
+          localStorage.setItem(`video-time-${videoId}`, JSON.stringify({
+            time: time,
+            timestamp: Date.now()
+          }));
         }
       }
     };
@@ -33,25 +38,28 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
     const restoreTime = () => {
       if (!videoId || !internalVideoRef.current || isInitialSeekDone.current) return;
 
-      const savedTime = localStorage.getItem(`video-time-${videoId}`);
-      if (savedTime) {
-        const time = parseFloat(savedTime);
-        if (!isNaN(time) && time > 0) {
-          console.log(`Restoring video time for ${videoId}: ${time}`);
+      const savedData = localStorage.getItem(`video-time-${videoId}`);
+      if (savedData) {
+        try {
+          const { time, timestamp } = JSON.parse(savedData);
+          const now = Date.now();
           
-          // Seek immediately if possible
-          try {
+          // Only restore if saved within the last 4 hours (to avoid stale resumes)
+          if (time > 0 && (now - timestamp < 4 * 60 * 60 * 1000)) {
+            console.log(`Restoring video time for ${videoId}: ${time}`);
+            
+            // Seek immediately
             internalVideoRef.current.currentTime = time;
-          } catch (e) {
-            console.warn("Immediate seek failed, will retry in timeout", e);
-          }
 
-          // And also after a delay to be safe (for some browsers/formats)
-          setTimeout(() => {
-            if (internalVideoRef.current) {
-              internalVideoRef.current.currentTime = time;
-            }
-          }, 150);
+            // And also after a delay to be safe
+            setTimeout(() => {
+              if (internalVideoRef.current) {
+                internalVideoRef.current.currentTime = time;
+              }
+            }, 150);
+          }
+        } catch (e) {
+          console.error("Failed to parse saved video time", e);
         }
       }
       isInitialSeekDone.current = true;
@@ -71,6 +79,8 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
     useEffect(() => {
       isInitialSeekDone.current = false;
       setIsLoaded(false);
+      setIsMetadataLoaded(false);
+      setBufferingProgress(0);
     }, [videoId]);
 
     // Decode HTML entities in URL (e.g., &amp; -> &)
@@ -80,6 +90,8 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
     useEffect(() => {
       setHasError(false);
       setErrorMessage(null);
+      setIsMetadataLoaded(false);
+      setBufferingProgress(0);
     }, [decodedUrl]);
 
     // Sync refs
@@ -112,23 +124,27 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
       const video = internalVideoRef.current;
       if (video && decodedUrl && decodedUrl.trim()) {
         const currentSrc = video.src || video.getAttribute('src') || '';
-        
-        // Only reload if the URL has actually changed significantly
-        // For presigned URLs, we check if the base part (before query) is the same
         const getBaseUrl = (url: string) => url.split('?')[0];
         const isNewSource = getBaseUrl(currentSrc) !== getBaseUrl(decodedUrl) && 
                            !currentSrc.endsWith(decodedUrl);
 
         if (isNewSource || hasError) {
-          console.log("Source URL changed or recovering from error, reloading video...");
-          
-          // CRITICAL: Save current time before switching source to prevent reset to 0
           saveCurrentTime();
-          
-          isInitialSeekDone.current = false; // Prepare for new seek
-          video.src = decodedUrl;
-          video.load();
+          isInitialSeekDone.current = false;
           setIsLoaded(false);
+          setIsMetadataLoaded(false);
+          setBufferingProgress(0);
+          
+          // Set source without calling load() - browser will handle progressive loading
+          // Only call load() if we're recovering from an error
+          if (hasError) {
+            video.src = decodedUrl;
+            video.load();
+          } else {
+            // For normal source changes, just update src - browser handles it progressively
+            video.src = decodedUrl;
+            // Don't call load() - let the browser handle it naturally for better performance
+          }
         }
       }
     }, [decodedUrl, videoId, hasError]);
@@ -151,19 +167,28 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
       }
     }, [isPlaying, isLoaded]);
 
-    const handlePlayClick = (e: React.MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      
-      if (!decodedUrl || !decodedUrl.trim()) {
-        alert("No valid video URL available");
-        return;
+    const handlePlayPauseToggle = (e?: React.MouseEvent) => {
+      if (e) {
+        e.preventDefault();
+        e.stopPropagation();
       }
 
-      onPlayStateChange(true);
+      const video = internalVideoRef.current;
+      if (!video || !isLoaded) return;
+
+      if (video.paused) {
+        // Optimistic UI: start playing immediately for better responsiveness
+        video.play().catch(() => {});
+        onPlayStateChange(true);
+      } else {
+        video.pause();
+        onPlayStateChange(false);
+      }
     };
 
-    const handleCloseClick = () => {
+    const handleCloseClick = (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
       if (internalVideoRef.current) {
         internalVideoRef.current.pause();
       }
@@ -187,7 +212,7 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                 </div>
                 <button
                   className="absolute top-2 right-2 bg-white/80 hover:bg-white p-1 rounded-full shadow-lg"
-                  onClick={handleCloseClick}
+                  onClick={(e) => handleCloseClick(e)}
                 >
                   <XMarkIcon className="w-5 h-5 text-black" />
                 </button>
@@ -200,8 +225,8 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                   const isControlElement = target.closest('button, input, progress') || 
                                          ['BUTTON', 'INPUT', 'PROGRESS'].includes(target.tagName);
                   
-                  if (!isControlElement && internalVideoRef.current) {
-                    onPlayStateChange(internalVideoRef.current.paused);
+                  if (!isControlElement) {
+                    handlePlayPauseToggle();
                   }
                 }}
               >
@@ -210,7 +235,7 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                   src={decodedUrl}
                   controls
                   playsInline
-                  preload="auto"
+                  preload="metadata"
                   className="w-full h-full object-contain"
                   onPlay={() => onPlayStateChange(true)}
                   onPause={() => {
@@ -219,7 +244,10 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                   }}
                   onTimeUpdate={handleTimeUpdate}
                   onLoadedMetadata={() => {
+                    setIsMetadataLoaded(true);
                     restoreTime();
+                    // Metadata loaded means we can show the video frame and controls
+                    setIsLoaded(true);
                   }}
                   onLoadedData={() => {
                     setIsLoaded(true);
@@ -234,6 +262,24 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                       internalVideoRef.current?.play().catch(() => {});
                     }
                   }}
+                  onCanPlayThrough={() => {
+                    // Video has buffered enough to play through without stopping
+                    setIsLoaded(true);
+                    setBufferingProgress(100);
+                  }}
+                  onWaiting={() => {
+                    // Video is buffering - could show a subtle indicator
+                    console.log("Video buffering...");
+                  }}
+                  onProgress={() => {
+                    // Track buffering progress for better UX
+                    const video = internalVideoRef.current;
+                    if (video && video.buffered.length > 0 && video.duration > 0) {
+                      const bufferedEnd = video.buffered.end(video.buffered.length - 1);
+                      const bufferedPercent = (bufferedEnd / video.duration) * 100;
+                      setBufferingProgress(Math.min(100, bufferedPercent));
+                    }
+                  }}
                   onError={(e) => {
                     const error = e.currentTarget.error;
                     if (error?.code === error?.MEDIA_ERR_SRC_NOT_SUPPORTED) {
@@ -243,11 +289,11 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                   }}
                 />
 
-                {/* Overlay Play Button when paused by system OR not playing */}
+                {/* Overlay Play Button when paused */}
                 {!isPlaying && isLoaded && (
                   <div 
                     className="absolute inset-0 flex items-center justify-center bg-black/30 transition-opacity group-hover:bg-black/40 cursor-pointer"
-                    onClick={handlePlayClick}
+                    onClick={(e) => handlePlayPauseToggle(e)}
                   >
                     <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-md shadow-2xl scale-100 group-hover:scale-110 transition-transform">
                       <PlayCircleIcon className="w-12 h-12 text-white" />
@@ -255,10 +301,23 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                   </div>
                 )}
                 
-                {/* Initial Loading state */}
-                {!isLoaded && (
-                  <div className="absolute inset-0 w-full h-full bg-gray-900 flex items-center justify-center">
-                    <div className="w-12 h-12 border-4 border-white/20 border-t-white rounded-full animate-spin" />
+                {/* Initial Loading state - only show while metadata is loading */}
+                {!isMetadataLoaded && (
+                  <div className="absolute inset-0 w-full h-full bg-gray-900 flex items-center justify-center z-10">
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="w-12 h-12 border-4 border-white/20 border-t-[#00A3AF] rounded-full animate-spin" />
+                      <p className="text-white text-xs font-medium">Loading video...</p>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Subtle buffering indicator when video is ready but still buffering */}
+                {isMetadataLoaded && bufferingProgress < 100 && isPlaying && (
+                  <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-20">
+                    <div className="bg-black/70 backdrop-blur-sm text-white text-xs px-3 py-1.5 rounded-full flex items-center gap-2">
+                      <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>Buffering... {Math.round(bufferingProgress)}%</span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -266,13 +325,12 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
             
             <button
               className="absolute top-2 right-2 bg-white/80 hover:bg-white p-1 rounded-full shadow-lg z-10"
-              onClick={handleCloseClick}
+              onClick={(e) => handleCloseClick(e)}
             >
               <XMarkIcon className="w-5 h-5 text-black" />
             </button>
           </div>
         ) : videoId ? (
-          // Loading state if we have a videoId but no URL yet
           <div className="relative w-full h-full flex items-center justify-center bg-gray-900 rounded-2xl">
             <div className="flex flex-col items-center gap-3">
               <div className="w-12 h-12 border-4 border-white/20 border-t-[#00A3AF] rounded-full animate-spin" />

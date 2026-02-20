@@ -131,93 +131,123 @@ export default function TranscriptionViewPage() {
     const [speakerCreationTriggerSegmentId, setSpeakerCreationTriggerSegmentId] = useState<string | null>(null);
     const [showShortcuts, setShowShortcuts] = useState(false);
 
+    // Use refs for values needed in event listeners to avoid frequent re-binding
+    const segmentsRef = useRef(segments);
+    const speakersRef = useRef(speakers);
+    const playbackSpeedRef = useRef(playbackSpeed);
+
+    useEffect(() => {
+        segmentsRef.current = segments;
+    }, [segments]);
+
+    useEffect(() => {
+        speakersRef.current = speakers;
+    }, [speakers]);
+
+    useEffect(() => {
+        playbackSpeedRef.current = playbackSpeed;
+    }, [playbackSpeed]);
+
     // Keyboard shortcuts for media player
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            // We use Shift as a modifier to avoid conflicts with typing
-            if (!e.shiftKey) return;
+            // Don't trigger shortcuts if user is typing in an input or textarea
+            const isInput = e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement;
 
             const video = videoRef.current;
             if (!video) return;
 
+            const currentSegments = segmentsRef.current;
+            const currentSpeakers = speakersRef.current;
+
             // Behavioral Laws Check
             const now = Date.now();
-            const activeSegment = segments.find(s => {
+            const activeSegment = currentSegments.find(s => {
                 const start = s.startTimeSeconds || 0;
                 const end = s.endTimeSeconds || (start + 10000);
                 return video.currentTime >= start && video.currentTime <= end;
-            }) || segments[segments.length - 1];
+            }) || currentSegments[currentSegments.length - 1];
 
             const isAssigned = activeSegment ? (!!activeSegment.selectedSpeakerId || !!activeSegment.state) : false;
             const isDeadlinePassed = activeSegment ? (now - activeSegment.createdAt > 10000) : false;
 
             switch (e.code) {
                 case "Space":
-                    e.preventDefault();
-                    if (video.paused) {
-                        // Prerequisite Laws
-                        if (speakers.length === 0) {
-                            showSnackbar("Prerequisite: Add at least one speaker to begin transcription");
-                            return;
+                    if (!isInput) {
+                        e.preventDefault();
+                        if (video.paused) {
+                            // Prerequisite Laws
+                            if (currentSpeakers.length === 0) {
+                                showSnackbar("Prerequisite: Add at least one speaker to begin transcription");
+                                return;
+                            }
+                            if (!isAssigned && isDeadlinePassed) {
+                                showSnackbar("Playback paused: Select a speaker or state to continue");
+                                return;
+                            }
+                            video.play().catch(console.error);
+                            setIsVideoPlaying(true);
+                        } else {
+                            video.pause();
+                            setIsVideoPlaying(false);
                         }
-                        if (!isAssigned && isDeadlinePassed) {
-                            showSnackbar("Playback paused: Select a speaker or state to continue");
-                            return;
-                        }
-                        video.play().catch(console.error);
-                        setIsVideoPlaying(true);
-                    } else {
-                        video.pause();
-                        setIsVideoPlaying(false);
                     }
                     break;
                 case "ArrowRight":
-                    e.preventDefault();
-                    if (!isAssigned) {
-                        const MAX_FORWARD_WINDOW = 10;
-                        const blockStart = activeSegment?.startTimeSeconds || 0;
-                        const targetTime = Math.min(video.duration, video.currentTime + 5);
-                        if (targetTime > blockStart + MAX_FORWARD_WINDOW) {
-                            video.currentTime = blockStart + MAX_FORWARD_WINDOW;
-                            showSnackbar("Restriction: Complete speaker selection to continue forward");
-                            return;
+                    if (!isInput) {
+                        e.preventDefault();
+                        if (!isAssigned) {
+                            const MAX_FORWARD_WINDOW = 10;
+                            const blockStart = activeSegment?.startTimeSeconds || 0;
+                            const targetTime = Math.min(video.duration, video.currentTime + 5);
+                            if (targetTime > blockStart + MAX_FORWARD_WINDOW) {
+                                video.currentTime = blockStart + MAX_FORWARD_WINDOW;
+                                showSnackbar("Restriction: Complete speaker selection to continue forward");
+                                return;
+                            }
                         }
+                        video.currentTime = Math.min(video.duration, video.currentTime + 5);
                     }
-                    video.currentTime = Math.min(video.duration, video.currentTime + 5);
                     break;
                 case "ArrowLeft":
-                    e.preventDefault();
-                    const blockStart = activeSegment?.startTimeSeconds || 0;
-                    const targetTime = Math.max(0, video.currentTime - 5);
-                    if (targetTime < blockStart) {
-                        video.currentTime = blockStart;
-                        showSnackbar("Rewind limited to current block.");
-                        return;
+                    if (!isInput) {
+                        e.preventDefault();
+                        const blockStart = activeSegment?.startTimeSeconds || 0;
+                        const targetTime = Math.max(0, video.currentTime - 5);
+                        if (targetTime < blockStart) {
+                            video.currentTime = blockStart;
+                            showSnackbar("Rewind limited to current block.");
+                            return;
+                        }
+                        video.currentTime = Math.max(0, video.currentTime - 5);
                     }
-                    video.currentTime = Math.max(0, video.currentTime - 5);
                     break;
                 case "ArrowUp":
-                    e.preventDefault();
-                    setPlaybackSpeed(prev => {
-                        const newSpeed = Math.min(3, prev + 0.5);
-                        video.playbackRate = newSpeed;
-                        return newSpeed;
-                    });
+                    if (!isInput) {
+                        e.preventDefault();
+                        setPlaybackSpeed(prev => {
+                            const newSpeed = Math.min(3, prev + 0.5);
+                            video.playbackRate = newSpeed;
+                            return newSpeed;
+                        });
+                    }
                     break;
                 case "ArrowDown":
-                    e.preventDefault();
-                    setPlaybackSpeed(prev => {
-                        const newSpeed = Math.max(0.5, prev - 0.5);
-                        video.playbackRate = newSpeed;
-                        return newSpeed;
-                    });
+                    if (!isInput) {
+                        e.preventDefault();
+                        setPlaybackSpeed(prev => {
+                            const newSpeed = Math.max(0.5, prev - 0.5);
+                            video.playbackRate = newSpeed;
+                            return newSpeed;
+                        });
+                    }
                     break;
             }
         };
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [isVideoPlaying, segments, speakers.length, playbackSpeed]);
+    }, []);
 
     // Sync playback speed when video starts playing or changes
     useEffect(() => {
@@ -570,20 +600,6 @@ export default function TranscriptionViewPage() {
             window.removeEventListener('resize', resizeAllTextareas);
         };
     }, [segments, isGlobalSaved]);
-
-    // Ensure video URL is available for playback and refresh if needed
-    useEffect(() => {
-        const videoUrl = video?.source_url || video?.fileUrl;
-        if (videoUrl && videoRef.current) {
-            // Video URL is set, ensure player is ready
-            console.log("Video URL available:", videoUrl);
-            // If video element exists but src is different, update it
-            if (videoRef.current.src !== videoUrl) {
-                videoRef.current.src = videoUrl;
-                videoRef.current.load();
-            }
-        }
-    }, [video?.source_url, video?.fileUrl]);
 
     // Track video playback time for transcript highlighting (continuous tracking)
     useEffect(() => {
@@ -1362,11 +1378,23 @@ export default function TranscriptionViewPage() {
     const handleSegmentFocus = (segmentId: string) => {
         if (isGlobalSaved) return;
 
-        // Snap video to segment start
         const segment = segments.find(s => s.id === segmentId);
         if (segment && videoRef.current) {
             const startTime = segment.startTimeSeconds || 0;
-            videoRef.current.currentTime = startTime;
+            const video = videoRef.current;
+            const currentTime = video.currentTime;
+            
+            // Only seek if:
+            // 1. Video is paused, OR
+            // 2. Current time is more than 5 seconds away from segment start
+            // This prevents interrupting playback when user clicks to type while video is playing
+            const timeDifference = Math.abs(currentTime - startTime);
+            const shouldSeek = video.paused || timeDifference > 5;
+            
+            if (shouldSeek) {
+                video.currentTime = startTime;
+            }
+            // If video is playing and we're close to the segment start, don't interrupt playback
         }
     };
 
