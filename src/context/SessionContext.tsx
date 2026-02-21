@@ -30,7 +30,10 @@ interface SessionContextType {
     uploadStatus: UploadStatus;
     uploadError: string | null;
     uploadProgress: number; // 0-100
-    uploadFile: (file: File) => Promise<void>;
+    uploadFile: (file: File, folderId?: string | null) => Promise<void>;
+    abortUpload: () => void;
+    uploadFolderId: string | null; // Target project folder for upload (set from recordings)
+    setUploadFolderId: (id: string | null) => void;
     setVideoUrl: (url: string, videoId?: string) => void; // Set video URL from recordings page
     startTranscription: () => Promise<void>;
     stopTranscription: () => void; // Cancel ongoing transcription
@@ -54,11 +57,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const [uploadStatus, setUploadStatus] = useState<UploadStatus>("idle");
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [uploadProgress, setUploadProgress] = useState(0);
+    const [uploadFolderId, setUploadFolderId] = useState<string | null>(null);
 
     // Abort controller for cancelling transcription
     const transcriptionAbortController = useRef<AbortController | null>(null);
+    // Abort controller for cancelling upload
+    const uploadAbortControllerRef = useRef<AbortController | null>(null);
 
-    const uploadFile = async (uploadedFile: File) => {
+    const abortUpload = () => {
+        if (uploadAbortControllerRef.current) {
+            uploadAbortControllerRef.current.abort();
+            uploadAbortControllerRef.current = null;
+        }
+        setIsUploading(false);
+        setUploadProgress(0);
+        setUploadStatus("idle");
+        setUploadError(null);
+    };
+
+    const uploadFile = async (uploadedFile: File, targetFolderId?: string | null) => {
         // Create local blob URL for immediate preview
         const objectUrl = URL.createObjectURL(uploadedFile);
         setFile(uploadedFile);
@@ -68,6 +85,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setUploadStatus("uploading");
         setUploadError(null);
         setUploadProgress(0);
+
+        const controller = new AbortController();
+        uploadAbortControllerRef.current = controller;
+
+        let progressInterval: ReturnType<typeof setInterval> | null = null;
 
         try {
             // Upload to Digital Ocean Spaces
@@ -81,7 +103,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             });
 
             // Simulate progress (since we can't track actual upload progress with fetch)
-            const progressInterval = setInterval(() => {
+            progressInterval = setInterval(() => {
                 setUploadProgress((prev) => {
                     if (prev < 90) return prev + 5;
                     return prev;
@@ -91,10 +113,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             const response = await fetch("/api/upload", {
                 method: "POST",
                 body: formData,
-                // Don't set timeout - let it handle large files
+                signal: controller.signal,
             });
 
-            clearInterval(progressInterval);
+            if (progressInterval) {
+                clearInterval(progressInterval);
+                progressInterval = null;
+            }
             setUploadProgress(100);
 
             if (!response.ok) {
@@ -133,26 +158,58 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                 setVideoId(data.videoId);
             }
 
+            // If upload was for a project folder, create video record so it appears in that project
+            const folderIdToUse = targetFolderId ?? uploadFolderId;
+            const meta = data.videoMetadata || (data.key ? { fileName: data.fileName, fileKey: data.key, fileUrl: data.url } : null);
+            if (folderIdToUse && meta) {
+                try {
+                    setUploadFolderId(folderIdToUse);
+                    const saveRes = await fetch("/api/videos/save", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            ...meta,
+                            folder_id: folderIdToUse,
+                        }),
+                    });
+                    if (saveRes.ok) {
+                        const saveData = await saveRes.json();
+                        if (saveData.video?.id) setVideoId(saveData.video.id);
+                    }
+                } finally {
+                    setUploadFolderId(null);
+                }
+            }
+
+            uploadAbortControllerRef.current = null;
+            setIsUploading(false);
             // Reset success status after 3 seconds
             setTimeout(() => {
                 setUploadStatus("idle");
             }, 3000);
         } catch (error: any) {
-            console.error("Upload error:", error);
+            if (progressInterval) {
+                clearInterval(progressInterval);
+            }
+            uploadAbortControllerRef.current = null;
             setUploadProgress(0);
+            setIsUploading(false);
 
-            // Handle different error types
+            if (error?.name === "AbortError") {
+                setUploadError(null);
+                setUploadStatus("idle");
+                return;
+            }
+
+            console.error("Upload error:", error);
             let errorMessage = "Failed to upload file to storage";
             if (error.name === "TypeError" && error.message.includes("fetch")) {
                 errorMessage = "Network error: Could not connect to server. Please check your internet connection.";
             } else if (error.message) {
                 errorMessage = error.message;
             }
-
             setUploadError(errorMessage);
             setUploadStatus("error");
-        } finally {
-            setIsUploading(false);
         }
     };
 
@@ -293,6 +350,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                         };
                     }
 
+                    if (uploadFolderId) {
+                        saveBody.folder_id = uploadFolderId;
+                    }
                     if (saveBody.videoId || saveBody.videoMetadata) {
                         const saveResponse = await fetch("/api/transcriptions/save", {
                             method: "POST",
@@ -453,6 +513,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             uploadError,
             uploadProgress,
             uploadFile,
+            abortUpload,
+            uploadFolderId,
+            setUploadFolderId,
             setVideoUrl,
             startTranscription,
             stopTranscription,

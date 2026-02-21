@@ -10,7 +10,8 @@ export async function POST(req: NextRequest) {
             source_url,       // Canonical URL (required)
             provider_video_id, // Optional, e.g. YouTube ID
             duration_seconds,  // Optional, video duration
-            
+            folder_id,         // Optional, project folder to assign video to
+
             // Legacy fields (for backward compatibility)
             fileName,
             fileKey,
@@ -66,6 +67,7 @@ export async function POST(req: NextRequest) {
                     fileKey: fileKey || existingVideo.fileKey,
                     fileUrl: fileUrl || existingVideo.fileUrl,
                     fileSize: fileSize ? BigInt(fileSize) : existingVideo.fileSize,
+                    ...(folder_id != null && { folder_id }),
                     updatedAt: new Date(),
                 },
             });
@@ -96,6 +98,7 @@ export async function POST(req: NextRequest) {
                 fileKey: fileKey || null,
                 fileUrl: fileUrl || null,
                 fileSize: fileSize ? BigInt(fileSize) : undefined,
+                ...(folder_id != null && { folder_id }),
             },
         });
 

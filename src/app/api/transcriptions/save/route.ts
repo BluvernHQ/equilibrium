@@ -35,6 +35,7 @@ export async function POST(req: NextRequest) {
         const { 
             videoId, // Optional - if provided, use existing video
             videoMetadata, // Optional - video info to create if videoId not provided
+            folder_id, // Optional - project folder to assign the video to
             transcriptData, // Can be array of blocks or AssemblyAI format
             transcriptionType = "auto",
             language = "en",
@@ -140,6 +141,13 @@ export async function POST(req: NextRequest) {
             if (existingVideo) {
                 video = existingVideo;
                 finalVideoId = existingVideo.id;
+                if (folder_id != null) {
+                    // @ts-ignore
+                    video = await prisma.video.update({
+                        where: { id: existingVideo.id },
+                        data: { folder_id },
+                    });
+                }
             } else {
                 // Create new video
                 // @ts-ignore
@@ -158,6 +166,7 @@ export async function POST(req: NextRequest) {
                         fileKey: fileKey || null,
                         fileUrl: fileUrl || null,
                         fileSize: fileSize ? BigInt(fileSize) : null,
+                        ...(folder_id != null && { folder_id }),
                     },
                 });
                 finalVideoId = video.id;

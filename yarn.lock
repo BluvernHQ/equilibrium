@@ -788,20 +788,20 @@
     http-response-object "^3.0.1"
     parse-cache-control "^1.0.1"
 
-"@electric-sql/pglite-socket@0.0.6":
-  version "0.0.6"
-  resolved "https://registry.npmjs.org/@electric-sql/pglite-socket/-/pglite-socket-0.0.6.tgz"
-  integrity sha512-6RjmgzphIHIBA4NrMGJsjNWK4pu+bCWJlEWlwcxFTVY3WT86dFpKwbZaGWZV6C5Rd7sCk1Z0CI76QEfukLAUXw==
+"@electric-sql/pglite-socket@0.0.20":
+  version "0.0.20"
+  resolved "https://registry.npmjs.org/@electric-sql/pglite-socket/-/pglite-socket-0.0.20.tgz"
+  integrity sha512-J5nLGsicnD9wJHnno9r+DGxfcZWh+YJMCe0q/aCgtG6XOm9Z7fKeite8IZSNXgZeGltSigM9U/vAWZQWdgcSFg==
 
-"@electric-sql/pglite-tools@0.2.7":
-  version "0.2.7"
-  resolved "https://registry.npmjs.org/@electric-sql/pglite-tools/-/pglite-tools-0.2.7.tgz"
-  integrity sha512-9dAccClqxx4cZB+Ar9B+FZ5WgxDc/Xvl9DPrTWv+dYTf0YNubLzi4wHHRGRGhrJv15XwnyKcGOZAP1VXSneSUg==
+"@electric-sql/pglite-tools@0.2.20":
+  version "0.2.20"
+  resolved "https://registry.npmjs.org/@electric-sql/pglite-tools/-/pglite-tools-0.2.20.tgz"
+  integrity sha512-BK50ZnYa3IG7ztXhtgYf0Q7zijV32Iw1cYS8C+ThdQlwx12V5VZ9KRJ42y82Hyb4PkTxZQklVQA9JHyUlex33A==
 
-"@electric-sql/pglite@0.3.2":
-  version "0.3.2"
-  resolved "https://registry.npmjs.org/@electric-sql/pglite/-/pglite-0.3.2.tgz"
-  integrity sha512-zfWWa+V2ViDCY/cmUfRqeWY1yLto+EpxjXnZzenB1TyxsTiXaTWeZFIZw6mac52BsuQm0RjCnisjBtdBaXOI6w==
+"@electric-sql/pglite@0.3.15":
+  version "0.3.15"
+  resolved "https://registry.npmjs.org/@electric-sql/pglite/-/pglite-0.3.15.tgz"
+  integrity sha512-Cj++n1Mekf9ETfdc16TlDi+cDDQF0W7EcbyRHYOAeZdsAe8M/FJg18itDTSwyHfar2WIezawM9o0EKaRGVKygQ==
 
 "@emnapi/core@^1.4.3":
   version "1.7.1"
@@ -898,10 +898,10 @@
   resolved "https://registry.npmjs.org/@heroicons/react/-/react-2.2.0.tgz"
   integrity sha512-LMcepvRaS9LYHJGsF0zzmgKCUim/X3N/DQKc4jepAXJ7l8QxJ1PmxJzqplF2Z3FE4PqBAIGyJAQ/w4B5dsqbtQ==
 
-"@hono/node-server@1.19.6":
-  version "1.19.6"
-  resolved "https://registry.npmjs.org/@hono/node-server/-/node-server-1.19.6.tgz"
-  integrity sha512-Shz/KjlIeAhfiuE93NDKVdZ7HdBVLQAfdbaXEaoAVO3ic9ibRSLGIQGkcBbFyuLr+7/1D5ZCINM8B+6IvXeMtw==
+"@hono/node-server@1.19.9":
+  version "1.19.9"
+  resolved "https://registry.npmjs.org/@hono/node-server/-/node-server-1.19.9.tgz"
+  integrity sha512-vHL6w3ecZsky+8P5MD+eFfaGTyCeOHUIFYMGpQGbrBTSmNNoxv0if69rEZ5giu36weC5saFuznL411gRX7bJDw==
 
 "@humanfs/core@^0.19.1":
   version "0.19.1"
@@ -989,10 +989,10 @@
     "@jridgewell/resolve-uri" "^3.1.0"
     "@jridgewell/sourcemap-codec" "^1.4.14"
 
-"@mrleebo/prisma-ast@0.12.1":
-  version "0.12.1"
-  resolved "https://registry.npmjs.org/@mrleebo/prisma-ast/-/prisma-ast-0.12.1.tgz"
-  integrity sha512-JwqeCQ1U3fvccttHZq7Tk0m/TMC6WcFAQZdukypW3AzlJYKYTGNVd1ANU2GuhKnv4UQuOFj3oAl0LLG/gxFN1w==
+"@mrleebo/prisma-ast@0.13.1":
+  version "0.13.1"
+  resolved "https://registry.npmjs.org/@mrleebo/prisma-ast/-/prisma-ast-0.13.1.tgz"
+  integrity sha512-XyroGQXcHrZdvmrGJvsA9KNeOOgGMg1Vg9OlheUsBOSKznLMDl+YChxbkboRHvtFYJEMRYmlV3uoo/njCw05iw==
   dependencies:
     chevrotain "^10.5.0"
     lilconfig "^2.1.0"
@@ -1054,60 +1054,60 @@
     pg "^8.16.3"
     postgres-array "3.0.4"
 
-"@prisma/client-runtime-utils@7.2.0":
-  version "7.2.0"
-  resolved "https://registry.npmjs.org/@prisma/client-runtime-utils/-/client-runtime-utils-7.2.0.tgz"
-  integrity sha512-dn7oB53v0tqkB0wBdMuTNFNPdEbfICEUe82Tn9FoKAhJCUkDH+fmyEp0ClciGh+9Hp2Tuu2K52kth2MTLstvmA==
+"@prisma/client-runtime-utils@7.4.1":
+  version "7.4.1"
+  resolved "https://registry.npmjs.org/@prisma/client-runtime-utils/-/client-runtime-utils-7.4.1.tgz"
+  integrity sha512-8fy74OMYC7mt9cJ2MncIDk1awPRgmtXVvwTN2FlW4JVhbck8Dgt0wTkhPG85myfj4ZeP2stjF9Sdg12n5HrpQg==
 
-"@prisma/client@^7.2.0":
-  version "7.2.0"
-  resolved "https://registry.npmjs.org/@prisma/client/-/client-7.2.0.tgz"
-  integrity sha512-JdLF8lWZ+LjKGKpBqyAlenxd/kXjd1Abf/xK+6vUA7R7L2Suo6AFTHFRpPSdAKCan9wzdFApsUpSa/F6+t1AtA==
+"@prisma/client@^7.4.1":
+  version "7.4.1"
+  resolved "https://registry.npmjs.org/@prisma/client/-/client-7.4.1.tgz"
+  integrity sha512-pgIll2W1NVdof37xLeyySW+yfQ4rI+ERGCRwnO3BjVOx42GpYq6jhTyuALK8VKirvJJIvImgfGDA2qwhYVvMuA==
   dependencies:
-    "@prisma/client-runtime-utils" "7.2.0"
+    "@prisma/client-runtime-utils" "7.4.1"
 
-"@prisma/config@7.2.0":
-  version "7.2.0"
-  resolved "https://registry.npmjs.org/@prisma/config/-/config-7.2.0.tgz"
-  integrity sha512-qmvSnfQ6l/srBW1S7RZGfjTQhc44Yl3ldvU6y3pgmuLM+83SBDs6UQVgMtQuMRe9J3gGqB0RF8wER6RlXEr6jQ==
+"@prisma/config@7.4.1":
+  version "7.4.1"
+  resolved "https://registry.npmjs.org/@prisma/config/-/config-7.4.1.tgz"
+  integrity sha512-vteSXm8N46bo3FW9MhPGVHAj+KRgrR6TWtlSk6GqToCKjTnOexXdPZyiDyEsfVW38YhqEmVl6w/6iHN8uYVJcw==
   dependencies:
     c12 "3.1.0"
     deepmerge-ts "7.1.5"
     effect "3.18.4"
     empathic "2.0.0"
 
-"@prisma/debug@6.8.2":
-  version "6.8.2"
-  resolved "https://registry.npmjs.org/@prisma/debug/-/debug-6.8.2.tgz"
-  integrity sha512-4muBSSUwJJ9BYth5N8tqts8JtiLT8QI/RSAzEogwEfpbYGFo9mYsInsVo8dqXdPO2+Rm5OG5q0qWDDE3nyUbVg==
-
 "@prisma/debug@7.2.0":
   version "7.2.0"
   resolved "https://registry.npmjs.org/@prisma/debug/-/debug-7.2.0.tgz"
   integrity sha512-YSGTiSlBAVJPzX4ONZmMotL+ozJwQjRmZweQNIq/ER0tQJKJynNkRB3kyvt37eOfsbMCXk3gnLF6J9OJ4QWftw==
 
-"@prisma/dev@0.17.0":
-  version "0.17.0"
-  resolved "https://registry.npmjs.org/@prisma/dev/-/dev-0.17.0.tgz"
-  integrity sha512-6sGebe5jxX+FEsQTpjHLzvOGPn6ypFQprcs3jcuIWv1Xp/5v6P/rjfdvAwTkP2iF6pDx2tCd8vGLNWcsWzImTA==
+"@prisma/debug@7.4.1":
+  version "7.4.1"
+  resolved "https://registry.npmjs.org/@prisma/debug/-/debug-7.4.1.tgz"
+  integrity sha512-qEtzO8oLouRv18JDQUC3G3Gnv+fGVscHZm/x1DBB/WT+kOvPDQLM2woX6IGgWnSMYYlrxjuALshT7G/blvY0bQ==
+
+"@prisma/dev@0.20.0":
+  version "0.20.0"
+  resolved "https://registry.npmjs.org/@prisma/dev/-/dev-0.20.0.tgz"
+  integrity sha512-ovlBYwWor0OzG+yH4J3Ot+AneD818BttLA+Ii7wjbcLHUrnC4tbUPVGyNd3c/+71KETPKZfjhkTSpdS15dmXNQ==
   dependencies:
-    "@electric-sql/pglite" "0.3.2"
-    "@electric-sql/pglite-socket" "0.0.6"
-    "@electric-sql/pglite-tools" "0.2.7"
-    "@hono/node-server" "1.19.6"
-    "@mrleebo/prisma-ast" "0.12.1"
-    "@prisma/get-platform" "6.8.2"
-    "@prisma/query-plan-executor" "6.18.0"
+    "@electric-sql/pglite" "0.3.15"
+    "@electric-sql/pglite-socket" "0.0.20"
+    "@electric-sql/pglite-tools" "0.2.20"
+    "@hono/node-server" "1.19.9"
+    "@mrleebo/prisma-ast" "0.13.1"
+    "@prisma/get-platform" "7.2.0"
+    "@prisma/query-plan-executor" "7.2.0"
     foreground-child "3.3.1"
-    get-port-please "3.1.2"
-    hono "4.10.6"
+    get-port-please "3.2.0"
+    hono "4.11.4"
     http-status-codes "2.3.0"
     pathe "2.0.3"
     proper-lockfile "4.1.2"
-    remeda "2.21.3"
-    std-env "3.9.0"
+    remeda "2.33.4"
+    std-env "3.10.0"
     valibot "1.2.0"
-    zeptomatch "2.0.2"
+    zeptomatch "2.1.0"
 
 "@prisma/driver-adapter-utils@7.2.0":
   version "7.2.0"
@@ -1116,36 +1116,29 @@
   dependencies:
     "@prisma/debug" "7.2.0"
 
-"@prisma/engines-version@7.2.0-4.0c8ef2ce45c83248ab3df073180d5eda9e8be7a3":
-  version "7.2.0-4.0c8ef2ce45c83248ab3df073180d5eda9e8be7a3"
-  resolved "https://registry.npmjs.org/@prisma/engines-version/-/engines-version-7.2.0-4.0c8ef2ce45c83248ab3df073180d5eda9e8be7a3.tgz"
-  integrity sha512-KezsjCZDsbjNR7SzIiVlUsn9PnLePI7r5uxABlwL+xoerurZTfgQVbIjvjF2sVr3Uc0ZcsnREw3F84HvbggGdA==
+"@prisma/engines-version@7.5.0-4.55ae170b1ced7fc6ed07a15f110549408c501bb3":
+  version "7.5.0-4.55ae170b1ced7fc6ed07a15f110549408c501bb3"
+  resolved "https://registry.npmjs.org/@prisma/engines-version/-/engines-version-7.5.0-4.55ae170b1ced7fc6ed07a15f110549408c501bb3.tgz"
+  integrity sha512-fUxVd1TjOW8K4XsZ8dAm88sDW5Ry7AxWDfsYEWwScS6Fjo3caKC6hgNumUfsmsy0Il9LjDn5X0PpVXNt3iwayw==
 
-"@prisma/engines@7.2.0":
-  version "7.2.0"
-  resolved "https://registry.npmjs.org/@prisma/engines/-/engines-7.2.0.tgz"
-  integrity sha512-HUeOI/SvCDsHrR9QZn24cxxZcujOjcS3w1oW/XVhnSATAli5SRMOfp/WkG3TtT5rCxDA4xOnlJkW7xkho4nURA==
+"@prisma/engines@7.4.1":
+  version "7.4.1"
+  resolved "https://registry.npmjs.org/@prisma/engines/-/engines-7.4.1.tgz"
+  integrity sha512-BZEBdHvNJx5PzIG37EI/Zi5UUI5hGWjkYsQmKa7OIK6evAvebOTwutjS/VRI6cA6grmA52eLZR+oekGRMqkKxQ==
   dependencies:
-    "@prisma/debug" "7.2.0"
-    "@prisma/engines-version" "7.2.0-4.0c8ef2ce45c83248ab3df073180d5eda9e8be7a3"
-    "@prisma/fetch-engine" "7.2.0"
-    "@prisma/get-platform" "7.2.0"
+    "@prisma/debug" "7.4.1"
+    "@prisma/engines-version" "7.5.0-4.55ae170b1ced7fc6ed07a15f110549408c501bb3"
+    "@prisma/fetch-engine" "7.4.1"
+    "@prisma/get-platform" "7.4.1"
 
-"@prisma/fetch-engine@7.2.0":
-  version "7.2.0"
-  resolved "https://registry.npmjs.org/@prisma/fetch-engine/-/fetch-engine-7.2.0.tgz"
-  integrity sha512-Z5XZztJ8Ap+wovpjPD2lQKnB8nWFGNouCrglaNFjxIWAGWz0oeHXwUJRiclIoSSXN/ptcs9/behptSk8d0Yy6w==
+"@prisma/fetch-engine@7.4.1":
+  version "7.4.1"
+  resolved "https://registry.npmjs.org/@prisma/fetch-engine/-/fetch-engine-7.4.1.tgz"
+  integrity sha512-Z9kbuxX2bvEsyeS3LZEiEnxG0lVtZbpYgaAnPj69N+A9f2De8Lta0EoFtld9zhfERVPIQWhSWUc8himky3qYdA==
   dependencies:
-    "@prisma/debug" "7.2.0"
-    "@prisma/engines-version" "7.2.0-4.0c8ef2ce45c83248ab3df073180d5eda9e8be7a3"
-    "@prisma/get-platform" "7.2.0"
-
-"@prisma/get-platform@6.8.2":
-  version "6.8.2"
-  resolved "https://registry.npmjs.org/@prisma/get-platform/-/get-platform-6.8.2.tgz"
-  integrity sha512-vXSxyUgX3vm1Q70QwzwkjeYfRryIvKno1SXbIqwSptKwqKzskINnDUcx85oX+ys6ooN2ATGSD0xN2UTfg6Zcow==
-  dependencies:
-    "@prisma/debug" "6.8.2"
+    "@prisma/debug" "7.4.1"
+    "@prisma/engines-version" "7.5.0-4.55ae170b1ced7fc6ed07a15f110549408c501bb3"
+    "@prisma/get-platform" "7.4.1"
 
 "@prisma/get-platform@7.2.0":
   version "7.2.0"
@@ -1154,15 +1147,22 @@
   dependencies:
     "@prisma/debug" "7.2.0"
 
-"@prisma/query-plan-executor@6.18.0":
-  version "6.18.0"
-  resolved "https://registry.npmjs.org/@prisma/query-plan-executor/-/query-plan-executor-6.18.0.tgz"
-  integrity sha512-jZ8cfzFgL0jReE1R10gT8JLHtQxjWYLiQ//wHmVYZ2rVkFHoh0DT8IXsxcKcFlfKN7ak7k6j0XMNn2xVNyr5cA==
+"@prisma/get-platform@7.4.1":
+  version "7.4.1"
+  resolved "https://registry.npmjs.org/@prisma/get-platform/-/get-platform-7.4.1.tgz"
+  integrity sha512-kN4tmkQzlgm/KtE+jTNSYjsDxxe/5i6GApPI32BN9T0tlgsgSBtDJbjGBICttkAIjsh73dXf8raPKxO/2n2UUg==
+  dependencies:
+    "@prisma/debug" "7.4.1"
 
-"@prisma/studio-core@0.9.0":
-  version "0.9.0"
-  resolved "https://registry.npmjs.org/@prisma/studio-core/-/studio-core-0.9.0.tgz"
-  integrity sha512-xA2zoR/ADu/NCSQuriBKTh6Ps4XjU0bErkEcgMfnSGh346K1VI7iWKnoq1l2DoxUqiddPHIEWwtxJ6xCHG6W7g==
+"@prisma/query-plan-executor@7.2.0":
+  version "7.2.0"
+  resolved "https://registry.npmjs.org/@prisma/query-plan-executor/-/query-plan-executor-7.2.0.tgz"
+  integrity sha512-EOZmNzcV8uJ0mae3DhTsiHgoNCuu1J9mULQpGCh62zN3PxPTd+qI9tJvk5jOst8WHKQNwJWR3b39t0XvfBB0WQ==
+
+"@prisma/studio-core@0.13.1":
+  version "0.13.1"
+  resolved "https://registry.npmjs.org/@prisma/studio-core/-/studio-core-0.13.1.tgz"
+  integrity sha512-agdqaPEePRHcQ7CexEfkX1RvSH9uWDb6pXrZnhCRykhDFAV0/0P3d07WtfiY8hZWb7oRU4v+NkT4cGFHkQJIPg==
 
 "@rtsao/scc@^1.1.0":
   version "1.1.0"
@@ -2254,6 +2254,11 @@ citty@^0.1.6:
   dependencies:
     consola "^3.2.3"
 
+citty@^0.2.0:
+  version "0.2.1"
+  resolved "https://registry.npmjs.org/citty/-/citty-0.2.1.tgz"
+  integrity sha512-kEV95lFBhQgtogAPlQfJJ0WGVSokvLr/UEoFPiKKOXF7pl98HfUVUD0ejsuTCld/9xH9vogSywZ5KqHzXrZpqg==
+
 classnames@^2.2.5:
   version "2.5.1"
   resolved "https://registry.npmjs.org/classnames/-/classnames-2.5.1.tgz"
@@ -2292,11 +2297,11 @@ concat-stream@^2.0.0:
     typedarray "^0.0.6"
 
 confbox@^0.2.2:
-  version "0.2.2"
-  resolved "https://registry.npmjs.org/confbox/-/confbox-0.2.2.tgz"
-  integrity sha512-1NB+BKqhtNipMsov4xI/NnhCKp9XG9NamYp5PVm9klAT0fsrNPjaFICsCFhNhwZJKNh7zB/3q8qXz0E9oaMNtQ==
+  version "0.2.4"
+  resolved "https://registry.npmjs.org/confbox/-/confbox-0.2.4.tgz"
+  integrity sha512-ysOGlgTFbN2/Y6Cg3Iye8YKulHw+R2fNXHrgSmXISQdMnomY6eNDprVdW9R5xBguEqI954+S6709UyiO7B+6OQ==
 
-consola@^3.2.3, consola@^3.4.0, consola@^3.4.2:
+consola@^3.2.3, consola@^3.4.0:
   version "3.4.2"
   resolved "https://registry.npmjs.org/consola/-/consola-3.4.2.tgz"
   integrity sha512-5IKcdX0nnYavi6G7TtOhwkYzyjfJlatbjMjuLSfE2kYT5pMDOilZ4OvMhi637CcDICTmz3wARPoyhqyX1Y+XvA==
@@ -3020,10 +3025,10 @@ get-intrinsic@^1.2.4, get-intrinsic@^1.2.5, get-intrinsic@^1.2.6, get-intrinsic@
     hasown "^2.0.2"
     math-intrinsics "^1.1.0"
 
-get-port-please@3.1.2:
-  version "3.1.2"
-  resolved "https://registry.npmjs.org/get-port-please/-/get-port-please-3.1.2.tgz"
-  integrity sha512-Gxc29eLs1fbn6LQ4jSU4vXjlwyZhF5HsGuMAa7gqBP4Rw4yxxltyDUuF5MBclFzDTXO+ACchGQoeela4DSfzdQ==
+get-port-please@3.2.0:
+  version "3.2.0"
+  resolved "https://registry.npmjs.org/get-port-please/-/get-port-please-3.2.0.tgz"
+  integrity sha512-I9QVvBw5U/hw3RmWpYKRumUeaDgxTPd401x364rLmWBJcOQ753eov1eTgzDqRG9bqFIfDc7gfzcQEWrUri3o1A==
 
 get-proto@^1.0.0, get-proto@^1.0.1:
   version "1.0.1"
@@ -3103,7 +3108,7 @@ graceful-fs@^4.1.6, graceful-fs@^4.2.0, graceful-fs@^4.2.4:
   resolved "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz"
   integrity sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==
 
-grammex@^3.1.10:
+grammex@^3.1.11:
   version "3.1.12"
   resolved "https://registry.npmjs.org/grammex/-/grammex-3.1.12.tgz"
   integrity sha512-6ufJOsSA7LcQehIJNCO7HIBykfM7DXQual0Ny780/DEcJIpBlHRvcqEBWGPYd7hrXL2GJ3oJI1MIhaXjWmLQOQ==
@@ -3112,6 +3117,11 @@ graphemer@^1.4.0:
   version "1.4.0"
   resolved "https://registry.npmjs.org/graphemer/-/graphemer-1.4.0.tgz"
   integrity sha512-EtKwoO6kxCL9WO5xipiHTZlSzBm7WLT627TqC/uVRd0HKmq8NXyebnNYxDoBi7wt8eTWrUrKXCOVaFq9x1kgag==
+
+graphmatch@^1.1.0:
+  version "1.1.1"
+  resolved "https://registry.npmjs.org/graphmatch/-/graphmatch-1.1.1.tgz"
+  integrity sha512-5ykVn/EXM1hF0XCaWh05VbYvEiOL2lY1kBxZtaYsyvjp7cmWOU1XsAdfQBwClraEofXDT197lFbXOEVMHpvQOg==
 
 has-bigints@^1.0.2:
   version "1.1.0"
@@ -3168,10 +3178,10 @@ hermes-parser@^0.25.1:
   dependencies:
     hermes-estree "0.25.1"
 
-hono@^4, hono@4.10.6:
-  version "4.10.6"
-  resolved "https://registry.npmjs.org/hono/-/hono-4.10.6.tgz"
-  integrity sha512-BIdolzGpDO9MQ4nu3AUuDwHZZ+KViNm+EZ75Ae55eMXMqLVhDFqEMXxtUe9Qh8hjL+pIna/frs2j6Y2yD5Ua/g==
+hono@^4, hono@4.11.4:
+  version "4.11.4"
+  resolved "https://registry.npmjs.org/hono/-/hono-4.11.4.tgz"
+  integrity sha512-U7tt8JsyrxSRKspfhtLET79pU8K+tInj5QZXs1jSugO1Vq5dFj3kmZsRldo29mTBfcjDRVRXrEZ6LS63Cog9ZA==
 
 http-response-object@^3.0.1:
   version "3.0.2"
@@ -3771,15 +3781,13 @@ node-releases@^2.0.27:
   integrity sha512-nmh3lCkYZ3grZvqcCH+fjmQ7X+H0OeZgP40OierEaAptX4XofMh5kwNbWh7lBduUzCcV/8kZ+NDLCwm2iorIlA==
 
 nypm@^0.6.0:
-  version "0.6.2"
-  resolved "https://registry.npmjs.org/nypm/-/nypm-0.6.2.tgz"
-  integrity sha512-7eM+hpOtrKrBDCh7Ypu2lJ9Z7PNZBdi/8AT3AX8xoCj43BBVHD0hPSTEvMtkMpfs8FCqBGhxB+uToIQimA111g==
+  version "0.6.5"
+  resolved "https://registry.npmjs.org/nypm/-/nypm-0.6.5.tgz"
+  integrity sha512-K6AJy1GMVyfyMXRVB88700BJqNUkByijGJM8kEHpLdcAt+vSQAVfkWWHYzuRXHSY6xA2sNc5RjTj0p9rE2izVQ==
   dependencies:
-    citty "^0.1.6"
-    consola "^3.4.2"
+    citty "^0.2.0"
     pathe "^2.0.3"
-    pkg-types "^2.3.0"
-    tinyexec "^1.0.1"
+    tinyexec "^1.0.2"
 
 object-assign@^4.1.1:
   version "4.1.1"
@@ -3995,7 +4003,7 @@ picomatch@^2.3.1:
   resolved "https://registry.npmjs.org/picomatch/-/picomatch-4.0.3.tgz"
   integrity sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q==
 
-pkg-types@^2.2.0, pkg-types@^2.3.0:
+pkg-types@^2.2.0:
   version "2.3.0"
   resolved "https://registry.npmjs.org/pkg-types/-/pkg-types-2.3.0.tgz"
   integrity sha512-SIqCzDRg0s9npO5XQ3tNZioRY1uK06lA41ynBC1YmFTmnY6FjUjVt6s4LoADmwoig1qqD0oK8h1p/8mlMx8Oig==
@@ -4064,15 +4072,15 @@ prelude-ls@^1.2.1:
   resolved "https://registry.npmjs.org/prelude-ls/-/prelude-ls-1.2.1.tgz"
   integrity sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g==
 
-prisma@*, prisma@^7.2.0:
-  version "7.2.0"
-  resolved "https://registry.npmjs.org/prisma/-/prisma-7.2.0.tgz"
-  integrity sha512-jSdHWgWOgFF24+nRyyNRVBIgGDQEsMEF8KPHvhBBg3jWyR9fUAK0Nq9ThUmiGlNgq2FA7vSk/ZoCvefod+a8qg==
+prisma@*, prisma@^7.4.1:
+  version "7.4.1"
+  resolved "https://registry.npmjs.org/prisma/-/prisma-7.4.1.tgz"
+  integrity sha512-gDKOXwnPiMdB+uYMhMeN8jj4K7Cu3Q2wB/wUsITOoOk446HtVb8T9BZxFJ1Zop6alc89k6PMNdR2FZCpbXp/jw==
   dependencies:
-    "@prisma/config" "7.2.0"
-    "@prisma/dev" "0.17.0"
-    "@prisma/engines" "7.2.0"
-    "@prisma/studio-core" "0.9.0"
+    "@prisma/config" "7.4.1"
+    "@prisma/dev" "0.20.0"
+    "@prisma/engines" "7.4.1"
+    "@prisma/studio-core" "0.13.1"
     mysql2 "3.15.3"
     postgres "3.4.7"
 
@@ -4194,12 +4202,10 @@ regexp.prototype.flags@^1.5.3, regexp.prototype.flags@^1.5.4:
     gopd "^1.2.0"
     set-function-name "^2.0.2"
 
-remeda@2.21.3:
-  version "2.21.3"
-  resolved "https://registry.npmjs.org/remeda/-/remeda-2.21.3.tgz"
-  integrity sha512-XXrZdLA10oEOQhLLzEJEiFFSKi21REGAkHdImIb4rt/XXy8ORGXh5HCcpUOsElfPNDb+X6TA/+wkh+p2KffYmg==
-  dependencies:
-    type-fest "^4.39.1"
+remeda@2.33.4:
+  version "2.33.4"
+  resolved "https://registry.npmjs.org/remeda/-/remeda-2.33.4.tgz"
+  integrity sha512-ygHswjlc/opg2VrtiYvUOPLjxjtdKvjGz1/plDhkG66hjNjFr1xmfrs2ClNFo/E6TyUFiwYNh53bKV26oBoMGQ==
 
 resize-observer-polyfill@^1.5.0:
   version "1.5.1"
@@ -4471,10 +4477,10 @@ stable-hash@^0.0.5:
   resolved "https://registry.npmjs.org/stable-hash/-/stable-hash-0.0.5.tgz"
   integrity sha512-+L3ccpzibovGXFK+Ap/f8LOS0ahMrHTf3xu7mMLSpEGU0EO9ucaysSylKo9eRDFNhWve/y275iPmIZ4z39a9iA==
 
-std-env@3.9.0:
-  version "3.9.0"
-  resolved "https://registry.npmjs.org/std-env/-/std-env-3.9.0.tgz"
-  integrity sha512-UGvjygr6F6tpH7o2qyqR6QYpwraIjKSdtzyBdyytFOHmPZY917kwdwLG0RbOjWOnKmnm3PeHjaoLLMie7kPLQw==
+std-env@3.10.0:
+  version "3.10.0"
+  resolved "https://registry.npmjs.org/std-env/-/std-env-3.10.0.tgz"
+  integrity sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==
 
 stop-iteration-iterator@^1.1.0:
   version "1.1.0"
@@ -4608,7 +4614,7 @@ tapable@^2.2.0:
   resolved "https://registry.npmjs.org/tapable/-/tapable-2.3.0.tgz"
   integrity sha512-g9ljZiwki/LfxmQADO3dEY1CbpmXT5Hm2fJ+QaGKwSXUylMybePR7/67YW7jOrrvjEgL1Fmz5kzyAjWVWLlucg==
 
-tinyexec@^1.0.1:
+tinyexec@^1.0.2:
   version "1.0.2"
   resolved "https://registry.npmjs.org/tinyexec/-/tinyexec-1.0.2.tgz"
   integrity sha512-W/KYk+NFhkmsYpuHq5JykngiOCnxeVL8v8dFnqxSD8qEEdRfXk1SDM6JzNqcERbcGYj9tMrDQBYV9cjgnunFIg==
@@ -4654,11 +4660,6 @@ type-check@^0.4.0, type-check@~0.4.0:
   integrity sha512-XleUoc9uwGXqjWwXaUTZAmzMcFZ5858QA2vvx1Ur5xIcixXIP+8LnFDgRplU30us6teqdlskFfu+ae4K79Ooew==
   dependencies:
     prelude-ls "^1.2.1"
-
-type-fest@^4.39.1:
-  version "4.41.0"
-  resolved "https://registry.npmjs.org/type-fest/-/type-fest-4.41.0.tgz"
-  integrity sha512-TeTSQ6H5YHvpqVwBRcnLDCBnDOHWYu7IvGbHT6N8AOymcr9PJGjc1GTtiWZTYg0NCgYwvnYWEkVChQAr9bjfwA==
 
 typed-array-buffer@^1.0.3:
   version "1.0.3"
@@ -4894,12 +4895,13 @@ yocto-queue@^0.1.0:
   resolved "https://registry.npmjs.org/yocto-queue/-/yocto-queue-0.1.0.tgz"
   integrity sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==
 
-zeptomatch@2.0.2:
-  version "2.0.2"
-  resolved "https://registry.npmjs.org/zeptomatch/-/zeptomatch-2.0.2.tgz"
-  integrity sha512-H33jtSKf8Ijtb5BW6wua3G5DhnFjbFML36eFu+VdOoVY4HD9e7ggjqdM6639B+L87rjnR6Y+XeRzBXZdy52B/g==
+zeptomatch@2.1.0:
+  version "2.1.0"
+  resolved "https://registry.npmjs.org/zeptomatch/-/zeptomatch-2.1.0.tgz"
+  integrity sha512-KiGErG2J0G82LSpniV0CtIzjlJ10E04j02VOudJsPyPwNZgGnRKQy7I1R7GMyg/QswnE4l7ohSGrQbQbjXPPDA==
   dependencies:
-    grammex "^3.1.10"
+    grammex "^3.1.11"
+    graphmatch "^1.1.0"
 
 "zod-validation-error@^3.5.0 || ^4.0.0":
   version "4.0.2"

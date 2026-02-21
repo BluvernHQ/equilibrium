@@ -6,9 +6,13 @@ export async function GET(req: NextRequest) {
         const { searchParams } = new URL(req.url);
         const includeTranscripts = searchParams.get("includeTranscripts") === "true";
         const includeBlocks = searchParams.get("includeBlocks") === "true";
+        const folderId = searchParams.get("folderId");
 
         // @ts-ignore - Prisma types generated at runtime (will be available after prisma generate)
         const videos = await prisma.video.findMany({
+            where: {
+                folder_id: folderId === 'root' ? null : (folderId || undefined),
+            },
             orderBy: { createdAt: 'desc' },
             include: {
                 // @ts-ignore
@@ -62,6 +66,7 @@ export async function GET(req: NextRequest) {
                 fileKey: video.fileKey,
                 fileUrl: video.fileUrl,
                 fileSize: video.fileSize?.toString(),
+                folder_id: video.folder_id,
                 // Timestamps
                 createdAt: video.createdAt.toISOString(),
                 updatedAt: video.updatedAt.toISOString(),

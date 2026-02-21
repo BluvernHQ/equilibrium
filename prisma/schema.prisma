@@ -1,9 +1,25 @@
 generator client {
   provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+model Folder {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(255)
+  parent_id String?  @db.Uuid
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  parent    Folder?  @relation("SubFolders", fields: [parent_id], references: [id])
+  children  Folder[] @relation("SubFolders")
+  videos    Video[]
+  sessions  sessions[]
+
+  @@index([parent_id])
 }
 
 model master_tags {
@@ -62,6 +78,8 @@ model sessions {
   id                   String                 @id @db.Uuid
   master_tags          master_tags[]
   tag_cross_references tag_cross_references[]
+  folder_id            String?                @db.Uuid
+  folder               Folder?                @relation(fields: [folder_id], references: [id])
 
   @@index([media_url])
   @@index([video_file_key])
@@ -131,6 +149,8 @@ model Video {
   // Relations
   transcripts Transcript[]
   speakers    Speaker[]
+  folder_id   String?      @db.Uuid
+  folder      Folder?      @relation(fields: [folder_id], references: [id])
 
   @@index([source_url])
   @@index([provider_video_id])

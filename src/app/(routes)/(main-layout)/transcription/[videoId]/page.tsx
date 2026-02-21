@@ -15,6 +15,7 @@ import {
     ArrowPathIcon,
     XMarkIcon,
     QuestionMarkCircleIcon,
+    DocumentTextIcon,
 } from "@heroicons/react/24/outline";
 import KeyboardShortcutsModal from "@/modules/manual-transcription/components/keyboard-shortcuts-modal";
 
@@ -40,6 +41,7 @@ interface VideoData {
     id: string;
     fileName: string;
     source_url: string;
+    source_type?: string;
     fileUrl?: string;
     fileKey?: string;
     hasSession?: boolean;
@@ -1513,12 +1515,14 @@ export default function TranscriptionViewPage() {
                         )}
                         {/* Transcription Type Badge */}
                         <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ${isAutoTranscription
-                                ? "bg-blue-100 text-blue-700"
-                                : "bg-purple-100 text-purple-700"
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ${video?.source_type === 'merged'
+                                ? "bg-emerald-100 text-emerald-700"
+                                : isAutoTranscription
+                                    ? "bg-blue-100 text-blue-700"
+                                    : "bg-purple-100 text-purple-700"
                                 }`}
                         >
-                            {isAutoTranscription ? "Auto" : "Manual"}
+                            {video?.source_type === 'merged' ? "Merged" : isAutoTranscription ? "Auto" : "Manual"}
                         </span>
 
                         {/* Auto-save Status Indicator */}
@@ -1613,7 +1617,21 @@ export default function TranscriptionViewPage() {
                                     </div>
                                 )}
                                 {(() => {
+                                    const isMerged = video?.source_type === 'merged';
                                     const videoUrl = video?.source_url || video?.fileUrl;
+                                    
+                                    if (isMerged) {
+                                        return (
+                                            <div className="flex flex-col items-center justify-center h-full bg-slate-900 text-center p-6">
+                                                <div className="w-16 h-16 bg-emerald-500/20 rounded-full flex items-center justify-center mb-4">
+                                                    <DocumentTextIcon className="w-8 h-8 text-emerald-400" />
+                                                </div>
+                                                <h3 className="text-white font-medium mb-2">Merged Transcription</h3>
+                                                <p className="text-slate-400 text-xs">This transcription is a combination of multiple sources. Video playback is not available for merged views.</p>
+                                            </div>
+                                        );
+                                    }
+
                                     if (videoUrl && videoUrl.trim()) {
                                         return (
                                             <SessionVideoPlayer
