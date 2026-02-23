@@ -49,10 +49,24 @@ export async function POST(req: NextRequest) {
             );
         }
 
+        const parentIdVal = parentId || null;
+        const existing = await prisma.folder.findFirst({
+            where: {
+                name: name.trim(),
+                parent_id: parentIdVal === 'root' || !parentIdVal ? null : parentIdVal,
+            },
+        });
+        if (existing) {
+            return NextResponse.json(
+                { error: "A folder with this name already exists in this location" },
+                { status: 409 }
+            );
+        }
+
         const folder = await prisma.folder.create({
             data: {
-                name: name,
-                parent_id: parentId || null,
+                name: name.trim(),
+                parent_id: parentIdVal === 'root' || !parentIdVal ? null : parentIdVal,
             },
         });
 

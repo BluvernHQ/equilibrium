@@ -703,7 +703,7 @@ export default function Recordings() {
                                 {folder.name}
                             </h3>
                             <div className="text-xs text-gray-500 flex gap-2">
-                                <span>{folder._count.sessions} {folder._count.sessions === 1 ? 'session' : 'sessions'}</span>
+                                <span>{folder._count.videos} {folder._count.videos === 1 ? 'file' : 'files'}</span>
                                 {folder._count.children > 0 && (
                                   <>
                                     <span>•</span>
@@ -712,7 +712,16 @@ export default function Recordings() {
                                 )}
                             </div>
                         </div>
-                        <div className="absolute top-2 right-2">
+                        <div
+                            className="absolute top-2 right-2"
+                            ref={(el) => {
+                                if (el) {
+                                    menuRefs.current.set(`folder-${folder.id}`, el);
+                                } else {
+                                    menuRefs.current.delete(`folder-${folder.id}`);
+                                }
+                            }}
+                        >
                             <button
                                 onClick={(e) => {
                                     e.stopPropagation();
@@ -737,8 +746,21 @@ export default function Recordings() {
                                         onClick={async (e) => {
                                             e.stopPropagation();
                                             if (confirm(`Are you sure you want to delete "${folder.name}"?`)) {
-                                                await fetch(`/api/folders/${folder.id}`, { method: 'DELETE' });
-                                                fetchFolders(currentFolderId);
+                                                setDeleting(folder.id);
+                                                try {
+                                                    const res = await fetch(`/api/folders/${folder.id}`, { method: 'DELETE' });
+                                                    const data = await res.json().catch(() => ({}));
+                                                    if (res.ok && data.success) {
+                                                        fetchFolders(currentFolderId);
+                                                    } else {
+                                                        alert(data.error || "Failed to delete folder");
+                                                    }
+                                                } catch (err) {
+                                                    console.error(err);
+                                                    alert("Failed to delete folder");
+                                                } finally {
+                                                    setDeleting(null);
+                                                }
                                             }
                                         }}
                                         className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
