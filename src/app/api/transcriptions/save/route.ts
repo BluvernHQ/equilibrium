@@ -27,7 +27,7 @@ interface TranscriptBlockData {
     start?: number;
     end?: number;
     words?: Array<{ start: number; end: number; text: string }>;
-}
+};
 
 export async function POST(req: NextRequest) {
     try {

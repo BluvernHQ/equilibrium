@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // GET - List primary tags for a master tag
 export async function GET(req: NextRequest) {
@@ -87,12 +89,13 @@ export async function GET(req: NextRequest) {
             success: true,
             primaryTags: cappedTags,
         });
-    } catch (error: any) {
-        console.error("Get primary tags error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to get primary tags" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Get primary tags failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/primary" }
         );
+        return handleError(error);
     }
 }
 
@@ -138,12 +141,13 @@ export async function POST(req: NextRequest) {
                 isNew: true,
             },
         });
-    } catch (error: any) {
-        console.error("Create primary tag error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to create primary tag" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Create primary tag failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/primary" }
         );
+        return handleError(error);
     }
 }
 
@@ -180,11 +184,12 @@ export async function PATCH(req: NextRequest) {
                 name: primaryTag.name,
             },
         });
-    } catch (error: any) {
-        console.error("Update primary tag error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to update primary tag" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Update primary tag failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/primary" }
         );
+        return handleError(error);
     }
 }

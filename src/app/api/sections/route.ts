@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // GET - List sections for a transcript
 export async function GET(req: NextRequest) {
@@ -40,12 +42,9 @@ export async function GET(req: NextRequest) {
                 })),
             })),
         });
-    } catch (error: any) {
-        console.error("Get sections error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to get sections" },
-            { status: 500 }
-        );
+    } catch (error: unknown) {
+        logger.error("Get sections failed", error instanceof Error ? error : new Error(String(error)), { path: "/api/sections" });
+        return handleError(error);
     }
 }
 
@@ -120,12 +119,9 @@ export async function POST(req: NextRequest) {
                 endBlockIndex: section.end_block_index,
             },
         });
-    } catch (error: any) {
-        console.error("Create section error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to create section" },
-            { status: 500 }
-        );
+    } catch (error: unknown) {
+        logger.error("Create section failed", error instanceof Error ? error : new Error(String(error)), { path: "/api/sections" });
+        return handleError(error);
     }
 }
 
@@ -233,12 +229,9 @@ export async function DELETE(req: NextRequest) {
             success: true,
             message: "Section deleted",
         });
-    } catch (error: any) {
-        console.error("Delete section error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to delete section" },
-            { status: 500 }
-        );
+    } catch (error: unknown) {
+        logger.error("Delete section failed", error instanceof Error ? error : new Error(String(error)), { path: "/api/sections" });
+        return handleError(error);
     }
 }
 

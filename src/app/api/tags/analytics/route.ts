@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // GET - Get tag analytics (impression counts for master and primary tags)
 export async function GET(req: NextRequest) {
@@ -122,12 +124,13 @@ export async function GET(req: NextRequest) {
                 transcriptStats,
             },
         });
-    } catch (error: any) {
-        console.error("Get tag analytics error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to get tag analytics" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Get tag analytics failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/analytics" }
         );
+        return handleError(error);
     }
 }
 

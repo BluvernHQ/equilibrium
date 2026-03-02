@@ -1,38 +1,53 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Equilibrium
+
+Next.js app for collaborative video transcription and tagging (sessions, tags, sections).
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 20+
+- PostgreSQL database
+- (Optional) Digital Ocean Spaces or S3 for uploads; AssemblyAI for transcription
+
+### Environment
+
+Copy `.env.example` to `.env.local` and set at least:
+
+- `DATABASE_URL` – PostgreSQL connection string
+- (Optional) `DO_SPACES_*` or S3 vars for file storage
+- (Optional) `ASSEMBLYAI_API_KEY` for transcription
+
+### Install and run
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- App: [http://localhost:5006](http://localhost:5006)
+- Build: `npm run build`
+- Start (prod): `npm run start` (port 8006)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+After schema changes, run `npx prisma generate` (or rely on `postinstall`).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Tests
 
-## Learn More
+```bash
+npm run test
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Project layout
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- **`src/app/api/`** – REST API routes (folders, videos, transcriptions, tags, speakers, sections, upload, etc.)
+- **`src/lib/`** – Shared code: Prisma client, errors, logger, API helpers
+- **`src/modules/`** – Feature UI: sessions (tagging), recordings, auto/manual transcription
+- **`src/context/`** – React context (e.g. session/upload state)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for a short architecture overview and conventions.
 
-## Deploy on Vercel
+## Docs
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-# equilibrium
-# equilibrium
+- [ERROR_HANDLING.md](./ERROR_HANDLING.md) – Error classes and API error handling
+- [CORS_SETUP.md](./CORS_SETUP.md) – CORS configuration
+- [ARCHITECTURE.md](./ARCHITECTURE.md) – Stack, structure, API and data model overview

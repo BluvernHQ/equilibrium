@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError, ValidationError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 export async function POST(req: NextRequest) {
     try {
@@ -7,10 +9,9 @@ export async function POST(req: NextRequest) {
         const { videoIds, sessionIds, folderId } = body;
 
         if ((!videoIds || videoIds.length === 0) && (!sessionIds || sessionIds.length === 0)) {
-            return NextResponse.json(
-                { error: "At least one video or session ID is required" },
-                { status: 400 }
-            );
+            throw new ValidationError("At least one video or session ID is required", {
+                provided: { videoIds: !!videoIds?.length, sessionIds: !!sessionIds?.length },
+            });
         }
 
         const updates = [];
@@ -43,11 +44,15 @@ export async function POST(req: NextRequest) {
             success: true,
             message: "Items moved successfully",
         });
-    } catch (error: any) {
-        console.error("Move items error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to move items" },
-            { status: 500 }
+    } catch (error: unknown) {
+        if (error instanceof ValidationError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Move items failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/folders/move" }
         );
+        return handleError(error);
     }
 }

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { handleError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // Format endpoint URL for S3 client
 const formatEndpoint = (endpoint: string | undefined, originEndpoint: string | undefined, bucket: string | undefined, region: string): string => {
@@ -83,12 +85,13 @@ export async function GET(
             url: presignedUrl,
         });
 
-    } catch (error: any) {
-        console.error("Get video URL error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to get video URL" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Get video URL failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/videos/[key]" }
         );
+        return handleError(error);
     }
 }
 

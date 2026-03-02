@@ -57,7 +57,7 @@ export default function UploadArea() {
                 type="file"
                 ref={fileInputRef}
                 className="hidden"
-                accept="audio/*,video/*"
+                accept="audio/*,video/*,.mts,.m2ts"
                 onChange={handleFileSelect}
             />
 
@@ -116,7 +116,7 @@ export default function UploadArea() {
                     <>
                         Drag and drop your audio or video file here, or click to browse.
                         <br />
-                        <span className="text-xs text-gray-400 mt-2 block">Supported formats: MP3, MP4, WAV, M4A</span>
+                        <span className="text-xs text-gray-400 mt-2 block">Supported formats: MP3, MP4, WAV, M4A, MTS, M2TS</span>
                     </>
                 )}
                 {uploadStatus === "uploading" && "Please wait while your file is being uploaded..."}

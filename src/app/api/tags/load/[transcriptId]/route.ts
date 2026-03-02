@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // GET - Load all tags and impressions for a transcript
 export async function GET(
@@ -136,12 +138,13 @@ export async function GET(
             })),
             impressionCount: impressions.length,
         });
-    } catch (error: any) {
-        console.error("Load tags error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to load tags" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Load tags failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/load/[transcriptId]" }
         );
+        return handleError(error);
     }
 }
 

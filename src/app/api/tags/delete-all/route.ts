@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // DELETE - Remove all tags from the database
 export async function DELETE(req: NextRequest) {
     try {
-        console.log('Starting to delete all tags...');
+        logger.info("Starting to delete all tags", { path: "/api/tags/delete-all" });
 
         // Delete in order to respect foreign key constraints
         // Note: Due to cascade deletes, deleting MasterTag will automatically delete
@@ -22,36 +24,30 @@ export async function DELETE(req: NextRequest) {
         // @ts-ignore
         const branchTagCount = await prisma.branchTag.count();
 
-        console.log(`Found ${tagImpressionCount} tag impressions`);
-        console.log(`Found ${masterTagCount} master tags`);
-        console.log(`Found ${primaryTagCount} primary tags`);
-        console.log(`Found ${secondaryTagCount} secondary tags`);
-        console.log(`Found ${branchTagCount} branch tags`);
+        logger.info("Tag counts before deletion", {
+            tagImpressionCount,
+            masterTagCount,
+            primaryTagCount,
+            secondaryTagCount,
+            branchTagCount,
+        });
 
         // Delete all tag impressions first (they reference tags)
         // @ts-ignore
         const deletedImpressions = await prisma.tagImpression.deleteMany({});
-        console.log(`Deleted ${deletedImpressions.count} tag impressions`);
+        logger.debug("Deleted tag impressions", { count: deletedImpressions.count });
 
-        // Delete secondary tags (they reference primary tags)
-        // @ts-ignore
         const deletedSecondary = await prisma.secondaryTag.deleteMany({});
-        console.log(`Deleted ${deletedSecondary.count} secondary tags`);
+        logger.debug("Deleted secondary tags", { count: deletedSecondary.count });
 
-        // Delete primary tags (they reference master tags)
-        // @ts-ignore
         const deletedPrimary = await prisma.primaryTag.deleteMany({});
-        console.log(`Deleted ${deletedPrimary.count} primary tags`);
+        logger.debug("Deleted primary tags", { count: deletedPrimary.count });
 
-        // Delete branch tags (they reference master tags)
-        // @ts-ignore
         const deletedBranch = await prisma.branchTag.deleteMany({});
-        console.log(`Deleted ${deletedBranch.count} branch tags`);
+        logger.debug("Deleted branch tags", { count: deletedBranch.count });
 
-        // Finally, delete master tags
-        // @ts-ignore
         const deletedMaster = await prisma.masterTag.deleteMany({});
-        console.log(`Deleted ${deletedMaster.count} master tags`);
+        logger.debug("Deleted master tags", { count: deletedMaster.count });
 
         return NextResponse.json({
             success: true,
@@ -71,12 +67,13 @@ export async function DELETE(req: NextRequest) {
                 branchTags: branchTagCount,
             }
         });
-    } catch (error: any) {
-        console.error("Delete all tags error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to delete all tags" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Delete all tags failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/delete-all" }
         );
+        return handleError(error);
     }
 }
 

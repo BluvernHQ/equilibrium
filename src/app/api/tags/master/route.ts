@@ -240,12 +240,13 @@ export async function PATCH(req: NextRequest) {
                 primaryTagCount: (updatedTag as any)._count.primary_tags,
             },
         });
-    } catch (error: any) {
-        console.error("Update master tag error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to update master tag" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Update master tag failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/master" }
         );
+        return handleError(error);
     }
 }
 
@@ -301,12 +302,13 @@ export async function DELETE(req: NextRequest) {
                 branchTagCount: (existingTag as any)._count.branch_tags,
             },
         });
-    } catch (error: any) {
-        console.error("Delete master tag error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to delete master tag" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Delete master tag failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/master" }
         );
+        return handleError(error);
     }
 }
 

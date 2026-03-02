@@ -1,4 +1,5 @@
 import Sidebar from "@/components/Sidebar/Sidebar";
+import UploadManager from "@/components/UploadManager";
 // app/layout.tsx or pages/_app.tsx
 import "slick-carousel/slick/slick.css";
 import "slick-carousel/slick/slick-theme.css";
@@ -8,7 +9,10 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
   return (
     <div className="flex min-h-screen bg-zinc-50">
       <Sidebar />
-      <main className="flex-1 ml-[72px] flex flex-col">{children}</main>
+      <main className="flex-1 ml-[72px] flex flex-col">
+        {children}
+        <UploadManager />
+      </main>
     </div>
   );
 }

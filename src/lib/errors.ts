@@ -260,3 +260,23 @@ export function withErrorHandling<T extends any[]>(
     }
   };
 }
+
+/**
+ * Return a user-facing error message from any error value (Error, API response object, etc.).
+ * Use this before showing errors in toasts/alerts so we never display "[object Object]".
+ */
+export function getErrorMessage(error: unknown, fallback = "Something went wrong"): string {
+  if (error == null) return fallback;
+  if (typeof error === "string") return error || fallback;
+  if (error instanceof Error) return error.message || fallback;
+  if (typeof error === "object" && error !== null) {
+    const o = error as Record<string, unknown>;
+    if (typeof o.message === "string") return o.message;
+    if (o.error && typeof o.error === "object" && o.error !== null) {
+      const inner = (o.error as Record<string, unknown>).message;
+      if (typeof inner === "string") return inner;
+    }
+    if (typeof o.error === "string") return o.error;
+  }
+  return fallback;
+}

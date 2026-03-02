@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // POST - Move a tag (Primary between Masters, or update Section context)
 export async function POST(req: NextRequest) {
@@ -152,12 +154,13 @@ export async function POST(req: NextRequest) {
             success: true,
             ...result,
         });
-    } catch (error: any) {
-        console.error("Move tag error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to move tag" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Move tag failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/move" }
         );
+        return handleError(error);
     }
 }
 

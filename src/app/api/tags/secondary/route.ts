@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError, ValidationError, NotFoundError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // POST - Create a secondary tag for a primary tag
 export async function POST(req: NextRequest) {
@@ -39,12 +41,16 @@ export async function POST(req: NextRequest) {
                 name: secondaryTag.name,
             },
         });
-    } catch (error: any) {
-        console.error("Create secondary tag error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to create secondary tag" },
-            { status: 500 }
+    } catch (error: unknown) {
+        if (error instanceof ValidationError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Create secondary tag failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/secondary" }
         );
+        return handleError(error);
     }
 }
 
@@ -108,19 +114,18 @@ export async function PATCH(req: NextRequest) {
                 name: secondaryTag.name,
             },
         });
-    } catch (error: any) {
-        console.error("Update secondary tag error:", error);
-
-        if (error.code === 'P2025') {
-            return NextResponse.json(
-                { error: "Secondary tag not found" },
-                { status: 404 }
-            );
+    } catch (error: unknown) {
+        if (error && typeof error === "object" && "code" in error && (error as { code: string }).code === "P2025") {
+            return handleError(new NotFoundError("Secondary tag not found", "resource"));
         }
-
-        return NextResponse.json(
-            { error: error.message || "Failed to update secondary tag" },
-            { status: 500 }
+        if (error instanceof ValidationError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Update secondary tag failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/secondary" }
         );
+        return handleError(error);
     }
 }

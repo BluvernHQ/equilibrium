@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError, ValidationError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 export async function POST(req: NextRequest) {
     try {
@@ -110,12 +112,16 @@ export async function POST(req: NextRequest) {
             },
         });
 
-    } catch (error: any) {
-        console.error("Save video error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to save video" },
-            { status: 500 }
+    } catch (error: unknown) {
+        if (error instanceof ValidationError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Save video failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/videos/save" }
         );
+        return handleError(error);
     }
 }
 

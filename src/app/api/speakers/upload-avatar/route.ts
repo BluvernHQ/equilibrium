@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { v4 as uuidv4 } from "uuid";
+import { handleError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // Format endpoint URL for S3 client
 const formatEndpoint = (endpoint: string | undefined, originEndpoint: string | undefined, bucket: string | undefined, region: string): string => {
@@ -106,11 +108,11 @@ export async function POST(req: NextRequest) {
 
         try {
             await s3Client.send(command);
-            console.log("Speaker avatar uploaded successfully with public access");
-        } catch (aclError: any) {
-            // If ACL fails, upload without it (files will be private, use presigned URLs)
-            if (aclError.Code === "NotImplemented" || aclError.Code === "InvalidArgument") {
-                console.log("ACL not supported, uploading as private file");
+            logger.info("Speaker avatar uploaded with public access", { key });
+        } catch (aclError: unknown) {
+            const err = aclError as { Code?: string };
+            if (err.Code === "NotImplemented" || err.Code === "InvalidArgument") {
+                logger.debug("ACL not supported, uploading as private file", { key });
                 const privateCommand = new PutObjectCommand({
                     Bucket: DO_SPACES_BUCKET,
                     Key: key,
@@ -118,7 +120,7 @@ export async function POST(req: NextRequest) {
                     ContentType: file.type,
                 });
                 await s3Client.send(privateCommand);
-                console.log("Speaker avatar uploaded successfully (private file)");
+                logger.info("Speaker avatar uploaded (private file)", { key });
             } else {
                 throw aclError;
             }
@@ -143,12 +145,13 @@ export async function POST(req: NextRequest) {
             fileName: fileName,
         });
 
-    } catch (error: any) {
-        console.error("Speaker avatar upload error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to upload speaker avatar" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Speaker avatar upload failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/speakers/upload-avatar" }
         );
+        return handleError(error);
     }
 }
 

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { S3Client, ListObjectsV2Command, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { handleError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // Format endpoint URL for S3 client
 const formatEndpoint = (endpoint: string | undefined, originEndpoint: string | undefined, bucket: string | undefined, region: string): string => {
@@ -41,6 +43,9 @@ const createS3Client = (endpoint: string) => {
 
 export async function GET(req: NextRequest) {
     try {
+        const { searchParams } = new URL(req.url);
+        const presign = searchParams.get("presign") !== "false"; // default true for backward compatibility
+
         // Read environment variables
         const DO_SPACES_ENDPOINT = process.env.DO_SPACES_ENDPOINT;
         const DO_SPACES_ORIGIN_ENDPOINT = process.env.DO_SPACES_ORIGIN_ENDPOINT;
@@ -86,7 +91,24 @@ export async function GET(req: NextRequest) {
             return videoAudioExtensions.includes(extension);
         });
 
-        // Format the response and generate presigned URLs
+        // When presign=false, return list without URLs for faster list load; use GET /api/videos/presign?key=... for on-demand URL
+        if (!presign) {
+            const videos = filteredObjects.map((object) => {
+                const key = object.Key || "";
+                const fileName = key.split("/").pop() || "";
+                return {
+                    key,
+                    fileName,
+                    url: null as string | null,
+                    size: object.Size || 0,
+                    lastModified: object.LastModified?.toISOString() || new Date().toISOString(),
+                };
+            });
+            videos.sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime());
+            return NextResponse.json({ success: true, videos, count: videos.length });
+        }
+
+        // Generate presigned URLs for each object (slower when many files)
         const videos = await Promise.all(
             filteredObjects.map(async (object) => {
                 const key = object.Key || "";
@@ -144,12 +166,13 @@ export async function GET(req: NextRequest) {
             count: videos.length,
         });
 
-    } catch (error: any) {
-        console.error("List videos error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to list videos" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "List videos failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/videos" }
         );
+        return handleError(error);
     }
 }
 

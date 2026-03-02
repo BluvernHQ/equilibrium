@@ -284,7 +284,7 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                     const error = e.currentTarget.error;
                     if (error?.code === error?.MEDIA_ERR_SRC_NOT_SUPPORTED) {
                       setHasError(true);
-                      setErrorMessage("Video source not accessible. Check CORS settings on your storage bucket.");
+                      setErrorMessage("This video format is not supported by your browser. Please use MP4 or WebM, or check CORS settings.");
                     }
                   }}
                 />

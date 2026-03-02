@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useRef, useEffect } from "react";
 import { PencilSquareIcon, UserIcon, PlusIcon } from "@heroicons/react/24/solid";
+import { useToast } from "@/context/ToastContext";
 
 interface Speaker {
   name: string;
@@ -32,6 +33,7 @@ export default function SpeakerHeader({
   videoId,
   speakerAvatars = {}
 }: SpeakerHeaderProps) {
+  const { toast, toastError } = useToast();
   // Get unique speakers from transcription data + moderator if exists
   const uniqueSpeakers = useMemo(() => {
     const speakerMap = new Map<string, Speaker>();
@@ -148,7 +150,7 @@ export default function SpeakerHeader({
 
     // Validate file type
     if (!file.type.startsWith('image/')) {
-      alert('Please select an image file');
+      toast("Please select an image file", "error");
       return;
     }
 
@@ -178,7 +180,7 @@ export default function SpeakerHeader({
       onUpdateAvatar(speakerName, data.url, data.key);
     } catch (error: any) {
       console.error('Avatar upload error:', error);
-      alert(`Failed to upload avatar: ${error.message}`);
+      toastError(error, "Failed to upload avatar");
     } finally {
       setUploadingAvatar(null);
       // Reset input

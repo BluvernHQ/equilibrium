@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { S3Client, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { handleError, NotFoundError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // Format endpoint URL for S3 client
 const formatEndpoint = (endpoint: string | undefined, originEndpoint: string | undefined, bucket: string | undefined, region: string): string => {
@@ -66,7 +68,7 @@ export async function DELETE(
                     });
 
                     await s3Client.send(deleteCommand);
-                    console.log(`Deleted orphaned video file: ${fileKey}`);
+                    logger.info("Deleted orphaned video file", { fileKey });
                     
                     return NextResponse.json({
                         success: true,
@@ -101,10 +103,7 @@ export async function DELETE(
         });
 
         if (!video) {
-            return NextResponse.json(
-                { error: "Video not found" },
-                { status: 404 }
-            );
+            throw new NotFoundError("Video not found", "video");
         }
 
         // Get speakers separately to delete their avatars
@@ -136,9 +135,11 @@ export async function DELETE(
                     await s3Client.send(deleteCommand);
                     console.log(`Deleted video file: ${video.fileKey}`);
                 }
-            } catch (s3Error: any) {
-                console.warn("Failed to delete video file from Spaces:", s3Error.message);
-                // Continue with database deletion even if S3 deletion fails
+            } catch (s3Error: unknown) {
+                logger.warn("Failed to delete video file from Spaces; continuing with DB deletion", {
+                    fileKey: video.fileKey,
+                    error: s3Error instanceof Error ? s3Error.message : String(s3Error),
+                });
             }
         }
 
@@ -181,12 +182,16 @@ export async function DELETE(
             message: "Video and all associated data deleted successfully",
         });
 
-    } catch (error: any) {
-        console.error("Delete video error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to delete video" },
-            { status: 500 }
+    } catch (error: unknown) {
+        if (error instanceof NotFoundError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Delete video failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/videos/delete/[videoId]" }
         );
+        return handleError(error);
     }
 }
 

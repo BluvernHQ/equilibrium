@@ -18,6 +18,8 @@ export const metadata: Metadata = {
 };
 
 import { SessionProvider } from "@/context/SessionContext";
+import { ToastProvider } from "@/context/ToastContext";
+import { ConfirmProvider } from "@/context/ConfirmContext";
 
 export default function RootLayout({
   children,
@@ -29,9 +31,13 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <SessionProvider>
-          {children}
-        </SessionProvider>
+        <ToastProvider>
+          <ConfirmProvider>
+            <SessionProvider>
+              {children}
+            </SessionProvider>
+          </ConfirmProvider>
+        </ToastProvider>
       </body>
     </html>
   );

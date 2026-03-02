@@ -1,10 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { v4 as uuidv4 } from "uuid";
+import { handleError, ValidationError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
+import { exec } from "child_process";
+import { promisify } from "util";
+import { writeFile, readFile, unlink } from "fs/promises";
+import path from "path";
+import os from "os";
+
+const execPromise = promisify(exec);
 
 // Increase timeout for large file uploads (5 minutes)
 export const maxDuration = 300;
 export const runtime = 'nodejs';
+
+/** Max upload size: 500 MB. Larger files may hit timeouts or proxy limits (e.g. nginx client_max_body_size). */
+export const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
 
 // Format endpoint URL for S3 client
 const formatEndpoint = (endpoint: string | undefined, originEndpoint: string | undefined, bucket: string | undefined, region: string): string => {
@@ -79,6 +91,14 @@ export async function POST(req: NextRequest) {
             );
         }
 
+        if (file.size > MAX_UPLOAD_BYTES) {
+            const maxMB = MAX_UPLOAD_BYTES / (1024 * 1024);
+            throw new ValidationError(
+                `File is too large. Maximum size is ${maxMB} MB. Your file is ${(file.size / (1024 * 1024)).toFixed(1)} MB.`,
+                { maxSizeMB: maxMB, actualSizeMB: (file.size / (1024 * 1024)).toFixed(2) }
+            );
+        }
+
         console.log("Received file upload request:", {
             fileName: file.name,
             fileSize: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
@@ -93,9 +113,59 @@ export async function POST(req: NextRequest) {
 
         // Use original filename with timestamp suffix to ensure uniqueness
         const originalFileName = file.name;
-        const fileExtension = originalFileName.split('.').pop() || 'mp4';
-        const baseName = originalFileName.substring(0, originalFileName.lastIndexOf('.')) || originalFileName;
-        
+        let fileExtension = (originalFileName.split('.').pop() || 'mp4').toLowerCase();
+        let baseName = originalFileName.substring(0, originalFileName.lastIndexOf('.')) || originalFileName;
+        let contentType = file.type;
+        let finalBuffer = buffer;
+
+        // MTS/M2TS Conversion Logic
+        if (fileExtension === 'mts' || fileExtension === 'm2ts') {
+            console.log(`Detected ${fileExtension.toUpperCase()} file, starting conversion to MP4...`);
+            const tempId = uuidv4();
+            const inputPath = path.join(os.tmpdir(), `${tempId}.${fileExtension}`);
+            const outputPath = path.join(os.tmpdir(), `${tempId}.mp4`);
+
+            try {
+                // Write original buffer to temp file
+                await writeFile(inputPath, buffer);
+                console.log(`Temp input file created: ${inputPath}`);
+
+                // Convert to MP4 using ffmpeg
+                // -preset ultrafast: prioritized speed over file size/quality for quick turnaround
+                // -c:v libx264: H.264 video codec for wide browser compatibility
+                // -c:a aac: AAC audio codec
+                const ffmpegCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 128k -y "${outputPath}"`;
+                console.log(`Running ffmpeg: ${ffmpegCmd}`);
+                
+                const { stdout, stderr } = await execPromise(ffmpegCmd);
+                console.log("ffmpeg conversion completed");
+
+                // Read converted file back to buffer
+                finalBuffer = await readFile(outputPath);
+                console.log(`Converted buffer size: ${(finalBuffer.length / (1024 * 1024)).toFixed(2)} MB`);
+
+                // Update metadata for upload
+                fileExtension = 'mp4';
+                contentType = 'video/mp4';
+                // Adjust baseName to indicate it was converted
+                baseName = `${baseName}_converted`;
+            } catch (convError) {
+                console.error("FFmpeg conversion failed:", convError);
+                // We'll continue with the original file if conversion fails, 
+                // though it might not play in the browser.
+                logger.error("MTS conversion failed, falling back to original file", convError as Error);
+            } finally {
+                // Cleanup temp files
+                try {
+                    await unlink(inputPath).catch(() => {});
+                    await unlink(outputPath).catch(() => {});
+                    console.log("Temp conversion files cleaned up");
+                } catch (cleanupError) {
+                    console.error("Failed to cleanup temp files:", cleanupError);
+                }
+            }
+        }
+
         // Sanitize filename: remove special characters, keep only alphanumeric, spaces, hyphens, underscores
         const sanitizedBaseName = baseName.replace(/[^a-zA-Z0-9\s\-_]/g, '_').trim();
         
@@ -107,23 +177,20 @@ export async function POST(req: NextRequest) {
         // Format the endpoint for S3 client
         const formattedEndpoint = formatEndpoint(DO_SPACES_ENDPOINT, DO_SPACES_ORIGIN_ENDPOINT, DO_SPACES_BUCKET, DO_SPACES_REGION);
         
-        console.log("S3 Client Configuration:", {
+        logger.debug("S3 client configuration", {
             endpoint: formattedEndpoint,
             region: DO_SPACES_REGION,
             bucket: DO_SPACES_BUCKET,
-            hasOriginEndpoint: !!DO_SPACES_ORIGIN_ENDPOINT,
         });
-        
-        // Create S3 client
+
         const s3Client = createS3Client(formattedEndpoint);
 
-        // Upload to Digital Ocean Spaces
-        console.log("Starting S3 upload...", { bucket: DO_SPACES_BUCKET, key });
+        logger.info("Starting S3 upload", { bucket: DO_SPACES_BUCKET, key });
         const command = new PutObjectCommand({
             Bucket: DO_SPACES_BUCKET,
             Key: key,
-            Body: buffer,
-            ContentType: file.type,
+            Body: finalBuffer,
+            ContentType: contentType,
             ACL: "public-read", // Try to make file publicly accessible
         });
 
@@ -137,8 +204,8 @@ export async function POST(req: NextRequest) {
                 const privateCommand = new PutObjectCommand({
                     Bucket: DO_SPACES_BUCKET,
                     Key: key,
-                    Body: buffer,
-                    ContentType: file.type,
+                    Body: finalBuffer,
+                    ContentType: contentType,
                 });
                 await s3Client.send(privateCommand);
                 console.log("S3 upload completed successfully (private file)");
@@ -168,33 +235,29 @@ export async function POST(req: NextRequest) {
             fileName: fileName,
             // Include video metadata for later database save
             videoMetadata: {
-                fileName: file.name,
+                fileName: fileName, // Use the new filename (with .mp4)
                 fileKey: key,
                 fileUrl: publicUrl,
-                fileSize: file.size,
+                fileSize: finalBuffer.length,
             },
         });
 
-    } catch (error: any) {
-        console.error("Upload error details:", {
-            message: error.message,
-            name: error.name,
-            code: error.Code || error.code,
-            statusCode: error.$metadata?.httpStatusCode,
-            requestId: error.$metadata?.requestId,
-        });
-        
-        let errorMessage = "Failed to upload file";
-        if (error.Code) {
-            errorMessage = `S3 Error (${error.Code}): ${error.message || "Unknown error"}`;
-        } else if (error.message) {
-            errorMessage = error.message;
+    } catch (error: unknown) {
+        if (error instanceof ValidationError) {
+            return handleError(error);
         }
-        
-        return NextResponse.json(
-            { error: errorMessage },
-            { status: 500 }
+        const err = error as { message?: string; Code?: string; code?: string; $metadata?: { httpStatusCode?: number; requestId?: string } };
+        logger.error(
+            "Upload failed",
+            error instanceof Error ? error : new Error(String(error)),
+            {
+                path: "/api/upload",
+                code: err.Code || err.code,
+                statusCode: err.$metadata?.httpStatusCode,
+                requestId: err.$metadata?.requestId,
+            }
         );
+        return handleError(error);
     }
 }
 

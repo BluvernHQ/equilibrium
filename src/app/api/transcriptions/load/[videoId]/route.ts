@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError, NotFoundError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 export async function GET(
     req: NextRequest,
@@ -93,7 +95,7 @@ export async function GET(
                     avatar_key: s.avatar_key,
                     is_moderator: s.is_moderator,
                 }));
-                console.log(`Loaded ${speakers.length} speaker(s) using raw SQL, including ${speakers.filter((s: any) => s.is_moderator).length} moderator(s) for video ${videoId}`);
+                logger.debug("Loaded speakers via raw SQL", { videoId, count: speakers.length, moderators: speakers.filter((s: any) => s.is_moderator).length });
             } else {
                 speakers = await SpeakerModel.findMany({
                     where: { video_id: videoId },
@@ -108,12 +110,11 @@ export async function GET(
                 });
                 console.log(`Loaded ${speakers.length} speaker(s) including ${speakers.filter((s: any) => s.is_moderator).length} moderator(s) for video ${videoId}`);
             }
-        } catch (speakerError: any) {
+        } catch (speakerError: unknown) {
             // If Speaker table doesn't exist yet or there's an error, just use empty array
-            console.error("Could not load speakers:", speakerError.message);
-            console.error("Speaker error details:", {
-                error: speakerError,
-                stack: speakerError.stack,
+            logger.warn("Could not load speakers, using empty array", {
+                videoId,
+                error: speakerError instanceof Error ? speakerError.message : String(speakerError),
             });
             speakers = [];
         }
@@ -170,12 +171,16 @@ export async function GET(
             })),
         });
 
-    } catch (error: any) {
-        console.error("Load transcription error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to load transcription" },
-            { status: 500 }
+    } catch (error: unknown) {
+        if (error instanceof NotFoundError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Load transcription failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/transcriptions/load/[videoId]" }
         );
+        return handleError(error);
     }
 }
 

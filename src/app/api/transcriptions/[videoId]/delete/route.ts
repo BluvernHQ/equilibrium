@@ -1,34 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError, NotFoundError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 export async function DELETE(
-    req: NextRequest,
+    _req: NextRequest,
     { params }: { params: Promise<{ videoId: string }> }
 ) {
     try {
         const { videoId } = await params;
 
-        // Verify video exists
-        // @ts-ignore - Prisma types generated at runtime
         const video = await prisma.video.findUnique({
             where: { id: videoId },
         });
 
         if (!video) {
-            return NextResponse.json(
-                { error: "Video not found" },
-                { status: 404 }
-            );
+            throw new NotFoundError("Video not found", "video");
         }
 
-        // Delete all transcripts for this video (cascade will handle blocks, sections, etc.)
-        // @ts-ignore - Prisma types generated at runtime
         const deleteTranscriptResult = await prisma.transcript.deleteMany({
             where: { video_id: videoId },
         });
 
-        // Also delete all speakers for this video
-        // @ts-ignore
         const deleteSpeakerResult = await prisma.speaker.deleteMany({
             where: { video_id: videoId },
         });
@@ -39,13 +32,16 @@ export async function DELETE(
             deletedTranscriptsCount: deleteTranscriptResult.count,
             deletedSpeakersCount: deleteSpeakerResult.count,
         });
-
-    } catch (error: any) {
-        console.error("Delete transcription error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to delete transcription" },
-            { status: 500 }
+    } catch (error: unknown) {
+        if (error instanceof NotFoundError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Delete transcription failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/transcriptions/[videoId]/delete" }
         );
+        return handleError(error);
     }
 }
 

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 export async function GET(req: NextRequest) {
     try {
@@ -102,12 +104,13 @@ export async function GET(req: NextRequest) {
             count: formattedVideos.length,
         });
 
-    } catch (error: any) {
-        console.error("Get videos from DB error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to get videos" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Get videos from DB failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/videos/db" }
         );
+        return handleError(error);
     }
 }
 

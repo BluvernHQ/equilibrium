@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError, ValidationError, NotFoundError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // PATCH - Update video properties (like fileName/session name)
 export async function PATCH(req: NextRequest) {
@@ -8,10 +10,7 @@ export async function PATCH(req: NextRequest) {
         const { videoId, fileName, duration_seconds, provider_video_id } = body;
 
         if (!videoId) {
-            return NextResponse.json(
-                { error: "Video ID is required" },
-                { status: 400 }
-            );
+            throw new ValidationError("Video ID is required", { field: "videoId" });
         }
 
         // Build update data object with only provided fields
@@ -21,13 +20,11 @@ export async function PATCH(req: NextRequest) {
         if (provider_video_id !== undefined) updateData.provider_video_id = provider_video_id;
 
         if (Object.keys(updateData).length === 0) {
-            return NextResponse.json(
-                { error: "No update fields provided" },
-                { status: 400 }
-            );
+            throw new ValidationError("No update fields provided", {
+                allowed: ["fileName", "duration_seconds", "provider_video_id"],
+            });
         }
 
-        // @ts-ignore
         const updatedVideo = await prisma.video.update({
             where: { id: videoId },
             data: updateData,
@@ -45,20 +42,22 @@ export async function PATCH(req: NextRequest) {
             },
         });
 
-    } catch (error: any) {
-        console.error("Update video error:", error);
-        
-        if (error.code === 'P2025') {
-            return NextResponse.json(
-                { error: "Video not found" },
-                { status: 404 }
-            );
+    } catch (error: unknown) {
+        if (
+            error instanceof ValidationError ||
+            error instanceof NotFoundError
+        ) {
+            return handleError(error);
         }
-        
-        return NextResponse.json(
-            { error: error.message || "Failed to update video" },
-            { status: 500 }
+        if (error && typeof error === "object" && "code" in error && (error as { code: string }).code === "P2025") {
+            return handleError(new NotFoundError("Video not found", "video"));
+        }
+        logger.error(
+            "Update video failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/videos/update" }
         );
+        return handleError(error);
     }
 }
 

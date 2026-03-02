@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // GET - List subsections for a section
 export async function GET(req: NextRequest) {
@@ -30,12 +32,9 @@ export async function GET(req: NextRequest) {
                 endBlockIndex: sub.end_block_index,
             })),
         });
-    } catch (error: any) {
-        console.error("Get subsections error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to get subsections" },
-            { status: 500 }
-        );
+    } catch (error: unknown) {
+        logger.error("Get subsections failed", error instanceof Error ? error : new Error(String(error)), { path: "/api/subsections" });
+        return handleError(error);
     }
 }
 
@@ -125,12 +124,9 @@ export async function POST(req: NextRequest) {
                 endBlockIndex: subsection.end_block_index,
             },
         });
-    } catch (error: any) {
-        console.error("Create subsection error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to create subsection" },
-            { status: 500 }
-        );
+    } catch (error: unknown) {
+        logger.error("Create subsection failed", error instanceof Error ? error : new Error(String(error)), { path: "/api/subsections" });
+        return handleError(error);
     }
 }
 
@@ -212,12 +208,9 @@ export async function PUT(req: NextRequest) {
                 endBlockIndex: subsection.end_block_index,
             },
         });
-    } catch (error: any) {
-        console.error("Update subsection error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to update subsection" },
-            { status: 500 }
-        );
+    } catch (error: unknown) {
+        logger.error("Update subsection failed", error instanceof Error ? error : new Error(String(error)), { path: "/api/subsections" });
+        return handleError(error);
     }
 }
 
@@ -243,12 +236,9 @@ export async function DELETE(req: NextRequest) {
             success: true,
             message: "Subsection deleted",
         });
-    } catch (error: any) {
-        console.error("Delete subsection error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to delete subsection" },
-            { status: 500 }
-        );
+    } catch (error: unknown) {
+        logger.error("Delete subsection failed", error instanceof Error ? error : new Error(String(error)), { path: "/api/subsections" });
+        return handleError(error);
     }
 }
 

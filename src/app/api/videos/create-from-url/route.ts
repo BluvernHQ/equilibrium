@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError, ValidationError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // Helper function to extract fileKey from Digital Ocean Spaces URL
 function extractFileKeyFromUrl(url: string): string | null {
@@ -36,7 +38,9 @@ function extractFileKeyFromUrl(url: string): string | null {
         
         return null;
     } catch (error) {
-        console.error("Error extracting fileKey from URL:", error);
+        logger.warn("Error extracting fileKey from URL", {
+            error: error instanceof Error ? error.message : String(error),
+        });
         return null;
     }
 }
@@ -56,10 +60,7 @@ export async function POST(req: NextRequest) {
         // Extract fileKey from URL
         const fileKey = extractFileKeyFromUrl(fileUrl);
         if (!fileKey) {
-            return NextResponse.json(
-                { error: "Could not extract fileKey from URL" },
-                { status: 400 }
-            );
+            throw new ValidationError("Could not extract fileKey from URL", { field: "fileUrl" });
         }
 
         // Extract fileName from fileKey
@@ -120,24 +121,16 @@ export async function POST(req: NextRequest) {
             },
         });
 
-    } catch (error: any) {
-        console.error("Create video from URL error:", error);
-        
-        // Log full error details for debugging
-        console.error("Error details:", {
-            message: error.message,
-            stack: error.stack,
-            name: error.name,
-        });
-        
-        // Return proper JSON error response
-        return NextResponse.json(
-            { 
-                error: error.message || "Failed to create video record",
-                details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-            },
-            { status: 500 }
+    } catch (error: unknown) {
+        if (error instanceof ValidationError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Create video from URL failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/videos/create-from-url" }
         );
+        return handleError(error);
     }
 }
 

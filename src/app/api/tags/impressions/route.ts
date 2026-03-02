@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError, ValidationError, NotFoundError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // POST - Create a tag impression (the actual tagging action)
 export async function POST(req: NextRequest) {
@@ -250,12 +252,13 @@ export async function POST(req: NextRequest) {
             success: true,
             ...result,
         });
-    } catch (error: any) {
-        console.error("Create tag impression error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to create tag impression" },
-            { status: 500 }
+    } catch (error: unknown) {
+        logger.error(
+            "Create tag impression failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/impressions" }
         );
+        return handleError(error);
     }
 }
 
@@ -382,12 +385,16 @@ export async function PATCH(req: NextRequest) {
             success: true,
             impression: updatedImpression
         });
-    } catch (error: any) {
-        console.error("Update tag impression error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to update tag impression" },
-            { status: 500 }
+    } catch (error: unknown) {
+        if (error instanceof ValidationError || error instanceof NotFoundError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Update tag impression failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/impressions" }
         );
+        return handleError(error);
     }
 }
 

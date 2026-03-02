@@ -1,18 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError, NotFoundError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 export async function GET(
-    req: NextRequest,
+    _req: NextRequest,
     { params }: { params: Promise<{ videoId: string }> }
 ) {
     try {
         const { videoId } = await params;
 
-        // Get the latest transcription for this video
-        // @ts-ignore - Prisma types generated at runtime
-        const transcription = await prisma.transcription.findFirst({
-            where: { videoId },
-            orderBy: { createdAt: 'desc' },
+        const transcription = await prisma.transcript.findFirst({
+            where: { video_id: videoId },
+            orderBy: { created_at: 'desc' },
             include: {
                 video: {
                     select: {
@@ -26,23 +26,23 @@ export async function GET(
         });
 
         if (!transcription) {
-            return NextResponse.json(
-                { error: "Transcription not found" },
-                { status: 404 }
-            );
+            throw new NotFoundError("Transcription not found", "transcript");
         }
 
         return NextResponse.json({
             success: true,
             transcription,
         });
-
-    } catch (error: any) {
-        console.error("Get transcription error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to get transcription" },
-            { status: 500 }
+    } catch (error: unknown) {
+        if (error instanceof NotFoundError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Get transcription failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/transcriptions/[videoId]" }
         );
+        return handleError(error);
     }
 }
 

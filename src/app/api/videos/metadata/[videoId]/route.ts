@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError, NotFoundError, ValidationError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // GET - Get video by ID
 export async function GET(
@@ -80,13 +82,9 @@ export async function PATCH(
         }
 
         if (Object.keys(updateData).length === 0) {
-            return NextResponse.json(
-                { error: "No fields to update" },
-                { status: 400 }
-            );
+            throw new ValidationError("No fields to update", { allowed: ["fileName", "duration_seconds"] });
         }
 
-        // @ts-ignore
         const video = await prisma.video.update({
             where: { id: videoId },
             data: updateData,
@@ -103,20 +101,19 @@ export async function PATCH(
                 updatedAt: video.updatedAt.toISOString(),
             },
         });
-    } catch (error: any) {
-        console.error("Update video error:", error);
-        
-        if (error.code === 'P2025') {
-            return NextResponse.json(
-                { error: "Video not found" },
-                { status: 404 }
-            );
+    } catch (error: unknown) {
+        if (error instanceof ValidationError) {
+            return handleError(error);
         }
-        
-        return NextResponse.json(
-            { error: error.message || "Failed to update video" },
-            { status: 500 }
+        if (error && typeof error === "object" && "code" in error && (error as { code: string }).code === "P2025") {
+            return handleError(new NotFoundError("Video not found", "video"));
+        }
+        logger.error(
+            "Update video failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/videos/metadata/[videoId]" }
         );
+        return handleError(error);
     }
 }
 

@@ -29,228 +29,29 @@ import {
   ActiveContextBar
 } from '../components/tag-hierarchy';
 import RecentTags from "../components/RecentTags";
+import { RecordingsTab } from "../components/RecordingsTab";
 import Link from "next/link";
 import NextImage from "next/image";
+import {
+  type TranscriptBlock,
+  type LoadedVideo,
+  type SelectionRange,
+  type TagItem,
+  type PrimaryTagDetail,
+  type SecondaryTag,
+  type PendingEntry,
+  type SessionDataItem,
+  type DisplayItem,
+  type DbSection,
+  type DbTagGroup,
+  type VideoItem,
+  speakerColors,
+} from "./sessions-types";
+import { getMasterTagColor, formatTime, getSpeakerName } from "./sessions-utils";
+import { useSessionSpeakers } from "./useSessionSpeakers";
 
-// Type for loaded transcript data from database
-interface TranscriptBlock {
-  id: string;
-  speaker_label: string;
-  start_time_seconds: number;
-  end_time_seconds: number;
-  text: string;
-  order_index: number;
-}
-
-interface LoadedTranscript {
-  id: string;
-  version: number;
-  language: string;
-  transcription_type: string;
-  blocks: TranscriptBlock[];
-}
-
-interface LoadedVideo {
-  id: string;
-  fileName: string;
-  source_url: string;
-}
-
-// --- 1. DEFINING INTERNAL TYPES ---
-
-// Selection range within a block for precise highlight persistence
-export interface SelectionRange {
-  blockId: string;
-  startOffset: number;
-  endOffset: number;
-}
-
-interface SecondaryTag {
-  id?: string;
-  value: string;
-  comment?: string;
-}
-
-interface PrimaryTagDetail {
-  id?: string; // Database primary tag ID
-  value: string;
-  displayName?: string; // e.g. "Brother (1)"
-  instanceIndex?: number; // e.g. 1
-  messageIndex: number;
-  blockId?: string; // Database block ID
-  blockIds?: string[]; // Multiple block IDs
-  comment?: string;
-  impressionId?: string; // Database impression ID
-  secondaryTags?: SecondaryTag[]; // Secondary tags under this primary
-  selectedText?: string; // The exact selected text (for card preview)
-  selectionRange?: SelectionRange; // Character offsets within the block
-  selectionRanges?: SelectionRange[]; // Multiple ranges across blocks
-}
-
-interface TagItem {
-  id: string;
-  master: string | null;
-  masterTagId?: string; // Database master tag ID
-  masterComment?: string;
-  masterColor?: string; // Stored or generated color for this master tag
-  isClosed?: boolean;
-  branchTags?: { id: string, name: string }[];
-  primaryList: PrimaryTagDetail[];
-  allText: string[];
-  blockIds: string[]; // All block IDs for this tag group
-
-  // Selection data for precise highlight persistence
-  selectionRanges?: SelectionRange[];
-  verticalOffset?: number; // Pixels from top of block
-}
-
-// Updated Pending Entry to support object structure in primaryList
-interface PendingPrimary {
-  id?: string; // Database primary tag ID if reusing existing
-  value: string;
-  displayName?: string; // Display name with numbering if reusing
-  comment?: string;
-  secondaryTags?: SecondaryTag[];
-  showSecondaryInput?: boolean; // UI state for showing secondary input
-}
-
-export interface PendingEntry {
-  id: string;
-  messageIndex: number;
-  blockId?: string; // Database block ID (legacy/single-block)
-  blockIds?: string[]; // Multiple block IDs for multi-block selection
-  text: string;
-  selectedText: string; // The exact selected text (for display in cards)
-  selectionRange?: SelectionRange; // Character offsets within the block (legacy/single-block)
-  selectionRanges?: SelectionRange[]; // Character offsets across multiple blocks
-  primaryInput: string;
-  primaryInputClosed?: boolean;
-  primaryList: PendingPrimary[];
-  branchTags?: { value: string }[]; // Added branch tags support
-  verticalOffset?: number; // Pixels from top of block
-}
-
-// Session data item format (compatible with both static data and loaded transcript)
-interface SessionDataItem {
-  name: string;
-  time: string;
-  message: string;
-  image: string;
-  blockId?: string; // Database block ID for linking
-}
-
-// Types for the mixed list (Data + Dividers)
-type RowType = 'data' | 'section' | 'subsection' | 'section_close' | 'subsection_close';
-
-interface DisplayItem {
-  id: string;
-  type: RowType;
-  originalData?: SessionDataItem;
-  originalIndex?: number;
-  title?: string;
-  isEditing?: boolean;
-  // Database fields for sections/subsections
-  dbId?: string; // Database ID
-  parentSectionId?: string; // For subsections: parent section ID
-  startBlockIndex?: number;
-  endBlockIndex?: number | null; // null = open/unclosed
-  isClosed?: boolean; // Visual indicator
-}
-
-// Database Section/Subsection types
-interface DbSection {
-  id: string;
-  name: string;
-  startBlockIndex: number;
-  endBlockIndex: number | null;
-  subsections: DbSubsection[];
-}
-
-interface DbSubsection {
-  id: string;
-  name: string;
-  startBlockIndex: number;
-  endBlockIndex: number | null;
-}
-
-// Database Tag Group (from API)
-interface DbTagGroup {
-  id?: string;
-  masterTag: {
-    id: string;
-    name: string;
-    description?: string;
-    color?: string;
-    is_closed?: boolean;
-  };
-  branchTags?: { id: string, name: string }[];
-  primaryTags: {
-    id: string;
-    name: string;
-    instanceIndex?: number;
-    displayName?: string;
-    impressionId: string;
-    blockIds: string[];
-    selectedText?: string; // The exact selected text
-    selectionRanges?: SelectionRange[]; // Character offsets within blocks
-    secondaryTags?: { id: string, name: string }[];
-    comment?: string;
-  }[];
-  blockIds: string[];
-  selectedText?: string;
-  selectionRanges?: SelectionRange[];
-}
-
-interface VideoItem {
-  key: string;
-  fileName: string;
-  url: string;
-  size: number;
-  lastModified: string;
-}
-
-// Speaker colors for avatar display
-const speakerColors = [
-  "#00A3AF", "#E91E63", "#9C27B0", "#673AB7",
-  "#3F51B5", "#2196F3", "#009688", "#4CAF50",
-  "#FF9800", "#795548", "#607D8B", "#FF5722"
-];
-
-// Master tag colors - consistent colors based on ID/name hash
-const masterTagColors = [
-  "#E91E63", "#9C27B0", "#673AB7", "#3F51B5",
-  "#2196F3", "#00BCD4", "#009688", "#4CAF50",
-  "#8BC34A", "#CDDC39", "#FFC107", "#FF9800",
-  "#FF5722", "#795548", "#607D8B", "#00A3AF"
-];
-
-// Generate consistent color for a master tag based on its ID or name
-function getMasterTagColor(identifier: string): string {
-  // Simple hash function to get consistent index
-  let hash = 0;
-  for (let i = 0; i < identifier.length; i++) {
-    const char = identifier.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32bit integer
-  }
-  const index = Math.abs(hash) % masterTagColors.length;
-  return masterTagColors[index];
-}
-
-// Helper to format seconds to time string (mm:ss)
-function formatTime(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-}
-
-// Helper to get speaker display name
-function getSpeakerName(label: string): string {
-  if (label.match(/^[A-Z]$/)) {
-    return `Speaker ${label.charCodeAt(0) - 64}`;
-  }
-  return label;
-}
+// Re-export for consumers that import from this file
+export type { SelectionRange, PendingEntry } from "./sessions-types";
 
 export default function Sessions() {
   const router = useRouter();
@@ -278,173 +79,15 @@ export default function Sessions() {
   const [dbMasterTags, setDbMasterTags] = useState<{ id: string; name: string }[]>([]);
   const [dbPrimaryTags, setDbPrimaryTags] = useState<{ id: string; name: string; displayName: string; instanceIndex: number }[]>([]);
   const [dbSections, setDbSections] = useState<DbSection[]>([]);
-  const [speakers, setSpeakers] = useState<Speaker[]>([]);
 
-  const persistSpeakersToServer = async (currentSpeakers: Speaker[]) => {
-    if (!videoId) return;
-    try {
-      const speakerData = currentSpeakers.map((speaker) => {
-        let avatarKey: string | null = null;
-        if (speaker.avatar && speaker.avatar.startsWith('http')) {
-          try {
-            const url = new URL(speaker.avatar);
-            // The key is the entire pathname minus the leading slash
-            avatarKey = url.pathname.startsWith('/') ? url.pathname.substring(1) : url.pathname;
-          } catch (e) { }
-        }
-        return {
-          name: speaker.name,
-          speaker_label: speaker.name,
-          avatar_url: speaker.avatar || null,
-          avatar_key: avatarKey,
-          is_moderator: speaker.role === 'coordinator',
-        };
-      });
-
-      const transcriptData = transcriptBlocks.map((block, idx) => ({
-        id: idx,
-        name: block.speaker_label,
-        time: formatTime(block.start_time_seconds),
-        text: block.text,
-        startTime: block.start_time_seconds,
-        endTime: block.end_time_seconds,
-      }));
-
-      await fetch("/api/transcriptions/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          videoId: videoId,
-          transcriptData: transcriptData,
-          transcriptionType: "manual",
-          speakerData: speakerData,
-        }),
-      });
-    } catch (error) {
-      console.error("Failed to persist speakers to server:", error);
-    }
-  };
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, role: 'coordinator' | 'speaker') => {
-    if (e.target.files && e.target.files.length > 0) {
-      const file = e.target.files[0];
-      const rolePrefix = role === 'coordinator' ? 'Moderator' : 'Speaker';
-      const roleNumbers = speakers
-        .map(s => {
-          const regex = new RegExp(`^${rolePrefix} (\\d+)$`);
-          const match = s.name.match(regex);
-          return match ? parseInt(match[1], 10) : 0;
-        })
-        .filter(n => !isNaN(n));
-      const nextNumber = roleNumbers.length > 0 ? Math.max(...roleNumbers) + 1 : 1;
-      const speakerName = `${rolePrefix} ${nextNumber}`;
-
-      // 1. Optimistic UI Update: Add speaker immediately with a local preview
-      const tempId = `uploaded-${Date.now()}-${file.name}`;
-      const localPreviewUrl = URL.createObjectURL(file);
-
-      const newSpeaker: Speaker = {
-        id: tempId,
-        name: speakerName,
-        shortName: speakerName,
-        avatar: localPreviewUrl,
-        isDefault: false,
-        role: role
-      };
-
-      setSpeakers(prev => [...prev, newSpeaker]);
-
-      try {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('speakerName', speakerName);
-        if (videoId) formData.append('videoId', videoId);
-
-        const response = await fetch('/api/speakers/upload-avatar', {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          // 2. Finalize: Replace local preview with permanent server URL
-          setSpeakers(prev => {
-            const updated = prev.map(s => s.id === tempId ? { ...s, avatar: data.url } : s);
-            persistSpeakersToServer(updated);
-            return updated;
-          });
-        } else {
-          // If upload failed, remove the optimistic speaker
-          setSpeakers(prev => prev.filter(s => s.id !== tempId));
-        }
-      } catch (error) {
-        console.error('Avatar upload error:', error);
-        setSpeakers(prev => prev.filter(s => s.id !== tempId));
-      } finally {
-        e.target.value = "";
-      }
-    }
-  };
-
-  const handleUpdateAvatar = async (id: string, file: File) => {
-    // 1. Optimistic UI Update
-    const localPreviewUrl = URL.createObjectURL(file);
-    setSpeakers(prev => prev.map(s => s.id === id ? { ...s, avatar: localPreviewUrl } : s));
-
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const speaker = speakers.find(s => s.id === id);
-      if (speaker) formData.append('speakerName', speaker.name);
-      if (videoId) formData.append('videoId', videoId);
-
-      const response = await fetch('/api/speakers/upload-avatar', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        // 2. Finalize
-        setSpeakers(prev => {
-          const updated = prev.map(s => s.id === id ? { ...s, avatar: data.url } : s);
-          persistSpeakersToServer(updated);
-          return updated;
-        });
-      }
-    } catch (error) {
-      console.error('Avatar upload error:', error);
-    }
-  };
-
-  const handleUpdateSpeaker = (id: string | number, newName: string) => {
-    setSpeakers(prev => {
-      const updated = prev.map(spk => spk.id === id ? {
-        ...spk,
-        name: newName,
-        shortName: newName.length > 10 ? newName.substring(0, 8) + "..." : newName,
-      } : spk);
-      persistSpeakersToServer(updated);
-      return updated;
-    });
-  };
-
-  const handleDeleteSpeaker = async (id: string) => {
-    // If it's a persistent speaker (has a real database ID), delete from server too
-    if (id.length > 20 && !id.startsWith('uploaded-') && !id.startsWith('speaker-')) {
-      try {
-        await fetch(`/api/speakers/${id}/delete`, { method: 'DELETE' });
-      } catch (error) {
-        console.error("Failed to delete speaker from server:", error);
-      }
-    }
-
-    setSpeakers(prev => {
-      const updated = prev.filter(s => s.id !== id);
-      persistSpeakersToServer(updated);
-      return updated;
-    });
-  };
+  const {
+    speakers,
+    setSpeakers,
+    handleFileUpload,
+    handleUpdateAvatar,
+    handleUpdateSpeaker,
+    handleDeleteSpeaker,
+  } = useSessionSpeakers(videoId, transcriptBlocks);
 
   // Function to fetch primary tags from database for search/suggestions
   const fetchPrimaryTags = useCallback(async (masterName: string, search: string = "") => {
@@ -3268,7 +2911,7 @@ export default function Sessions() {
               id: p.id, // Send primary tag ID for reuse
               name: p.id ? p.value : (p.value.startsWith('highlight ') ? null : p.value), // null for highlights (no primary tag name)
               comment: p.comment,
-              secondaryTags: p.secondaryTags?.map(s => s.value) || [], // Pass secondary tag names
+              secondaryTags: p.secondaryTags?.map((s: SecondaryTag) => s.value) || [], // Pass secondary tag names
               selectedText: p.selectedText, // The exact selected text
               selectionRange: p.selectionRange, // Character offsets within the block
               selectionRanges: p.selectionRanges, // Multiple ranges
@@ -5628,105 +5271,24 @@ export default function Sessions() {
               {activeTab === "recent" && <RecentTags />}
 
               {activeTab === "recordings" && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-semibold text-gray-900">Uploaded Videos</h3>
-                    <button
-                      onClick={async () => {
-                        setLoadingVideos(true);
-                        try {
-                          const response = await fetch("/api/videos");
-                          if (response.ok) {
-                            const data = await response.json();
-                            setVideos(data.videos || []);
-                          }
-                        } catch (error) {
-                          console.error("Failed to refresh videos:", error);
-                        } finally {
-                          setLoadingVideos(false);
-                        }
-                      }}
-                      className="text-sm text-[#00A3AF] hover:text-[#008C97] font-medium"
-                    >
-                      Refresh
-                    </button>
-                  </div>
-
-                  {loadingVideos ? (
-                    <div className="flex items-center justify-center py-8">
-                      <div className="text-gray-500">Loading videos...</div>
-                    </div>
-                  ) : videos.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-12 text-center">
-                      <div className="text-gray-400 mb-2">No videos uploaded yet</div>
-                      <div className="text-sm text-gray-500">Upload videos from the home page to see them here</div>
-                    </div>
-                  ) : (
-                    <div className="space-y-3 max-h-[calc(100vh-200px)] overflow-y-auto">
-                      {videos.map((video) => (
-                        <div
-                          key={video.key}
-                          className="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-md transition-shadow"
-                        >
-                          <div className="flex items-start gap-3">
-                            <div className="flex-shrink-0 w-16 h-16 bg-[#E0F7FA] rounded-lg flex items-center justify-center">
-                              <svg
-                                className="w-8 h-8 text-[#00A3AF]"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
-                                />
-                              </svg>
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <h4 className="text-sm font-medium text-gray-900 truncate mb-1">
-                                {video.fileName}
-                              </h4>
-                              <div className="flex items-center gap-4 text-xs text-gray-500 mb-2">
-                                <span>
-                                  {new Date(video.lastModified).toLocaleDateString("en-US", {
-                                    month: "short",
-                                    day: "numeric",
-                                    year: "numeric",
-                                  })}
-                                </span>
-                                <span>
-                                  {(video.size / (1024 * 1024)).toFixed(2)} MB
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <a
-                                  href={video.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-xs text-[#00A3AF] hover:text-[#008C97] font-medium"
-                                >
-                                  View Video
-                                </a>
-                                <span className="text-gray-300">•</span>
-                                <button
-                                  onClick={() => {
-                                    navigator.clipboard.writeText(video.url);
-                                    alert("Video URL copied to clipboard!");
-                                  }}
-                                  className="text-xs text-gray-600 hover:text-gray-900 font-medium"
-                                >
-                                  Copy URL
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <RecordingsTab
+                  videos={videos}
+                  loadingVideos={loadingVideos}
+                  onRefresh={async () => {
+                    setLoadingVideos(true);
+                    try {
+                      const response = await fetch("/api/videos");
+                      if (response.ok) {
+                        const data = await response.json();
+                        setVideos(data.videos || []);
+                      }
+                    } catch (error) {
+                      console.error("Failed to refresh videos:", error);
+                    } finally {
+                      setLoadingVideos(false);
+                    }
+                  }}
+                />
               )}
             </div>
           </div>

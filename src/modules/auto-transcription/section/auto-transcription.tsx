@@ -9,6 +9,8 @@ import UserIcon from "../../../../public/icons/profile-circle.png";
 import { TranscriptEntry, SegmentState } from "../templates/types";
 import { transcriptEntries as mockEntries } from "../data/transcript-datas";
 import { useSession } from "@/context/SessionContext";
+import { useConfirm } from "@/context/ConfirmContext";
+import { useToast } from "@/context/ToastContext";
 import { SparklesIcon, ArrowRightIcon, PencilSquareIcon, CheckIcon, XMarkIcon, StopIcon, PlusIcon, QuestionMarkCircleIcon } from "@heroicons/react/24/outline";
 import KeyboardShortcutsModal from "@/modules/manual-transcription/components/keyboard-shortcuts-modal";
 import SpeakerHeader from "../components/speaker-header";
@@ -30,6 +32,8 @@ export default function AutoTranscription({
   onStopTranscription
 }: AutoTranscriptionProps) {
   const { updateSpeakerName, setTranscriptionData, mediaUrl: sessionMediaUrl, file: sessionFile, videoId, transcriptionData: sessionTranscriptionData, spacesUrl, setVideoUrl } = useSession();
+  const { confirm } = useConfirm();
+  const { toast, toastError } = useToast();
   const [isGlobalSaved, setIsGlobalSaved] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -95,8 +99,17 @@ export default function AutoTranscription({
 
   const handleBack = () => {
     if (isTranscribing) {
-      const confirmLeave = window.confirm("Transcription is in progress. If you leave, the process may stop. Are you sure you want to leave?");
-      if (!confirmLeave) return;
+      confirm({
+        title: "Leave while transcribing?",
+        message:
+          "Transcription is in progress. If you leave, the process may stop. Are you sure you want to leave?",
+        confirmLabel: "Leave",
+        cancelLabel: "Stay",
+      }).then((ok) => {
+        if (!ok) return;
+        router.back();
+      });
+      return;
     }
     router.back();
   };
@@ -193,7 +206,7 @@ export default function AutoTranscription({
 
   const handleGlobalSave = async () => {
     if (!currentTranscriptionData || currentTranscriptionData.length === 0) {
-      alert("No transcription data to save");
+      toast("No transcription data to save", "error");
       return;
     }
 
@@ -340,7 +353,7 @@ export default function AutoTranscription({
       }
     } catch (error: any) {
       console.error("Error saving transcription:", error);
-      alert(`Failed to save: ${error.message || "Unknown error"}`);
+      toastError(error, "Failed to save");
     } finally {
       setIsSaving(false);
     }
@@ -545,7 +558,7 @@ export default function AutoTranscription({
       setIsGlobalSaved(false);
     } catch (error: any) {
       console.error('Speaker upload error:', error);
-      alert(`Failed to add speaker: ${error.message}`);
+      toastError(error, "Failed to add speaker");
     }
   };
 

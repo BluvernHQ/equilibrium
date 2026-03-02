@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { handleError, ValidationError, NotFoundError, ConflictError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // GET - List branch tags for a master tag
 export async function GET(req: NextRequest) {
@@ -150,20 +152,19 @@ export async function DELETE(req: NextRequest) {
             success: true,
             message: "Branch tag deleted",
         });
-    } catch (error: any) {
-        console.error("Delete branch tag error:", error);
-
-        if (error.code === 'P2025') {
-            return NextResponse.json(
-                { error: "Branch tag not found" },
-                { status: 404 }
-            );
+    } catch (error: unknown) {
+        if (error && typeof error === "object" && "code" in error && (error as { code: string }).code === "P2025") {
+            return handleError(new NotFoundError("Branch tag not found", "resource"));
         }
-
-        return NextResponse.json(
-            { error: error.message || "Failed to delete branch tag" },
-            { status: 500 }
+        if (error instanceof ValidationError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Delete branch tag failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/branch" }
         );
+        return handleError(error);
     }
 }
 
@@ -199,19 +200,18 @@ export async function PATCH(req: NextRequest) {
                 createdAt: branchTag.created_at,
             },
         });
-    } catch (error: any) {
-        console.error("Update branch tag error:", error);
-
-        if (error.code === 'P2025') {
-            return NextResponse.json(
-                { error: "Branch tag not found" },
-                { status: 404 }
-            );
+    } catch (error: unknown) {
+        if (error && typeof error === "object" && "code" in error && (error as { code: string }).code === "P2025") {
+            return handleError(new NotFoundError("Branch tag not found", "resource"));
         }
-
-        return NextResponse.json(
-            { error: error.message || "Failed to update branch tag" },
-            { status: 500 }
+        if (error instanceof ValidationError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Update branch tag failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/tags/branch" }
         );
+        return handleError(error);
     }
 }

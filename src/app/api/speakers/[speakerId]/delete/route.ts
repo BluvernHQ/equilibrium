@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { S3Client, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { handleError, NotFoundError } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 
 // Create S3 client function (reusing from upload-avatar)
 const createS3Client = () => {
@@ -33,10 +35,7 @@ export async function DELETE(
         });
 
         if (!speaker) {
-            return NextResponse.json(
-                { error: "Speaker not found" },
-                { status: 404 }
-            );
+            throw new NotFoundError("Speaker not found", "resource");
         }
 
         // 2. Delete the avatar image from storage if it exists
@@ -48,10 +47,12 @@ export async function DELETE(
                     Key: speaker.avatar_key,
                 };
                 await s3Client.send(new DeleteObjectCommand(deleteParams));
-                console.log(`Successfully deleted avatar from storage: ${speaker.avatar_key}`);
-            } catch (s3Error) {
-                console.error("Failed to delete avatar from storage:", s3Error);
-                // We continue even if storage deletion fails, to ensure database is cleaned up
+                logger.info("Deleted avatar from storage", { key: speaker.avatar_key });
+            } catch (s3Error: unknown) {
+                logger.warn("Failed to delete avatar from storage; continuing with DB cleanup", {
+                    key: speaker.avatar_key,
+                    error: s3Error instanceof Error ? s3Error.message : String(s3Error),
+                });
             }
         }
 
@@ -66,12 +67,16 @@ export async function DELETE(
             message: "Speaker and avatar deleted successfully",
         });
 
-    } catch (error: any) {
-        console.error("Delete speaker error:", error);
-        return NextResponse.json(
-            { error: error.message || "Failed to delete speaker" },
-            { status: 500 }
+    } catch (error: unknown) {
+        if (error instanceof NotFoundError) {
+            return handleError(error);
+        }
+        logger.error(
+            "Delete speaker failed",
+            error instanceof Error ? error : new Error(String(error)),
+            { path: "/api/speakers/[speakerId]/delete" }
         );
+        return handleError(error);
     }
 }
 

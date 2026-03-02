@@ -4,7 +4,10 @@ import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { useRouter, usePathname, useParams } from "next/navigation";
 import { useSession } from "@/context/SessionContext";
-import { SparklesIcon, PencilSquareIcon, DocumentTextIcon, DocumentDuplicateIcon, CloudArrowUpIcon, EllipsisVerticalIcon, TrashIcon, FolderIcon, ChevronRightIcon, PlusIcon, ArrowUturnLeftIcon } from "@heroicons/react/24/outline";
+import { useConfirm } from "@/context/ConfirmContext";
+import { useToast } from "@/context/ToastContext";
+import { getErrorMessage } from "@/lib/errors";
+import { SparklesIcon, PencilSquareIcon, DocumentTextIcon, DocumentDuplicateIcon, CloudArrowUpIcon, EllipsisVerticalIcon, TrashIcon, FolderIcon, ChevronRightIcon, PlusIcon, ArrowUturnLeftIcon, XCircleIcon } from "@heroicons/react/24/outline";
 
 interface FolderItem {
   id: string;
@@ -48,7 +51,7 @@ export default function Recordings() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(6);
-  const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
+  const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
   const [showUploadConfirm, setShowUploadConfirm] = useState(false);
   const [showSelectProjectModal, setShowSelectProjectModal] = useState(false);
   const [uploadTargetFolderId, setUploadTargetFolderId] = useState<string | null>(null);
@@ -56,6 +59,7 @@ export default function Recordings() {
   const [renameTarget, setRenameTarget] = useState<{ type: 'folder' | 'video'; id: string; currentName: string } | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [isRenaming, setIsRenaming] = useState(false);
+  const [videoError, setVideoError] = useState<string | null>(null);
   const itemsPerLoad = 6;
   
   const router = useRouter();
@@ -64,7 +68,9 @@ export default function Recordings() {
   const folderIdFromRoute = pathname?.startsWith("/project/") && params?.folderId ? String(params.folderId) : null;
   const isRoot = pathname === "/" || pathname === "/project";
 
-  const { setVideoUrl, uploadFile, abortUpload, isUploading, uploadStatus, uploadProgress, setUploadFolderId } = useSession();
+  const { setVideoUrl, queueUploads, uploadQueue, abortUpload, isUploading, uploadStatus, uploadProgress, setUploadFolderId } = useSession();
+  const { confirm } = useConfirm();
+  const { toast, toastError } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const menuRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const gridContainerRef = useRef<HTMLDivElement>(null);
@@ -96,13 +102,20 @@ export default function Recordings() {
   // Handle delete recording (video)
   const handleDeleteRecording = async (video: VideoItem) => {
     if (!video.id && !video.key) {
-      alert("Cannot delete: Video identifier not found");
+      toast("Cannot delete: Video identifier not found", "error");
       return;
     }
 
-    if (!confirm(`Are you sure you want to delete the recording "${video.fileName}"? This will also delete all transcriptions and associated data.`)) {
-      return;
-    }
+    const isMergedFile = video.source_type === "merged";
+    const noun = isMergedFile ? "file" : "recording";
+
+    const confirmed = await confirm({
+      title: isMergedFile ? "Delete file?" : "Delete recording?",
+      message: `Are you sure you want to delete the ${noun} "${video.fileName}"?\nThis will also delete all transcriptions and associated data.`,
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+    });
+    if (!confirmed) return;
 
     const deleteId = video.id || video.key;
     setDeleting(deleteId);
@@ -117,7 +130,7 @@ export default function Recordings() {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to delete recording');
+        throw new Error(errorData.error || `Failed to delete ${noun}`);
       }
 
       // Refresh videos list
@@ -125,7 +138,7 @@ export default function Recordings() {
       setOpenMenuId(null);
     } catch (error: any) {
       console.error('Delete recording error:', error);
-      alert(`Failed to delete recording: ${error.message}`);
+      toastError(error, `Failed to delete ${noun}`);
     } finally {
       setDeleting(null);
     }
@@ -134,13 +147,17 @@ export default function Recordings() {
   // Handle delete transcription
   const handleDeleteTranscription = async (video: VideoItem) => {
     if (!video.id) {
-      alert("Cannot delete: Video ID not found");
+      toast("Cannot delete: Video ID not found", "error");
       return;
     }
 
-    if (!confirm(`Are you sure you want to delete the transcription for "${video.fileName}"? The recording will remain.`)) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: "Delete transcription?",
+      message: `Are you sure you want to delete the transcription for "${video.fileName}"?\nThe recording will remain.`,
+      confirmLabel: "Delete transcription",
+      cancelLabel: "Cancel",
+    });
+    if (!confirmed) return;
 
     setDeleting(`transcription-${video.id}`);
     try {
@@ -185,17 +202,16 @@ export default function Recordings() {
     }
   };
 
-  // Fetch uploaded videos from both Spaces and Database
+  // Fetch uploaded videos from both Spaces and Database (parallel for faster load)
   const fetchVideos = async (folderId: string | null) => {
     setLoadingVideos(true);
     try {
-      // Fetch from Spaces
-      const spacesResponse = await fetch("/api/videos");
-      const spacesData = spacesResponse.ok ? await spacesResponse.json() : { videos: [] };
-
-      // Fetch from Database
       const dbUrl = folderId ? `/api/videos/db?folderId=${folderId}` : "/api/videos/db?folderId=root";
-      const dbResponse = await fetch(dbUrl);
+      const [spacesResponse, dbResponse] = await Promise.all([
+        fetch("/api/videos"),
+        fetch(dbUrl),
+      ]);
+      const spacesData = spacesResponse.ok ? await spacesResponse.json() : { videos: [] };
       const dbData = dbResponse.ok ? await dbResponse.json() : { videos: [] };
 
       // Merge data: use Spaces as source of truth, enrich with DB data
@@ -283,7 +299,7 @@ export default function Recordings() {
     }
   };
 
-  // Sync state from URL: root vs /project/[folderId]
+  // Sync state from URL: root vs /project/[folderId] — load folder + videos in parallel when in a project
   useEffect(() => {
     if (isRoot) {
       setCurrentFolderId(null);
@@ -292,15 +308,19 @@ export default function Recordings() {
       fetchFolders(null);
     } else if (folderIdFromRoute) {
       setCurrentFolderId(folderIdFromRoute);
-      fetchVideos(folderIdFromRoute);
-      fetch(`/api/folders/${folderIdFromRoute}`)
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.success && data.folder) {
-            setBreadcrumbs([{ id: null, name: "Root" }, { id: data.folder.id, name: data.folder.name }]);
-          }
-        })
-        .catch(() => setBreadcrumbs([{ id: null, name: "Root" }, { id: folderIdFromRoute, name: "Project" }]));
+      setLoadingFolders(false); // not loading folder list when viewing a project
+      // Load videos and folder breadcrumb in parallel so folder view appears faster
+      Promise.all([
+        fetchVideos(folderIdFromRoute),
+        fetch(`/api/folders/${folderIdFromRoute}`)
+          .then((r) => r.json())
+          .then((data) => {
+            if (data.success && data.folder) {
+              setBreadcrumbs([{ id: null, name: "Root" }, { id: data.folder.id, name: data.folder.name }]);
+            }
+          })
+          .catch(() => setBreadcrumbs([{ id: null, name: "Root" }, { id: folderIdFromRoute, name: "Project" }])),
+      ]);
     }
   }, [folderIdFromRoute, isRoot]);
 
@@ -335,11 +355,11 @@ export default function Recordings() {
         setIsCreateFolderModalOpen(false);
         fetchFolders(currentFolderId);
       } else {
-        alert(data.error || "Failed to create folder");
+        toast(getErrorMessage(data.error, "Failed to create folder"), "error");
       }
     } catch (error) {
       console.error("Create folder error:", error);
-      alert("An error occurred");
+      toastError(error, "An error occurred");
     } finally {
       setIsCreatingFolder(false);
     }
@@ -375,7 +395,13 @@ export default function Recordings() {
   const handleMergeTranscriptions = async () => {
     if (selectedVideoIds.size < 2) return;
     const count = selectedVideoIds.size;
-    if (!confirm(`Merge ${count} transcriptions into one? This creates a single transcript for tagging (no video merge).`)) return;
+    const confirmed = await confirm({
+      title: "Merge transcriptions?",
+      message: `Merge ${count} transcriptions into one?\nThis creates a single transcript for tagging (no video merge).`,
+      confirmLabel: "Merge",
+      cancelLabel: "Cancel",
+    });
+    if (!confirmed) return;
 
     setIsMerging(true);
     try {
@@ -393,11 +419,11 @@ export default function Recordings() {
             fetchVideos(currentFolderId);
             router.push(`/transcription/${data.videoId}`);
         } else {
-            alert(data.error || "Failed to merge transcriptions");
+            toast(getErrorMessage(data.error, "Failed to merge transcriptions"), "error");
         }
     } catch (error) {
         console.error("Merge transcriptions error:", error);
-        alert("An error occurred");
+        toastError(error, "An error occurred");
     } finally {
         setIsMerging(false);
     }
@@ -422,48 +448,57 @@ export default function Recordings() {
     return () => observer.disconnect();
   }, [videos.length, visibleCount]);
 
-  // Refresh videos list after successful upload
+  // Refresh videos and folders list after successful upload
   useEffect(() => {
     if (uploadStatus === "success") {
-      // Wait a bit for the file to be available, then refresh
-      setTimeout(() => {
+      // Wait a bit for the database to be fully updated and available, then refresh
+      const timer = setTimeout(() => {
         fetchVideos(currentFolderId);
-      }, 2000);
+        fetchFolders(currentFolderId);
+      }, 1000);
+      return () => clearTimeout(timer);
     }
-  }, [uploadStatus]);
+  }, [uploadStatus, currentFolderId]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setPendingUploadFile(file);
-      if (currentFolderId !== null) {
-        setUploadTargetFolderId(currentFolderId);
-        setUploadTargetFolderName(breadcrumbs[breadcrumbs.length - 1]?.name ?? 'this project');
-        setShowUploadConfirm(true);
-      } else {
-        setShowSelectProjectModal(true);
-      }
-      if (fileInputRef.current) fileInputRef.current.value = '';
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    if (!files.length) return;
+
+    setPendingUploadFiles(files);
+    if (currentFolderId !== null) {
+      setUploadTargetFolderId(currentFolderId);
+      setUploadTargetFolderName(
+        breadcrumbs[breadcrumbs.length - 1]?.name ?? "this project"
+      );
+      setShowUploadConfirm(true);
+    } else {
+      setShowSelectProjectModal(true);
+    }
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
     }
   };
 
   const handleUploadConfirm = async () => {
-    if (!pendingUploadFile) return;
-    setUploadFolderId(uploadTargetFolderId);
-    await uploadFile(pendingUploadFile, uploadTargetFolderId ?? undefined);
-    setPendingUploadFile(null);
+    if (!pendingUploadFiles.length) return;
+
+    const targetFolderId = uploadTargetFolderId ?? null;
+    setUploadFolderId(targetFolderId);
+    // Clear pending + close modal
+    setPendingUploadFiles([]);
     setShowUploadConfirm(false);
     setUploadTargetFolderId(null);
-    setUploadTargetFolderName('');
-    fetchVideos(currentFolderId);
-    fetchFolders(currentFolderId);
+    setUploadTargetFolderName("");
+
+    await queueUploads(pendingUploadFiles, targetFolderId);
   };
 
   const handleUploadCancel = () => {
     if (isUploading) {
       abortUpload();
     }
-    setPendingUploadFile(null);
+    setPendingUploadFiles([]);
     setShowUploadConfirm(false);
     setShowSelectProjectModal(false);
     setUploadTargetFolderId(null);
@@ -518,12 +553,12 @@ export default function Recordings() {
           setRenameTarget(null);
           fetchVideos(currentFolderId);
         } else {
-          alert(data.error || 'Failed to rename');
+          toast(getErrorMessage(data.error, "Failed to rename"), "error");
         }
       }
     } catch (e) {
       console.error(e);
-      alert('An error occurred');
+      toastError(e, "An error occurred");
     } finally {
       setIsRenaming(false);
     }
@@ -564,7 +599,7 @@ export default function Recordings() {
           </div>
         )}
         {/* Header */}
-        <div className="flex items-center justify-between mb-6 shrink-0">
+        <div className="flex items-center justify-between mb-4 shrink-0">
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-4">
               {!isRoot ? (
@@ -591,7 +626,8 @@ export default function Recordings() {
               type="file"
               ref={fileInputRef}
               className="hidden"
-              accept="audio/*,video/*"
+              accept="audio/*,video/*,.mts,.m2ts"
+              multiple
               onChange={handleFileSelect}
             />
             {currentFolderId === null && (
@@ -670,10 +706,49 @@ export default function Recordings() {
           </div>
         </div>
 
+
         {/* Content */}
         {(loadingVideos || loadingFolders) && (isRoot ? folders.length === 0 : videos.length === 0) ? (
-          <div className="flex items-center justify-center py-12">
-            <div className="text-gray-500">Loading...</div>
+          // Shimmer skeletons while initial data is loading
+          <div className="flex-1 overflow-y-auto pr-2 py-6">
+            {isRoot ? (
+              // Folder card shimmer grid (root view)
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {Array.from({ length: 6 }).map((_, idx) => (
+                  <div
+                    key={idx}
+                    className="bg-white rounded-lg border border-gray-200 p-4 animate-pulse"
+                  >
+                    <div className="flex items-start gap-4">
+                      <div className="w-12 h-12 rounded-lg bg-gray-100" />
+                      <div className="flex-1 space-y-2">
+                        <div className="h-4 bg-gray-100 rounded w-3/4" />
+                        <div className="h-3 bg-gray-100 rounded w-1/2" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              // Video card shimmer grid (project view, uses same grid layout as videos)
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+                {Array.from({ length: 6 }).map((_, idx) => (
+                  <div
+                    key={idx}
+                    className="bg-white rounded-lg border border-gray-200 p-4 animate-pulse"
+                  >
+                    <div className="flex flex-col gap-4">
+                      <div className="aspect-video w-full rounded-lg bg-gray-100" />
+                      <div className="space-y-2">
+                        <div className="h-4 bg-gray-100 rounded w-3/4" />
+                        <div className="h-3 bg-gray-100 rounded w-1/2" />
+                        <div className="h-3 bg-gray-100 rounded w-1/3" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ) : isRoot ? (
           /* Root: project list only */
@@ -745,28 +820,58 @@ export default function Recordings() {
                                     <button
                                         onClick={async (e) => {
                                             e.stopPropagation();
-                                            if (confirm(`Are you sure you want to delete "${folder.name}"?`)) {
-                                                setDeleting(folder.id);
-                                                try {
-                                                    const res = await fetch(`/api/folders/${folder.id}`, { method: 'DELETE' });
-                                                    const data = await res.json().catch(() => ({}));
-                                                    if (res.ok && data.success) {
-                                                        fetchFolders(currentFolderId);
-                                                    } else {
-                                                        alert(data.error || "Failed to delete folder");
-                                                    }
-                                                } catch (err) {
-                                                    console.error(err);
-                                                    alert("Failed to delete folder");
-                                                } finally {
-                                                    setDeleting(null);
+                                            const confirmed = await confirm({
+                                              title: "Delete folder?",
+                                              message: `Are you sure you want to delete "${folder.name}"?`,
+                                              confirmLabel: "Delete",
+                                              cancelLabel: "Cancel",
+                                            });
+                                            if (!confirmed) return;
+                                            setDeleting(folder.id);
+                                            try {
+                                                const res = await fetch(`/api/folders/${folder.id}`, { method: 'DELETE' });
+                                                const data = await res.json().catch(() => ({}));
+                                                if (res.ok && data.success) {
+                                                    fetchFolders(currentFolderId);
+                                                } else {
+                                                    toast(getErrorMessage(data.error, "Failed to delete folder"), "error");
                                                 }
+                                            } catch (err) {
+                                                console.error(err);
+                                                toastError(err, "Failed to delete folder");
+                                            } finally {
+                                                setDeleting(null);
                                             }
                                         }}
-                                        className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                                        disabled={deleting === folder.id}
+                                        className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                        <TrashIcon className="w-4 h-4" />
-                                        Delete Folder
+                                        {deleting === folder.id ? (
+                                          <>
+                                            <svg className="h-4 w-4 animate-spin text-red-500" viewBox="0 0 24 24">
+                                              <circle
+                                                className="opacity-25"
+                                                cx="12"
+                                                cy="12"
+                                                r="10"
+                                                stroke="currentColor"
+                                                strokeWidth="4"
+                                                fill="none"
+                                              />
+                                              <path
+                                                className="opacity-75"
+                                                fill="currentColor"
+                                                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                                              />
+                                            </svg>
+                                            <span>Deleting…</span>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <TrashIcon className="w-4 h-4" />
+                                            <span>Delete Folder</span>
+                                          </>
+                                        )}
                                     </button>
                                 </div>
                             )}
@@ -852,8 +957,32 @@ export default function Recordings() {
                         disabled={deleting === video.id || deleting === video.key}
                         className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed border-t border-gray-100 mt-1"
                       >
-                        <TrashIcon className="w-4 h-4" />
-                        {(deleting === video.id || deleting === video.key) ? "Deleting..." : "Delete Recording"}
+                        {deleting === video.id || deleting === video.key ? (
+                          <>
+                            <svg className="h-4 w-4 animate-spin text-red-500" viewBox="0 0 24 24">
+                              <circle
+                                className="opacity-25"
+                                cx="12"
+                                cy="12"
+                                r="10"
+                                stroke="currentColor"
+                                strokeWidth="4"
+                                fill="none"
+                              />
+                              <path
+                                className="opacity-75"
+                                fill="currentColor"
+                                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                              />
+                            </svg>
+                            <span>Deleting…</span>
+                          </>
+                        ) : (
+                          <>
+                            <TrashIcon className="w-4 h-4" />
+                            <span>Delete Recording</span>
+                          </>
+                        )}
                       </button>
                       {video.hasTranscription && video.id && (
                         <button
@@ -864,8 +993,32 @@ export default function Recordings() {
                           disabled={deleting === `transcription-${video.id}`}
                           className="w-full px-4 py-2 text-left text-sm text-orange-600 hover:bg-orange-50 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          <TrashIcon className="w-4 h-4" />
-                          {deleting === `transcription-${video.id}` ? "Deleting..." : "Delete Transcription"}
+                          {deleting === `transcription-${video.id}` ? (
+                            <>
+                              <svg className="h-4 w-4 animate-spin text-orange-500" viewBox="0 0 24 24">
+                                <circle
+                                  className="opacity-25"
+                                  cx="12"
+                                  cy="12"
+                                  r="10"
+                                  stroke="currentColor"
+                                  strokeWidth="4"
+                                  fill="none"
+                                />
+                                <path
+                                  className="opacity-75"
+                                  fill="currentColor"
+                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                                />
+                              </svg>
+                              <span>Deleting…</span>
+                            </>
+                          ) : (
+                            <>
+                              <TrashIcon className="w-4 h-4" />
+                              <span>Delete Transcription</span>
+                            </>
+                          )}
                         </button>
                       )}
                     </div>
@@ -874,7 +1027,7 @@ export default function Recordings() {
 
                 <div
                   className="relative w-full h-48 bg-[#E0F7FA] rounded-lg flex items-center justify-center mb-3 overflow-hidden group cursor-pointer"
-                  onClick={() => setSelectedVideo(video)}
+                  onClick={() => { setSelectedVideo(video); setVideoError(null); }}
                 >
                   {/* Selection Checkbox */}
                   {video.hasTranscription && !video.hasSession && (
@@ -1004,28 +1157,6 @@ export default function Recordings() {
                     </div>
                   )}
 
-                  {/* UTILITY ACTIONS */}
-                  <div className="flex items-center gap-2">
-                    <a
-                      href={video.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="flex-1 text-center px-3 py-1.5 text-xs font-medium text-[#00A3AF] bg-[#E0F7FA] rounded hover:bg-[#BFE8EB] transition-colors"
-                    >
-                      View Video
-                    </a>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        navigator.clipboard.writeText(video.url);
-                        alert("Video URL copied to clipboard!");
-                      }}
-                      className="flex-1 text-center px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 rounded hover:bg-gray-200 transition-colors"
-                    >
-                      Copy URL
-                    </button>
-                  </div>
                 </div>
               </div>
             ))}
@@ -1149,12 +1280,22 @@ export default function Recordings() {
       )}
 
       {/* Upload confirm */}
-      {showUploadConfirm && pendingUploadFile && (
+      {showUploadConfirm && pendingUploadFiles.length > 0 && (
           <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
               <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl">
                   <h2 className="text-xl font-semibold mb-2 text-gray-900">Upload video?</h2>
-                  <p className="text-sm text-gray-500 mb-4">
-                      Upload <strong>{pendingUploadFile.name}</strong> to <strong>{uploadTargetFolderName || 'project'}</strong>?
+                  <p className="text-sm text-gray-500 mb-4 break-words">
+                    Upload{" "}
+                    <strong className="break-all">
+                      {pendingUploadFiles.length === 1
+                        ? pendingUploadFiles[0].name
+                        : `${pendingUploadFiles.length} files`}
+                    </strong>{" "}
+                    to{" "}
+                    <strong className="break-words">
+                      {uploadTargetFolderName || "project"}
+                    </strong>
+                    ?
                   </p>
                   {isUploading && (
                     <div className="mb-4">
@@ -1252,15 +1393,38 @@ export default function Recordings() {
                 </svg>
               </button>
             </div>
-            <div className="aspect-video bg-black rounded-lg overflow-hidden">
-              <video
-                src={selectedVideo.url}
-                controls
-                className="w-full h-full"
-                autoPlay
-              >
-                Your browser does not support the video tag.
-              </video>
+            <div className="aspect-video bg-black rounded-lg overflow-hidden relative">
+              {videoError ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 text-center p-6">
+                  <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mb-4">
+                    <XCircleIcon className="w-10 h-10 text-red-500" />
+                  </div>
+                  <h3 className="text-white font-medium mb-2">Playback Error</h3>
+                  <p className="text-gray-400 text-sm max-w-sm">
+                    {videoError}
+                  </p>
+                  <p className="text-gray-500 text-xs mt-4">
+                    Tip: Try converting this file to MP4 (H.264) for web playback.
+                  </p>
+                </div>
+              ) : (
+                <video
+                  src={selectedVideo.url}
+                  controls
+                  className="w-full h-full"
+                  autoPlay
+                  onError={(e) => {
+                    const video = e.currentTarget;
+                    if (video.error?.code === video.error?.MEDIA_ERR_SRC_NOT_SUPPORTED || selectedVideo.fileName?.toLowerCase().endsWith('.mts') || selectedVideo.fileName?.toLowerCase().endsWith('.m2ts')) {
+                      setVideoError("This video format (.MTS) is not supported by your browser for direct playback.");
+                    } else {
+                      setVideoError("An error occurred while trying to play this video.");
+                    }
+                  }}
+                >
+                  Your browser does not support the video tag.
+                </video>
+              )}
             </div>
             <div className="mt-4 flex items-center justify-between text-sm text-gray-600">
               <span>Uploaded: {formatDate(selectedVideo.lastModified)}</span>

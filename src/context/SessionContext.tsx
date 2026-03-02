@@ -2,9 +2,20 @@
 
 import React, { createContext, useContext, useState, useRef, ReactNode } from "react";
 import { TranscriptEntry } from "@/modules/auto-transcription/templates/types";
+import { useToast } from "@/context/ToastContext";
 
 // Upload status type
 type UploadStatus = "idle" | "uploading" | "success" | "error";
+
+type UploadQueueStatus = "queued" | "uploading" | "success" | "error";
+
+interface UploadQueueItem {
+    id: string;
+    fileName: string;
+    size: number;
+    status: UploadQueueStatus;
+    error?: string;
+}
 
 // Update interface
 interface VideoMetadata {
@@ -31,6 +42,9 @@ interface SessionContextType {
     uploadError: string | null;
     uploadProgress: number; // 0-100
     uploadFile: (file: File, folderId?: string | null) => Promise<void>;
+    uploadQueue: UploadQueueItem[];
+    queueUploads: (files: File[], folderId?: string | null) => Promise<void>;
+    clearUploadQueue: () => void;
     abortUpload: () => void;
     uploadFolderId: string | null; // Target project folder for upload (set from recordings)
     setUploadFolderId: (id: string | null) => void;
@@ -46,6 +60,7 @@ interface SessionContextType {
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
+    const { toastError } = useToast();
     const [file, setFile] = useState<File | null>(null);
     const [mediaUrl, setMediaUrl] = useState<string | null>(null);
     const [spacesUrl, setSpacesUrl] = useState<string | null>(null);
@@ -58,16 +73,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [uploadFolderId, setUploadFolderId] = useState<string | null>(null);
+    const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
 
     // Abort controller for cancelling transcription
     const transcriptionAbortController = useRef<AbortController | null>(null);
-    // Abort controller for cancelling upload
-    const uploadAbortControllerRef = useRef<AbortController | null>(null);
+    // Abort: for direct upload we abort the XHR
+    const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
+    const uploadAbortIsUserRef = useRef(false);
 
     const abortUpload = () => {
-        if (uploadAbortControllerRef.current) {
-            uploadAbortControllerRef.current.abort();
-            uploadAbortControllerRef.current = null;
+        uploadAbortIsUserRef.current = true;
+        if (uploadXhrRef.current) {
+            uploadXhrRef.current.abort();
+            uploadXhrRef.current = null;
         }
         setIsUploading(false);
         setUploadProgress(0);
@@ -76,7 +94,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
 
     const uploadFile = async (uploadedFile: File, targetFolderId?: string | null) => {
-        // Create local blob URL for immediate preview
         const objectUrl = URL.createObjectURL(uploadedFile);
         setFile(uploadedFile);
         setMediaUrl(objectUrl);
@@ -85,90 +102,122 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setUploadStatus("uploading");
         setUploadError(null);
         setUploadProgress(0);
+        uploadAbortIsUserRef.current = false;
 
-        const controller = new AbortController();
-        uploadAbortControllerRef.current = controller;
-
-        let progressInterval: ReturnType<typeof setInterval> | null = null;
+        const UPLOAD_TIMEOUT_MS = 30 * 60 * 1000; // 30 min timeout for upload
+        let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
         try {
-            // Upload to Digital Ocean Spaces
-            const formData = new FormData();
-            formData.append("file", uploadedFile);
-
-            console.log("Starting upload...", {
+            console.log("Starting upload via API route...", {
                 fileName: uploadedFile.name,
                 fileSize: `${(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB`,
-                fileType: uploadedFile.type,
             });
 
-            // Simulate progress (since we can't track actual upload progress with fetch)
-            progressInterval = setInterval(() => {
-                setUploadProgress((prev) => {
-                    if (prev < 90) return prev + 5;
-                    return prev;
-                });
-            }, 500);
+            // Use server-side upload endpoint to avoid CORS issues with direct Spaces PUT
+            let meta: {
+                fileName?: string;
+                fileKey?: string;
+                fileUrl?: string;
+                fileSize?: number;
+            } | null = null;
 
-            const response = await fetch("/api/upload", {
-                method: "POST",
-                body: formData,
-                signal: controller.signal,
+            await new Promise<void>((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                uploadXhrRef.current = xhr;
+
+                timeoutId = setTimeout(() => {
+                    if (uploadXhrRef.current === xhr) {
+                        uploadXhrRef.current = null;
+                        xhr.abort();
+                        reject(new Error("Upload timed out. Try a faster connection or smaller file."));
+                    }
+                }, UPLOAD_TIMEOUT_MS);
+
+                xhr.upload.addEventListener("progress", (e) => {
+                    if (e.lengthComputable) {
+                        setUploadProgress((e.loaded / e.total) * 100);
+                    }
+                });
+                xhr.addEventListener("load", () => {
+                    if (timeoutId) clearTimeout(timeoutId);
+                    timeoutId = null;
+                    uploadXhrRef.current = null;
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const data = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+                            if (!data.success) {
+                                reject(new Error(data.error || "Upload failed"));
+                                return;
+                            }
+
+                            const url: string | undefined = data.url || data.publicUrl;
+                            const key: string | undefined = data.key;
+
+                            if (!url || !key) {
+                                reject(new Error("Upload failed: missing URL or key from server response"));
+                                return;
+                            }
+
+                            setUploadProgress(100);
+
+                            meta = data.videoMetadata ?? {
+                                fileName: uploadedFile.name,
+                                fileKey: key,
+                                fileUrl: url,
+                                fileSize: uploadedFile.size,
+                            };
+
+                            setSpacesUrl(url);
+                            setVideoMetadata(meta);
+                            // setUploadStatus("success"); // Set later after DB save
+                            console.log("File uploaded via API route:", url);
+
+                            resolve();
+                        } catch (parseError) {
+                            reject(new Error("Upload succeeded but response was invalid JSON"));
+                        }
+                    } else {
+                        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
+                    }
+                });
+                xhr.addEventListener("error", () => {
+                    if (timeoutId) clearTimeout(timeoutId);
+                    timeoutId = null;
+                    uploadXhrRef.current = null;
+                    reject(new Error("Network error during upload."));
+                });
+                xhr.addEventListener("abort", () => {
+                    if (timeoutId) clearTimeout(timeoutId);
+                    timeoutId = null;
+                    uploadXhrRef.current = null;
+                    reject(new DOMException("Aborted", "AbortError"));
+                });
+
+                xhr.open("POST", "/api/upload");
+                // Do not manually set Content-Type; browser will set multipart/form-data with boundary
+                const formData = new FormData();
+                formData.append("file", uploadedFile);
+                xhr.send(formData);
             });
 
-            if (progressInterval) {
-                clearInterval(progressInterval);
-                progressInterval = null;
-            }
-            setUploadProgress(100);
-
-            if (!response.ok) {
-                let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-                try {
-                    const errorData = await response.json();
-                    errorMessage = errorData.error || errorMessage;
-                } catch (e) {
-                    // If response is not JSON, use status text
-                    const text = await response.text().catch(() => "");
-                    if (text) errorMessage = text;
-                }
-                console.error("Upload API error:", errorMessage);
-                throw new Error(errorMessage);
+            if (!meta) {
+                throw new Error("Upload metadata missing after successful upload");
             }
 
-            const data = await response.json();
-            setSpacesUrl(data.url);
-            setUploadStatus("success");
-            console.log("File uploaded to Spaces:", data.url);
+            const { fileKey, fileUrl, fileName, fileSize } = meta;
 
-            // Store video metadata for later database save (when transcribing)
-            if (data.videoMetadata) {
-                setVideoMetadata(data.videoMetadata);
-            } else if (data.key || data.url) {
-                // Create metadata from response
-                setVideoMetadata({
-                    fileName: data.fileName,
-                    fileKey: data.key,
-                    fileUrl: data.url,
-                });
-            }
-
-            // If videoId is provided (from existing video), use it
-            if (data.videoId) {
-                setVideoId(data.videoId);
-            }
-
-            // If upload was for a project folder, create video record so it appears in that project
             const folderIdToUse = targetFolderId ?? uploadFolderId;
-            const meta = data.videoMetadata || (data.key ? { fileName: data.fileName, fileKey: data.key, fileUrl: data.url } : null);
-            if (folderIdToUse && meta) {
+            if (folderIdToUse) {
                 try {
                     setUploadFolderId(folderIdToUse);
                     const saveRes = await fetch("/api/videos/save", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
-                            ...meta,
+                            fileName,
+                            fileKey,
+                            fileUrl,
+                            fileSize,
                             folder_id: folderIdToUse,
                         }),
                     });
@@ -181,36 +230,83 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                 }
             }
 
-            uploadAbortControllerRef.current = null;
             setIsUploading(false);
-            // Reset success status after 3 seconds
-            setTimeout(() => {
-                setUploadStatus("idle");
-            }, 3000);
+            setUploadStatus("success");
+            setTimeout(() => setUploadStatus("idle"), 3000);
         } catch (error: any) {
-            if (progressInterval) {
-                clearInterval(progressInterval);
-            }
-            uploadAbortControllerRef.current = null;
+            if (timeoutId) clearTimeout(timeoutId);
+            uploadXhrRef.current = null;
             setUploadProgress(0);
             setIsUploading(false);
 
             if (error?.name === "AbortError") {
-                setUploadError(null);
-                setUploadStatus("idle");
-                return;
+                if (uploadAbortIsUserRef.current) {
+                    setUploadError(null);
+                    setUploadStatus("idle");
+                    return;
+                }
+                const timeoutMsg = "Upload timed out. Try a faster connection or smaller file.";
+                setUploadError(timeoutMsg);
+                setUploadStatus("error");
+                throw new Error(timeoutMsg);
             }
 
             console.error("Upload error:", error);
-            let errorMessage = "Failed to upload file to storage";
-            if (error.name === "TypeError" && error.message.includes("fetch")) {
-                errorMessage = "Network error: Could not connect to server. Please check your internet connection.";
-            } else if (error.message) {
-                errorMessage = error.message;
-            }
+            const errorMessage = error?.message || "Failed to upload file to storage";
             setUploadError(errorMessage);
             setUploadStatus("error");
+            throw error;
         }
+    };
+
+    const queueUploads = async (files: File[], targetFolderId?: string | null) => {
+        if (!files.length) return;
+
+        const folderIdToUse = targetFolderId ?? uploadFolderId;
+        const itemsWithFiles = files.map((file) => ({
+            id: `${Date.now()}-${file.name}-${Math.random().toString(36).slice(2)}`,
+            file,
+            fileName: file.name,
+            size: file.size,
+        }));
+
+        const queueItems: UploadQueueItem[] = itemsWithFiles.map(({ id, fileName, size }) => ({
+            id,
+            fileName,
+            size,
+            status: "queued",
+        }));
+
+        setUploadQueue((prev) => [...queueItems, ...prev]);
+
+        for (const item of itemsWithFiles) {
+            setUploadQueue((prev) =>
+                prev.map((q) =>
+                    q.id === item.id ? { ...q, status: "uploading", error: undefined } : q
+                )
+            );
+            try {
+                await uploadFile(item.file, folderIdToUse ?? undefined);
+                setUploadQueue((prev) =>
+                    prev.map((q) =>
+                        q.id === item.id ? { ...q, status: "success" } : q
+                    )
+                );
+            } catch (error) {
+                console.error("Queue upload error:", error);
+                const message = (error instanceof Error && error.message) || "Upload failed";
+                setUploadQueue((prev) =>
+                    prev.map((q) =>
+                        q.id === item.id ? { ...q, status: "error", error: message } : q
+                    )
+                );
+                toastError(error, "Failed to upload file");
+            }
+        }
+    };
+
+    const clearUploadQueue = () => {
+        setUploadQueue([]);
     };
 
     const updateSpeakerName = (oldName: string, newName: string) => {
@@ -417,7 +513,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                 console.log("Transcription cancelled by user");
             } else {
                 console.error("Transcription error:", error);
-                alert("Failed to transcribe session.");
+                toastError(error, "Failed to transcribe session.");
             }
         } finally {
             setIsTranscribing(false);
@@ -513,6 +609,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             uploadError,
             uploadProgress,
             uploadFile,
+            uploadQueue,
+            queueUploads,
+            clearUploadQueue,
             abortUpload,
             uploadFolderId,
             setUploadFolderId,

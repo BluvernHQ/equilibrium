@@ -1,10 +1,11 @@
 # Digital Ocean Spaces CORS Configuration Guide
 
-## Problem
-Videos stored in Digital Ocean Spaces cannot be played in the browser due to CORS (Cross-Origin Resource Sharing) restrictions.
+## Problems
+1. **Video playback** – Videos cannot be played in the browser due to CORS restrictions.
+2. **Direct upload** – Uploads fail with "Network error during upload" because the bucket must allow **PUT** from your app origin.
 
 ## Solution
-Configure CORS on your Digital Ocean Spaces bucket to allow video playback from your application domain.
+Configure CORS on your Digital Ocean Spaces bucket to allow both **playback (GET/HEAD)** and **direct upload (PUT)** from your application domain.
 
 ## Step-by-Step Instructions
 
@@ -15,63 +16,32 @@ Configure CORS on your Digital Ocean Spaces bucket to allow video playback from 
 
 ### 2. Configure CORS
 1. Click on the **Settings** tab
-2. Scroll down to **CORS Configuration**
-3. Click **Edit** or **Add CORS Rule**
+2. Scroll down to **CORS Configurations**
+3. Click **Add** to open the **Advanced CORS Options** form
 
-### 3. Add CORS Rule
-Add the following CORS configuration:
+### 3. Add CORS rule (Control Panel form)
+In the form, set:
 
-**For Development (localhost):**
+| Field | Value |
+|-------|--------|
+| **Origin** | Your app URL(s), one per line or as needed. For your current error use exactly: `http://38.242.148.246:5006`. Add e.g. `http://localhost:3000`, `http://localhost:5006` for local dev. |
+| **Allowed Methods** | Enable **GET**, **HEAD**, and **PUT** (PUT is required for direct upload). |
+| **Allowed Headers** | `*` (or list any custom headers your app sends). |
+| **Access Control Max Age** | e.g. `3600` (optional). |
+
+- **PUT** is required for direct uploads (browser uploads files straight to Spaces). Without it you get "Network error during upload" / CORS blocked.
+- **Origin** must match exactly (protocol + host + port), e.g. `http://38.242.148.246:5006`.
+
+**Reference (same rule as JSON for other tools):**
+
 ```json
-[
-  {
-    "AllowedOrigins": [
-      "http://localhost:3000",
-      "http://localhost:3001"
-    ],
-    "AllowedMethods": [
-      "GET",
-      "HEAD"
-    ],
-    "AllowedHeaders": [
-      "*"
-    ],
-    "ExposeHeaders": [
-      "ETag",
-      "Content-Length",
-      "Content-Type",
-      "Content-Range"
-    ],
-    "MaxAgeSeconds": 3600
-  }
-]
-```
-
-**For Production (add your production domain):**
-```json
-[
-  {
-    "AllowedOrigins": [
-      "http://localhost:3000",
-      "http://localhost:3001",
-      "https://your-production-domain.com"
-    ],
-    "AllowedMethods": [
-      "GET",
-      "HEAD"
-    ],
-    "AllowedHeaders": [
-      "*"
-    ],
-    "ExposeHeaders": [
-      "ETag",
-      "Content-Length",
-      "Content-Type",
-      "Content-Range"
-    ],
-    "MaxAgeSeconds": 3600
-  }
-]
+{
+  "AllowedOrigins": ["http://38.242.148.246:5006", "http://localhost:3000", "http://localhost:5006"],
+  "AllowedMethods": ["GET", "HEAD", "PUT"],
+  "AllowedHeaders": ["*"],
+  "ExposeHeaders": ["ETag", "Content-Length", "Content-Type", "Content-Range"],
+  "MaxAgeSeconds": 3600
+}
 ```
 
 ### 4. Save Configuration
@@ -85,9 +55,9 @@ Add the following CORS configuration:
 
 ## Important Notes
 
-- **AllowedOrigins**: Must include your exact domain (including protocol and port for localhost)
-- **AllowedMethods**: `GET` and `HEAD` are required for video playback
-- **AllowedHeaders**: `*` allows all headers, or you can specify: `Range`, `Content-Type`, etc.
+- **AllowedOrigins**: Must include your exact app URL (protocol + host + port), e.g. `http://38.242.148.246:5006`
+- **AllowedMethods**: `GET` and `HEAD` for playback; **`PUT` for direct upload** (required for large files)
+- **AllowedHeaders**: `*` allows all headers (e.g. `Content-Type` for PUT)
 - **ExposeHeaders**: Important for video seeking/range requests
 - **MaxAgeSeconds**: How long browsers cache the CORS preflight response (3600 = 1 hour)
 
@@ -101,9 +71,38 @@ Add the following CORS configuration:
 5. **Check presigned URL expiration** - Presigned URLs expire after 1 hour
 
 ### Common Issues:
-- **"No 'Access-Control-Allow-Origin' header"**: CORS not configured or domain not in AllowedOrigins
-- **"Method not allowed"**: Add `GET` and `HEAD` to AllowedMethods
+- **"No 'Access-Control-Allow-Origin' header"**: CORS not configured or your app URL not in AllowedOrigins
+- **"Method not allowed"**: Add `GET`, `HEAD`, and **`PUT`** (for uploads) to AllowedMethods
+- **"Network error during upload"**: Usually CORS – add **PUT** to AllowedMethods and your app origin (e.g. `http://38.242.148.246:5006`) to AllowedOrigins, then save and retry
 - **"Header not allowed"**: Add required headers to AllowedHeaders or use `*`
+
+### If the Control Panel doesn’t fix it (s3cmd + XML)
+DigitalOcean supports full CORS via an XML file. Create `cors.xml`:
+
+```xml
+<CORSConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <CORSRule>
+    <AllowedOrigin>http://38.242.148.246:5006</AllowedOrigin>
+    <AllowedOrigin>http://localhost:3000</AllowedOrigin>
+    <AllowedOrigin>http://localhost:5006</AllowedOrigin>
+    <AllowedMethod>GET</AllowedMethod>
+    <AllowedMethod>HEAD</AllowedMethod>
+    <AllowedMethod>PUT</AllowedMethod>
+    <MaxAgeSeconds>3600</MaxAgeSeconds>
+    <ExposeHeader>ETag</ExposeHeader>
+    <ExposeHeader>Content-Length</ExposeHeader>
+    <AllowedHeader>*</AllowedHeader>
+  </CORSRule>
+</CORSConfiguration>
+```
+
+Then run (replace bucket/region with yours):
+
+```bash
+s3cmd setcors cors.xml s3://hiffi
+```
+
+See [DigitalOcean: Configure CORS](https://docs.digitalocean.com/products/spaces/how-to/configure-cors) and their s3cmd setup if needed.
 
 ## Alternative: Public Bucket (Not Recommended)
 If you make your bucket public, CORS is not required, but this is **not recommended** for security reasons as it exposes all your files publicly.
