@@ -134,7 +134,8 @@ export async function POST(req: NextRequest) {
                 // -preset ultrafast: prioritized speed over file size/quality for quick turnaround
                 // -c:v libx264: H.264 video codec for wide browser compatibility
                 // -c:a aac: AAC audio codec
-                const ffmpegCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 128k -y "${outputPath}"`;
+                // -movflags +faststart: move moov atom to the beginning for progressive playback
+                const ffmpegCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -preset ultrafast -crf 28 -c:a aac -b:a 128k -movflags +faststart -y "${outputPath}"`;
                 console.log(`Running ffmpeg: ${ffmpegCmd}`);
                 
                 const { stdout, stderr } = await execPromise(ffmpegCmd);

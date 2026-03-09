@@ -6,6 +6,7 @@ import {
     NotFoundError,
     ConflictError,
 } from "@/lib/errors";
+import { DELETE as deleteVideoRoute } from "@/app/api/videos/delete/[videoId]/route";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -75,10 +76,20 @@ async function deleteFolder(req: NextRequest, { params }: RouteContext) {
         throw new NotFoundError("Folder not found", "folder");
     }
 
-    await prisma.video.updateMany({
+    // Delete all videos in this folder using the same logic as the video delete API
+    const videosInFolder = await prisma.video.findMany({
         where: { folder_id: id },
-        data: { folder_id: null },
+        select: { id: true },
     });
+
+    for (const video of videosInFolder) {
+        // Reuse the existing DELETE handler to ensure storage and related data are cleaned up
+        await deleteVideoRoute(
+            new NextRequest(req.url, { method: "DELETE" }),
+            { params: Promise.resolve({ videoId: video.id }) }
+        );
+    }
+
     await prisma.sessions.updateMany({
         where: { folder_id: id },
         data: { folder_id: null },

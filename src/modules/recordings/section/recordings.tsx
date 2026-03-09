@@ -76,6 +76,23 @@ export default function Recordings() {
   const gridContainerRef = useRef<HTMLDivElement>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
 
+  // Close video playback modal with Escape key
+  useEffect(() => {
+    if (!selectedVideo) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" || e.key === "Esc") {
+        e.preventDefault();
+        setSelectedVideo(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [selectedVideo]);
+
   // Close menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -821,8 +838,8 @@ export default function Recordings() {
                                         onClick={async (e) => {
                                             e.stopPropagation();
                                             const confirmed = await confirm({
-                                              title: "Delete folder?",
-                                              message: `Are you sure you want to delete "${folder.name}"?`,
+                                              title: "Delete folder and files?",
+                                              message: `Are you sure you want to permanently delete the folder "${folder.name}"?\n\nThis will delete ALL files inside it, along with their transcriptions and related data. This action cannot be undone.`,
                                               confirmLabel: "Delete",
                                               cancelLabel: "Cancel",
                                             });
@@ -833,6 +850,7 @@ export default function Recordings() {
                                                 const data = await res.json().catch(() => ({}));
                                                 if (res.ok && data.success) {
                                                     fetchFolders(currentFolderId);
+                                                    await fetchVideos(currentFolderId);
                                                 } else {
                                                     toast(getErrorMessage(data.error, "Failed to delete folder"), "error");
                                                 }
@@ -1129,10 +1147,11 @@ export default function Recordings() {
                           e.stopPropagation();
                           if (video.id) {
                             setVideoUrl(video.url, video.id);
+                            router.push(`/auto-transcription?videoId=${video.id}`);
                           } else {
                             setVideoUrl(video.url);
+                            router.push("/auto-transcription");
                           }
-                          router.push("/auto-transcription");
                         }}
                         className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-[#00A3AF] rounded hover:bg-[#008C97] transition-colors"
                       >

@@ -31,7 +31,7 @@ export default function AutoTranscription({
   onStartTranscription,
   onStopTranscription
 }: AutoTranscriptionProps) {
-  const { updateSpeakerName, setTranscriptionData, mediaUrl: sessionMediaUrl, file: sessionFile, videoId, transcriptionData: sessionTranscriptionData, spacesUrl, setVideoUrl } = useSession();
+  const { updateSpeakerName, setTranscriptionData, mediaUrl: sessionMediaUrl, file: sessionFile, videoId, transcriptionData: sessionTranscriptionData, spacesUrl, setVideoUrl, transcriptionProgress } = useSession();
   const { confirm } = useConfirm();
   const { toast, toastError } = useToast();
   const [isGlobalSaved, setIsGlobalSaved] = useState(false);
@@ -39,6 +39,7 @@ export default function AutoTranscription({
   const [isSaving, setIsSaving] = useState(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const [speakerCreationTriggerEntryIndex, setSpeakerCreationTriggerEntryIndex] = useState<number | null>(null);
+  const [isUserScrollingTranscript, setIsUserScrollingTranscript] = useState(false);
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -61,6 +62,7 @@ export default function AutoTranscription({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
+  const userScrollTimeoutRef = useRef<any>(null);
 
   // Speaker Editing State
   const [editingSpeakerId, setEditingSpeakerId] = useState<string | null>(null);
@@ -72,6 +74,13 @@ export default function AutoTranscription({
 
   // Speaker avatars state - map of speaker name to avatar data
   const [speakerAvatars, setSpeakerAvatars] = useState<Record<string, { url: string; key: string }>>({});
+
+  const formatTime = (seconds: number | undefined | null): string => {
+    if (seconds === undefined || seconds === null || Number.isNaN(seconds)) return "00:00";
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  };
 
   // Use mock only if undefined, but if null (explicit "no data"), use empty array or handle separately
   // The logic in page.tsx passes null if ready to transcribe.
@@ -93,6 +102,55 @@ export default function AutoTranscription({
       }
     }
   }, [videoId, hasData, isSaving]);
+
+  // Restore saved transcription on refresh when videoId is available
+  useEffect(() => {
+    const urlVideoId = searchParams.get('videoId');
+    const effectiveVideoId = videoId || urlVideoId;
+
+    // Only try to restore if we have a video id, we're not currently transcribing,
+    // and there is no transcription already in session state.
+    if (!effectiveVideoId || isTranscribing || (sessionTranscriptionData && sessionTranscriptionData.length > 0)) {
+      return;
+    }
+
+    const restoreFromServer = async () => {
+      try {
+        const res = await fetch(`/api/transcriptions/load/${effectiveVideoId}`);
+        if (!res.ok) return;
+
+        const data = await res.json();
+        if (!data?.transcription?.blocks || !Array.isArray(data.transcription.blocks)) return;
+
+        const restoredEntries: TranscriptEntry[] = data.transcription.blocks.map(
+          (block: any, index: number) => {
+            const startSeconds = block.start_time_seconds ?? block.startTimeSeconds ?? 0;
+            const endSeconds =
+              block.end_time_seconds ??
+              block.endTimeSeconds ??
+              (startSeconds ? startSeconds + 5 : 5);
+
+            return {
+              id: block.id ?? index,
+              name: block.speaker_label || block.speaker || "Speaker",
+              time: formatTime(startSeconds),
+              text: block.text || "",
+              startTime: startSeconds,
+              endTime: endSeconds,
+            };
+          }
+        );
+
+        if (setTranscriptionData && restoredEntries.length > 0) {
+          setTranscriptionData(restoredEntries);
+        }
+      } catch (err) {
+        console.error("Failed to restore transcription on refresh:", err);
+      }
+    };
+
+    restoreFromServer();
+  }, [videoId, searchParams, isTranscribing, sessionTranscriptionData, setTranscriptionData]);
   // If transcriptionData is undefined, we might fall back to mock, but here we want to control it.
   // Let's say if it's undefined, we show mock (demo mode). If it's null, we show empty state.
   const entries = transcriptionData === undefined ? mockEntries : (transcriptionData || []);
@@ -374,9 +432,9 @@ export default function AutoTranscription({
     };
   }, [isVideoPlaying]);
 
-  // Auto-scroll to active segment
+  // Auto-scroll to active segment (when user is not manually scrolling)
   useEffect(() => {
-    if (!isVideoPlaying || !transcriptContainerRef.current) return;
+    if (!isVideoPlaying || !transcriptContainerRef.current || isUserScrollingTranscript) return;
 
     // Find the active entry
     const activeEntry = entries.find((entry: any) => {
@@ -396,7 +454,21 @@ export default function AutoTranscription({
         }
       });
     }
-  }, [currentTime, isVideoPlaying, entries]);
+  }, [currentTime, isVideoPlaying, entries, isUserScrollingTranscript]);
+
+  const handleTranscriptScroll = () => {
+    // Mark that the user is actively controlling scroll; temporarily disable auto-scroll
+    setIsUserScrollingTranscript(true);
+
+    if (userScrollTimeoutRef.current) {
+      clearTimeout(userScrollTimeoutRef.current);
+    }
+
+    userScrollTimeoutRef.current = setTimeout(() => {
+      setIsUserScrollingTranscript(false);
+      userScrollTimeoutRef.current = null;
+    }, 3000); // 3s of no scroll → resume auto-follow
+  };
 
   // Speaker Edit Handlers
   const startEditing = (currentName: string) => {
@@ -631,7 +703,11 @@ export default function AutoTranscription({
       <div className="flex flex-col lg:flex-row flex-1 overflow-hidden px-4 lg:px-6 pb-6 gap-6">
 
         {/* TRANSCRIPT FEED AREA */}
-        <div className="flex-1 w-full bg-white rounded-2xl shadow-sm border border-gray-100 overflow-y-auto p-4 sm:p-5 lg:p-6 custom-scrollbar relative">
+        <div
+          className="flex-1 w-full bg-white rounded-2xl shadow-sm border border-gray-100 overflow-y-auto p-4 sm:p-5 lg:p-6 custom-scrollbar relative"
+          ref={transcriptContainerRef}
+          onScroll={handleTranscriptScroll}
+        >
 
           {/* SPEAKER HEADER - Show when we have transcription data */}
           {hasData && currentTranscriptionData && currentTranscriptionData.length > 0 && (
@@ -677,7 +753,21 @@ export default function AutoTranscription({
               <div className="mb-6 flex flex-col items-center gap-3">
                 <div className="flex items-center gap-2 text-sm text-gray-500">
                   <div className="w-2 h-2 bg-[#00A3AF] rounded-full animate-pulse" />
-                  <span>Transcribing...</span>
+                  <span>Transcribing &amp; translating with Sarvam…</span>
+                </div>
+                {/* Progress indicator for STT + translation */}
+                <div className="w-64 max-w-full">
+                  <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-[#00A3AF] transition-[width] duration-300 ease-out rounded-full"
+                      style={{ width: `${Math.min(100, Math.max(5, transcriptionProgress || 0))}%` }}
+                    />
+                  </div>
+                  <p className="mt-1 text-[11px] text-gray-400 text-center">
+                    {transcriptionProgress < 100
+                      ? `${Math.round(transcriptionProgress || 0)}% complete`
+                      : "Finalizing transcript…"}
+                  </p>
                 </div>
                 <button
                   onClick={onStopTranscription}
@@ -705,7 +795,7 @@ export default function AutoTranscription({
 
           {/* 3. TRANSCRIPT DATA */}
           {!showEmptyState && !showShimmer && (
-            <div className="flex flex-col gap-4" ref={transcriptContainerRef}>
+            <div className="flex flex-col gap-4">
               {entries.map((entry: TranscriptEntry, index: number) => {
                 const { id, name, time, text, startTime, endTime, state } = entry;
                 const isActive = startTime !== undefined && endTime !== undefined
@@ -792,10 +882,15 @@ export default function AutoTranscription({
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-1 text-gray-400 text-xs font-medium shrink-0 self-end sm:self-auto">
+                      <button
+                        type="button"
+                        onClick={() => startTime !== undefined && handleSegmentClick(startTime)}
+                        className="flex items-center gap-1 text-gray-400 text-xs font-medium shrink-0 self-end sm:self-auto hover:text-[#00A3AF] hover:underline"
+                        title={startTime !== undefined ? "Click to seek video" : ""}
+                      >
                         <img src="/icons/clock-1.png" alt="Clock" className="w-[14px] h-[14px]" />
                         {time}
-                      </div>
+                      </button>
                     </div>
 
                     {/* TEXT AREA */}

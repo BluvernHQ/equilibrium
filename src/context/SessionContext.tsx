@@ -37,6 +37,7 @@ interface SessionContextType {
     videoMetadata: VideoMetadata | null; // Video metadata for database save
     transcriptionData: TranscriptEntry[] | null;
     isTranscribing: boolean;
+    transcriptionProgress: number; // 0-100 for STT/translation
     isUploading: boolean;
     uploadStatus: UploadStatus;
     uploadError: string | null;
@@ -59,6 +60,27 @@ interface SessionContextType {
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
 
+// Normalize URLs so equality checks are robust and do not
+// accidentally match different videos whose URLs merely share substrings.
+const normalizeUrl = (url: string | null | undefined): string | null => {
+    if (!url) return null;
+    try {
+        const parsed = new URL(url);
+        // Drop query/hash and trailing slashes for a stable comparison key
+        const normalizedPath = parsed.pathname.replace(/\/+$/, "");
+        return `${parsed.origin}${normalizedPath}`;
+    } catch {
+        // Fallback for non-standard URLs (e.g. blob: or malformed)
+        return url.trim();
+    }
+};
+
+const urlsMatch = (a: string | null | undefined, b: string | null | undefined): boolean => {
+    const na = normalizeUrl(a);
+    const nb = normalizeUrl(b);
+    return !!na && !!nb && na === nb;
+};
+
 export function SessionProvider({ children }: { children: ReactNode }) {
     const { toastError } = useToast();
     const [file, setFile] = useState<File | null>(null);
@@ -68,6 +90,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const [videoMetadata, setVideoMetadata] = useState<VideoMetadata | null>(null);
     const [transcriptionData, setTranscriptionData] = useState<TranscriptEntry[] | null>(null);
     const [isTranscribing, setIsTranscribing] = useState(false);
+    const [transcriptionProgress, setTranscriptionProgress] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadStatus, setUploadStatus] = useState<UploadStatus>("idle");
     const [uploadError, setUploadError] = useState<string | null>(null);
@@ -325,9 +348,86 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             return;
         }
 
+        // Before calling external STT, check if we already have a saved transcription
+        try {
+            // Try to resolve an existing videoId:
+            // 1) Prefer current context videoId
+            // 2) If missing, try finding by URL in the videos DB
+            let existingVideoId = videoId;
+
+            if (!existingVideoId && (spacesUrl || mediaUrl)) {
+                const url = spacesUrl || mediaUrl || "";
+
+                // Skip DB lookup for blob URLs; they never map to persisted videos
+                if (!url.startsWith("blob:")) {
+                    try {
+                        const videosRes = await fetch("/api/videos/db");
+                        if (videosRes.ok) {
+                            const videosData = await videosRes.json();
+                            const matchedVideo = videosData.videos?.find((v: any) =>
+                                urlsMatch(v.fileUrl, url) || urlsMatch(v.source_url, url)
+                            );
+                            if (matchedVideo?.id) {
+                                existingVideoId = matchedVideo.id;
+                                setVideoId(matchedVideo.id);
+                            }
+                        }
+                    } catch (lookupError) {
+                        console.error("Failed to resolve existing video by URL before transcription:", lookupError);
+                    }
+                }
+            }
+
+            if (existingVideoId) {
+                try {
+                    const loadRes = await fetch(`/api/transcriptions/load/${existingVideoId}`);
+                    if (loadRes.ok) {
+                        const loadData = await loadRes.json();
+                        const blocks = loadData?.transcription?.blocks;
+
+                        if (Array.isArray(blocks) && blocks.length > 0) {
+                            // Map stored transcript blocks back into TranscriptEntry format
+                            const restored: TranscriptEntry[] = blocks.map((block: any, index: number) => {
+                                const startSeconds = block.start_time_seconds ?? block.startTimeSeconds ?? 0;
+                                const endSeconds =
+                                    block.end_time_seconds ??
+                                    block.endTimeSeconds ??
+                                    (startSeconds ? startSeconds + 5 : 5);
+
+                                const minutes = Math.floor(startSeconds / 60);
+                                const seconds = Math.floor(startSeconds % 60);
+                                const timeString = `${minutes.toString().padStart(2, "0")}:${seconds
+                                    .toString()
+                                    .padStart(2, "0")}`;
+
+                                return {
+                                    id: block.id ?? index,
+                                    name: block.speaker_label || "Speaker 1",
+                                    time: timeString,
+                                    text: block.text || "",
+                                    startTime: startSeconds,
+                                    endTime: endSeconds,
+                                };
+                            });
+
+                            setTranscriptionData(restored);
+                            // Reuse existing transcript instead of calling external API
+                            return;
+                        }
+                    }
+                } catch (loadError) {
+                    console.error("Failed to load existing transcription before external STT:", loadError);
+                }
+            }
+        } catch (precheckError) {
+            console.error("Pre-check for existing transcription failed; falling back to external STT:", precheckError);
+        }
+
+        // If we reach here, no existing transcription was found; proceed to external STT
         // Create new abort controller for this transcription
         transcriptionAbortController.current = new AbortController();
         setIsTranscribing(true);
+        setTranscriptionProgress(5);
 
         try {
             const formData = new FormData();
@@ -343,6 +443,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                 }
             }
 
+            // Prefer Sarvam "auto" mode (transcribe + translate)
+            formData.append("mode", "auto");
+
+            // Request is being sent to Sarvam – bump progress into "in progress" band
+            setTranscriptionProgress(15);
+
             const response = await fetch("/api/transcribe", {
                 method: "POST",
                 body: formData,
@@ -353,23 +459,78 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                 throw new Error("Transcription failed");
             }
 
+            // Sarvam STT+translate job completed on the server, response received
+            setTranscriptionProgress(65);
+
             const data = await response.json();
 
             let formattedData: TranscriptEntry[] = [];
 
-            if (data.utterances && data.utterances.length > 0) {
+            // 1. SarvamAI structured response (preferred)
+            if (Array.isArray(data.segments) && data.segments.length > 0) {
+                // Normalize speaker labels so the first distinct speaker is always "Speaker 1",
+                // the next new speaker "Speaker 2", etc., based on order of appearance.
+                const speakerIdToLabel = new Map<string, string>();
+                let nextSpeakerIndex = 1;
+
+                formattedData = data.segments.map((segment: any, index: number) => {
+                    const startSeconds = segment.start_time_seconds ?? 0;
+                    const endSeconds = segment.end_time_seconds ?? startSeconds;
+
+                    const minutes = Math.floor(startSeconds / 60);
+                    const seconds = Math.floor(startSeconds % 60);
+                    const timeString = `${minutes.toString().padStart(2, "0")}:${seconds
+                        .toString()
+                        .padStart(2, "0")}`;
+
+                    // Use speaker_id when available as a stable key; fall back to speaker_label.
+                    const rawSpeakerKey: string =
+                        segment.speaker_id !== undefined && segment.speaker_id !== null
+                            ? String(segment.speaker_id)
+                            : (segment.speaker_label ?? "default");
+
+                    let displaySpeakerLabel = speakerIdToLabel.get(rawSpeakerKey);
+                    if (!displaySpeakerLabel) {
+                        displaySpeakerLabel = `Speaker ${nextSpeakerIndex}`;
+                        speakerIdToLabel.set(rawSpeakerKey, displaySpeakerLabel);
+                        nextSpeakerIndex += 1;
+                    }
+
+                    const textContent =
+                        segment.text_english ||
+                        segment.text_original ||
+                        "";
+
+                    return {
+                        id: index,
+                        name: displaySpeakerLabel,
+                        time: timeString,
+                        text: textContent,
+                        startTime: startSeconds,
+                        endTime: endSeconds,
+                    };
+                });
+            }
+            // 2. Legacy AssemblyAI format with utterances
+            else if (data.utterances && data.utterances.length > 0) {
                 formattedData = data.utterances.map((utterance: any, index: number) => {
                     const speakerLabel = utterance.speaker || "A";
                     let speakerName = `Speaker ${speakerLabel}`;
 
-                    if (speakerLabel.length === 1 && speakerLabel >= 'A' && speakerLabel <= 'Z') {
+                    if (
+                        speakerLabel.length === 1 &&
+                        speakerLabel >= "A" &&
+                        speakerLabel <= "Z"
+                    ) {
                         const speakerIndex = speakerLabel.charCodeAt(0) - 64;
                         speakerName = `Speaker ${speakerIndex}`;
                     }
 
                     const minutes = Math.floor(utterance.start / 60000);
                     const seconds = Math.floor((utterance.start % 60000) / 1000);
-                    const timeString = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                    const timeString = `${minutes.toString().padStart(2, "0")}:${seconds
+                        .toString()
+                        .padStart(2, "0")}`;
 
                     return {
                         id: index,
@@ -377,21 +538,35 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                         time: timeString,
                         text: utterance.text,
                         startTime: utterance.start / 1000,
-                        endTime: utterance.end / 1000
+                        endTime: utterance.end / 1000,
                     };
                 });
-            } else if (data.text) {
-                formattedData = [{
-                    id: 0,
-                    name: "Speaker 1",
-                    time: "00:00",
-                    text: data.text,
-                    startTime: 0,
-                    endTime: 10000 // default large number if unknown
-                }];
+            }
+            // 3. Fallback: single-block transcript text
+            else if (data.text || data.original_transcript || data.english_transcript) {
+                const text: string =
+                    data.text ||
+                    data.original_transcript ||
+                    data.english_transcript ||
+                    "";
+
+                formattedData = [
+                    {
+                        id: 0,
+                        name: "Speaker 1",
+                        time: "00:00",
+                        text,
+                        startTime: 0,
+                        endTime: 10000, // default large number if unknown
+                    },
+                ];
             }
 
             setTranscriptionData(formattedData);
+            // Raw transcript parsed and mapped into UI format
+            if (formattedData.length > 0) {
+                setTranscriptionProgress(80);
+            }
 
             // Save transcription to database (will create video if needed)
             if (formattedData.length > 0) {
@@ -496,6 +671,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                             }
 
                             console.log("Transcription and video saved to database", { videoId: newVideoId });
+                            // Persisted successfully
+                            setTranscriptionProgress(100);
                         } else {
                             const errorData = await saveResponse.json();
                             console.error("Failed to save transcription:", errorData);
@@ -517,6 +694,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             }
         } finally {
             setIsTranscribing(false);
+            // After a short delay, reset progress so next run starts fresh
+            setTimeout(() => {
+                setTranscriptionProgress(0);
+            }, 1500);
             transcriptionAbortController.current = null;
         }
     };
@@ -530,6 +711,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
 
     const setVideoUrl = async (url: string, videoIdParam?: string) => {
+        // If the URL truly changes to a different resource, clear any existing videoId
+        // so we never associate a new video with an old video's transcripts.
+        const previousUrl = spacesUrl || mediaUrl;
+        if (!urlsMatch(previousUrl, url)) {
+            setVideoId(null);
+        }
+
         setMediaUrl(url);
         setSpacesUrl(url);
         // Clear transcription data when setting a new video
@@ -538,16 +726,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         // If videoId is provided, use it; otherwise try to find it from URL
         let finalVideoId = videoIdParam;
         if (!finalVideoId) {
-            // Try to find video ID from database by URL
+            // Try to find video ID from database by URL using strict, normalized equality
+            // to avoid accidentally matching different videos that share similar paths.
             try {
                 const response = await fetch("/api/videos/db");
                 if (response.ok) {
                     const data = await response.json();
                     const video = data.videos?.find((v: any) =>
-                        v.fileUrl === url ||
-                        v.source_url === url ||
-                        (v.fileUrl && v.fileUrl.includes(url.split('/').pop() || '')) ||
-                        (v.source_url && v.source_url.includes(url.split('/').pop() || ''))
+                        urlsMatch(v.fileUrl, url) || urlsMatch(v.source_url, url)
                     );
                     if (video) {
                         finalVideoId = video.id;
@@ -589,6 +775,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setVideoMetadata(null);
         setTranscriptionData(null);
         setIsTranscribing(false);
+        setTranscriptionProgress(0);
         setIsUploading(false);
         setUploadStatus("idle");
         setUploadError(null);
@@ -604,6 +791,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             videoMetadata,
             transcriptionData,
             isTranscribing,
+            transcriptionProgress,
             isUploading,
             uploadStatus,
             uploadError,

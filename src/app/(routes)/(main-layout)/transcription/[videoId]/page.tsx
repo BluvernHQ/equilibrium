@@ -1405,7 +1405,7 @@ export default function TranscriptionViewPage() {
     const handleRetranscribe = () => {
         if (video?.source_url) {
             setVideoUrl(video.source_url, videoId);
-            router.push("/auto-transcription");
+            router.push(`/auto-transcription?videoId=${videoId}`);
         }
     };
 

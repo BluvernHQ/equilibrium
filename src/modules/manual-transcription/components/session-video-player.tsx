@@ -222,12 +222,19 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                 className="relative w-full h-full group bg-black rounded-2xl overflow-hidden"
                 onClick={(e) => {
                   const target = e.target as HTMLElement;
-                  const isControlElement = target.closest('button, input, progress') || 
-                                         ['BUTTON', 'INPUT', 'PROGRESS'].includes(target.tagName);
-                  
-                  if (!isControlElement) {
-                    handlePlayPauseToggle();
+                  const isControlElement =
+                    target.closest('button, input, progress') ||
+                    ['BUTTON', 'INPUT', 'PROGRESS'].includes(target.tagName);
+                  const isVideoElement =
+                    target.tagName === 'VIDEO' || !!target.closest('video');
+
+                  // If the user clicked native video controls or within the video element,
+                  // let the browser handle play/pause without our custom toggle.
+                  if (isControlElement || isVideoElement) {
+                    return;
                   }
+
+                  handlePlayPauseToggle();
                 }}
               >
                 <video
