@@ -18,7 +18,8 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
     const isInitialSeekDone = useRef(false);
     const [isLoaded, setIsLoaded] = useState(false);
     const [isMetadataLoaded, setIsMetadataLoaded] = useState(false);
-    const [bufferingProgress, setBufferingProgress] = useState(0);
+    const [isBuffering, setIsBuffering] = useState(false);
+    const bufferingTimeoutRef = useRef<number | null>(null);
 
     // Persistence logic
     const saveCurrentTime = () => {
@@ -80,7 +81,7 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
       isInitialSeekDone.current = false;
       setIsLoaded(false);
       setIsMetadataLoaded(false);
-      setBufferingProgress(0);
+      setIsBuffering(false);
     }, [videoId]);
 
     // Decode HTML entities in URL (e.g., &amp; -> &)
@@ -91,7 +92,7 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
       setHasError(false);
       setErrorMessage(null);
       setIsMetadataLoaded(false);
-      setBufferingProgress(0);
+      setIsBuffering(false);
     }, [decodedUrl]);
 
     // Sync refs
@@ -133,7 +134,7 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
           isInitialSeekDone.current = false;
           setIsLoaded(false);
           setIsMetadataLoaded(false);
-          setBufferingProgress(0);
+          setIsBuffering(false);
           
           // Set source without calling load() - browser will handle progressive loading
           // Only call load() if we're recovering from an error
@@ -272,20 +273,30 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                   onCanPlayThrough={() => {
                     // Video has buffered enough to play through without stopping
                     setIsLoaded(true);
-                    setBufferingProgress(100);
+                    setIsBuffering(false);
+                    if (bufferingTimeoutRef.current !== null) {
+                      window.clearTimeout(bufferingTimeoutRef.current);
+                      bufferingTimeoutRef.current = null;
+                    }
                   }}
                   onWaiting={() => {
-                    // Video is buffering - could show a subtle indicator
-                    console.log("Video buffering...");
-                  }}
-                  onProgress={() => {
-                    // Track buffering progress for better UX
-                    const video = internalVideoRef.current;
-                    if (video && video.buffered.length > 0 && video.duration > 0) {
-                      const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-                      const bufferedPercent = (bufferedEnd / video.duration) * 100;
-                      setBufferingProgress(Math.min(100, bufferedPercent));
+                    // Browser reports that playback has stalled to buffer more data.
+                    // Delay showing the pill slightly so quick seeks (like clicking timestamps)
+                    // don't flash an annoying buffering UI.
+                    if (bufferingTimeoutRef.current !== null) {
+                      return;
                     }
+                    bufferingTimeoutRef.current = window.setTimeout(() => {
+                      setIsBuffering(true);
+                    }, 500);
+                  }}
+                  onPlaying={() => {
+                    // Playback resumed – clear any pending timeout and hide pill.
+                    if (bufferingTimeoutRef.current !== null) {
+                      window.clearTimeout(bufferingTimeoutRef.current);
+                      bufferingTimeoutRef.current = null;
+                    }
+                    setIsBuffering(false);
                   }}
                   onError={(e) => {
                     const error = e.currentTarget.error;
@@ -318,12 +329,12 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                   </div>
                 )}
                 
-                {/* Subtle buffering indicator when video is ready but still buffering */}
-                {isMetadataLoaded && bufferingProgress < 100 && isPlaying && (
-                  <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-20">
-                    <div className="bg-black/70 backdrop-blur-sm text-white text-xs px-3 py-1.5 rounded-full flex items-center gap-2">
+                {/* Lightweight buffering indicator, only when playback is actually stalled */}
+                {isMetadataLoaded && isPlaying && isBuffering && (
+                  <div className="absolute bottom-3 left-3 z-20">
+                    <div className="bg-black/70 backdrop-blur-sm text-white text-[10px] px-2.5 py-1 rounded-full flex items-center gap-1.5">
                       <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      <span>Buffering... {Math.round(bufferingProgress)}%</span>
+                      <span>Buffering…</span>
                     </div>
                   </div>
                 )}

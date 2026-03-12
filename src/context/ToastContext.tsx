@@ -9,10 +9,11 @@ export type ToastType = "success" | "error" | "info";
 interface ToastState {
   message: string;
   type: ToastType;
+  onClick?: () => void;
 }
 
 interface ToastContextType {
-  toast: (message: string, type?: ToastType) => void;
+  toast: (message: string, type?: ToastType, onClick?: () => void) => void;
   toastError: (error: unknown, fallback?: string) => void;
 }
 
@@ -22,14 +23,17 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<ToastState | null>(null);
   const timeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const toast = useCallback((message: string, type: ToastType = "info") => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    setState({ message, type });
-    timeoutRef.current = setTimeout(() => {
-      setState(null);
-      timeoutRef.current = null;
-    }, 5000);
-  }, []);
+  const toast = useCallback(
+    (message: string, type: ToastType = "info", onClick?: () => void) => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      setState({ message, type, onClick });
+      timeoutRef.current = setTimeout(() => {
+        setState(null);
+        timeoutRef.current = null;
+      }, 5000);
+    },
+    []
+  );
 
   const toastError = useCallback(
     (error: unknown, fallback = "Something went wrong") => {
@@ -52,6 +56,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       {state && (
         <div
           role="alert"
+          onClick={() => {
+            state.onClick?.();
+          }}
           className={`fixed top-4 right-4 z-[9999] flex items-center gap-3 rounded-lg px-4 py-3 shadow-lg animate-slide-in max-w-sm ${
             state.type === "success"
               ? "bg-emerald-600 text-white"

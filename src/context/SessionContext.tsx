@@ -37,7 +37,6 @@ interface SessionContextType {
     videoMetadata: VideoMetadata | null; // Video metadata for database save
     transcriptionData: TranscriptEntry[] | null;
     isTranscribing: boolean;
-    transcriptionProgress: number; // 0-100 for STT/translation
     isUploading: boolean;
     uploadStatus: UploadStatus;
     uploadError: string | null;
@@ -56,6 +55,8 @@ interface SessionContextType {
     updateSpeakerName: (oldName: string, newName: string) => void;
     setTranscriptionData: (data: TranscriptEntry[] | null) => void;
     setVideoId: (id: string | null) => void;
+    lastTranscribedVideoId: string | null;
+    setLastTranscribedVideoId: (id: string | null) => void;
 }
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
@@ -81,8 +82,53 @@ const urlsMatch = (a: string | null | undefined, b: string | null | undefined): 
     return !!na && !!nb && na === nb;
 };
 
+const MAX_MEDIA_DURATION_SECONDS = 60 * 60; // 1 hour
+
+// Best-effort client-side duration check so we only accept media up to 1 hour.
+// If duration cannot be determined, we fall back to allowing the file.
+const getFileDurationSeconds = (file: File): Promise<number | null> => {
+    return new Promise((resolve) => {
+        if (
+            typeof window === "undefined" ||
+            (!file.type.startsWith("audio/") && !file.type.startsWith("video/"))
+        ) {
+            resolve(null);
+            return;
+        }
+
+        const url = URL.createObjectURL(file);
+        const mediaEl =
+            file.type.startsWith("video/") || file.name.match(/\.(mp4|mkv|mov)$/i)
+                ? document.createElement("video")
+                : document.createElement("audio");
+
+        mediaEl.preload = "metadata";
+        mediaEl.src = url;
+
+        const cleanup = () => {
+            URL.revokeObjectURL(url);
+            mediaEl.remove();
+        };
+
+        mediaEl.onloadedmetadata = () => {
+            const duration = mediaEl.duration;
+            cleanup();
+            if (Number.isFinite(duration) && !Number.isNaN(duration) && duration > 0) {
+                resolve(duration);
+            } else {
+                resolve(null);
+            }
+        };
+
+        mediaEl.onerror = () => {
+            cleanup();
+            resolve(null);
+        };
+    });
+};
+
 export function SessionProvider({ children }: { children: ReactNode }) {
-    const { toastError } = useToast();
+    const { toast, toastError } = useToast();
     const [file, setFile] = useState<File | null>(null);
     const [mediaUrl, setMediaUrl] = useState<string | null>(null);
     const [spacesUrl, setSpacesUrl] = useState<string | null>(null);
@@ -90,13 +136,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const [videoMetadata, setVideoMetadata] = useState<VideoMetadata | null>(null);
     const [transcriptionData, setTranscriptionData] = useState<TranscriptEntry[] | null>(null);
     const [isTranscribing, setIsTranscribing] = useState(false);
-    const [transcriptionProgress, setTranscriptionProgress] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadStatus, setUploadStatus] = useState<UploadStatus>("idle");
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [uploadFolderId, setUploadFolderId] = useState<string | null>(null);
     const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
+    const [lastTranscribedVideoId, setLastTranscribedVideoId] = useState<string | null>(null);
 
     // Abort controller for cancelling transcription
     const transcriptionAbortController = useRef<AbortController | null>(null);
@@ -117,6 +163,29 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
 
     const uploadFile = async (uploadedFile: File, targetFolderId?: string | null) => {
+        // Enforce 1-hour limit based on media duration when we can detect it.
+        try {
+            const durationSeconds = await getFileDurationSeconds(uploadedFile);
+            if (
+                durationSeconds !== null &&
+                durationSeconds > MAX_MEDIA_DURATION_SECONDS
+            ) {
+                const minutes = Math.round(durationSeconds / 60);
+                const errorMessage =
+                    `Please upload media up to 60 minutes. ` +
+                    `This file is approximately ${minutes} minutes long.`;
+                setUploadError(errorMessage);
+                setUploadStatus("error");
+                throw new Error(errorMessage);
+            }
+        } catch (durationError) {
+            console.error("Duration check failed; rejecting long media file:", durationError);
+            // If our own check threw, surface it as a normal upload error
+            if (durationError instanceof Error) {
+                throw durationError;
+            }
+        }
+
         const objectUrl = URL.createObjectURL(uploadedFile);
         setFile(uploadedFile);
         setMediaUrl(objectUrl);
@@ -427,7 +496,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         // Create new abort controller for this transcription
         transcriptionAbortController.current = new AbortController();
         setIsTranscribing(true);
-        setTranscriptionProgress(5);
 
         try {
             const formData = new FormData();
@@ -446,9 +514,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             // Prefer Sarvam "auto" mode (transcribe + translate)
             formData.append("mode", "auto");
 
-            // Request is being sent to Sarvam – bump progress into "in progress" band
-            setTranscriptionProgress(15);
-
             const response = await fetch("/api/transcribe", {
                 method: "POST",
                 body: formData,
@@ -458,9 +523,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             if (!response.ok) {
                 throw new Error("Transcription failed");
             }
-
-            // Sarvam STT+translate job completed on the server, response received
-            setTranscriptionProgress(65);
 
             const data = await response.json();
 
@@ -563,10 +625,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             }
 
             setTranscriptionData(formattedData);
-            // Raw transcript parsed and mapped into UI format
-            if (formattedData.length > 0) {
-                setTranscriptionProgress(80);
-            }
 
             // Save transcription to database (will create video if needed)
             if (formattedData.length > 0) {
@@ -670,9 +728,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                                 }));
                             }
 
-                            console.log("Transcription and video saved to database", { videoId: newVideoId });
-                            // Persisted successfully
-                            setTranscriptionProgress(100);
+                            const targetVideoId = newVideoId || videoId;
+                            setLastTranscribedVideoId(targetVideoId || null);
+                            console.log("Transcription and video saved to database", { videoId: targetVideoId });
+                            toast(
+                                "Auto transcription is ready. Click to open.",
+                                "success",
+                                () => {
+                                    if (typeof window !== "undefined") {
+                                        const url = targetVideoId
+                                            ? `/transcription/${targetVideoId}`
+                                            : `/auto-transcription`;
+                                        window.location.href = url;
+                                    }
+                                }
+                            );
                         } else {
                             const errorData = await saveResponse.json();
                             console.error("Failed to save transcription:", errorData);
@@ -694,10 +764,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             }
         } finally {
             setIsTranscribing(false);
-            // After a short delay, reset progress so next run starts fresh
-            setTimeout(() => {
-                setTranscriptionProgress(0);
-            }, 1500);
             transcriptionAbortController.current = null;
         }
     };
@@ -775,7 +841,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setVideoMetadata(null);
         setTranscriptionData(null);
         setIsTranscribing(false);
-        setTranscriptionProgress(0);
         setIsUploading(false);
         setUploadStatus("idle");
         setUploadError(null);
@@ -791,7 +856,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             videoMetadata,
             transcriptionData,
             isTranscribing,
-            transcriptionProgress,
             isUploading,
             uploadStatus,
             uploadError,
@@ -810,6 +874,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             updateSpeakerName,
             setTranscriptionData,
             setVideoId,
+            lastTranscribedVideoId,
+            setLastTranscribedVideoId,
         }}>
             {children}
         </SessionContext.Provider>

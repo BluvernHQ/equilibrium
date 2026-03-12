@@ -31,7 +31,7 @@ export default function AutoTranscription({
   onStartTranscription,
   onStopTranscription
 }: AutoTranscriptionProps) {
-  const { updateSpeakerName, setTranscriptionData, mediaUrl: sessionMediaUrl, file: sessionFile, videoId, transcriptionData: sessionTranscriptionData, spacesUrl, setVideoUrl, transcriptionProgress } = useSession();
+  const { updateSpeakerName, setTranscriptionData, mediaUrl: sessionMediaUrl, file: sessionFile, videoId, transcriptionData: sessionTranscriptionData, spacesUrl, setVideoUrl } = useSession();
   const { confirm } = useConfirm();
   const { toast, toastError } = useToast();
   const [isGlobalSaved, setIsGlobalSaved] = useState(false);
@@ -42,6 +42,37 @@ export default function AutoTranscription({
   const [isUserScrollingTranscript, setIsUserScrollingTranscript] = useState(false);
   const router = useRouter();
   const searchParams = useSearchParams();
+
+  // Elapsed time during auto transcription (shown as M:SS)
+  const [transcriptionElapsedSeconds, setTranscriptionElapsedSeconds] = useState(0);
+  const transcriptionStartRef = useRef<number | null>(null);
+  const transcriptionIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (isTranscribing) {
+      transcriptionStartRef.current = Date.now();
+      setTranscriptionElapsedSeconds(0);
+      transcriptionIntervalRef.current = setInterval(() => {
+        const start = transcriptionStartRef.current;
+        if (start != null) {
+          setTranscriptionElapsedSeconds(Math.floor((Date.now() - start) / 1000));
+        }
+      }, 1000);
+    } else {
+      if (transcriptionIntervalRef.current) {
+        clearInterval(transcriptionIntervalRef.current);
+        transcriptionIntervalRef.current = null;
+      }
+      transcriptionStartRef.current = null;
+      setTranscriptionElapsedSeconds(0);
+    }
+    return () => {
+      if (transcriptionIntervalRef.current) {
+        clearInterval(transcriptionIntervalRef.current);
+        transcriptionIntervalRef.current = null;
+      }
+    };
+  }, [isTranscribing]);
 
   // Load transcription if videoId is in URL but not in state (on refresh)
   useEffect(() => {
@@ -155,16 +186,25 @@ export default function AutoTranscription({
   // Let's say if it's undefined, we show mock (demo mode). If it's null, we show empty state.
   const entries = transcriptionData === undefined ? mockEntries : (transcriptionData || []);
 
+  // Simple client-side pagination to avoid rendering very long transcripts at once
+  const PAGE_SIZE = 50;
+  const [page, setPage] = useState(0);
+  const TIME_EPSILON = 0.25; // small tolerance for boundary matching
+
   const handleBack = () => {
     if (isTranscribing) {
       confirm({
-        title: "Leave while transcribing?",
+        title: "Transcription in progress",
         message:
-          "Transcription is in progress. If you leave, the process may stop. Are you sure you want to leave?",
-        confirmLabel: "Leave",
+          "Your transcription is still running.\n\n- Click \"Stay\" to keep watching progress here.\n- Click \"Continue in background\" to keep transcribing while you browse other pages.",
+        confirmLabel: "Continue in background",
         cancelLabel: "Stay",
       }).then((ok) => {
         if (!ok) return;
+        toast(
+          "Auto transcription will continue in the background. We'll notify you when it's ready.",
+          "info"
+        );
         router.back();
       });
       return;
@@ -261,6 +301,13 @@ export default function AutoTranscription({
 
   // Use session transcription data if available, otherwise use prop or mock
   const currentTranscriptionData = sessionTranscriptionData || entries;
+
+  const totalEntries = currentTranscriptionData.length;
+  const totalPages = totalEntries > 0 ? Math.ceil(totalEntries / PAGE_SIZE) : 1;
+  const safePage = Math.min(page, totalPages - 1);
+  const pageStart = safePage * PAGE_SIZE;
+  const pageEnd = pageStart + PAGE_SIZE;
+  const pagedEntries = currentTranscriptionData.slice(pageStart, pageEnd);
 
   const handleGlobalSave = async () => {
     if (!currentTranscriptionData || currentTranscriptionData.length === 0) {
@@ -436,17 +483,30 @@ export default function AutoTranscription({
   useEffect(() => {
     if (!isVideoPlaying || !transcriptContainerRef.current || isUserScrollingTranscript) return;
 
-    // Find the active entry
-    const activeEntry = entries.find((entry: any) => {
+    // Find the active entry in the full transcript
+    const activeEntry = currentTranscriptionData.find((entry: any) => {
       if (entry.startTime === undefined || entry.endTime === undefined) return false;
-      return currentTime >= entry.startTime && currentTime < entry.endTime;
+      // Include a small epsilon so boundary values (e.g. exactly at endTime due to rounding)
+      // still snap to the most intuitive segment.
+      return (
+        currentTime + TIME_EPSILON >= entry.startTime &&
+        currentTime <= entry.endTime + TIME_EPSILON
+      );
     });
 
     if (activeEntry) {
+      const activeIndex = currentTranscriptionData.indexOf(activeEntry as any);
+
+      // Ensure the active entry's page is visible
+      const targetPage = Math.floor(activeIndex / PAGE_SIZE);
+      if (!Number.isNaN(targetPage) && targetPage !== safePage) {
+        setPage(targetPage);
+      }
+
       // Find the DOM element for this entry
       const entryElements = transcriptContainerRef.current.querySelectorAll('[data-entry-id]');
       entryElements.forEach((el) => {
-        if (el.getAttribute('data-entry-id') === String(activeEntry.id || entries.indexOf(activeEntry))) {
+        if (el.getAttribute('data-entry-id') === String(activeEntry.id || activeIndex)) {
           el.scrollIntoView({
             behavior: 'smooth',
             block: 'center',
@@ -454,7 +514,7 @@ export default function AutoTranscription({
         }
       });
     }
-  }, [currentTime, isVideoPlaying, entries, isUserScrollingTranscript]);
+  }, [currentTime, isVideoPlaying, currentTranscriptionData, isUserScrollingTranscript, PAGE_SIZE, safePage]);
 
   const handleTranscriptScroll = () => {
     // Mark that the user is actively controlling scroll; temporarily disable auto-scroll
@@ -663,7 +723,7 @@ export default function AutoTranscription({
         <div className="px-4 lg:px-6 py-2  flex items-center justify-between">
           <h2 className="text-[18px] lg:text-[20px] font-medium text-[#111827]">Auto Transcription</h2>
           <div className="flex gap-2 lg:gap-3">
-            {/* Only show Export/Save if we have data */}
+            {/* Only show actions if we have data */}
             {hasData && (
               <>
                 {videoId && (
@@ -675,9 +735,6 @@ export default function AutoTranscription({
                     <ArrowRightIcon className="w-4 h-4" />
                   </Link>
                 )}
-                <button className="px-3 lg:px-4 py-1.5 lg:py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-xs lg:text-sm font-medium hover:bg-gray-50 transition">
-                  Export
-                </button>
                 <button
                   onClick={() => setShowShortcuts(true)}
                   className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition"
@@ -753,21 +810,10 @@ export default function AutoTranscription({
               <div className="mb-6 flex flex-col items-center gap-3">
                 <div className="flex items-center gap-2 text-sm text-gray-500">
                   <div className="w-2 h-2 bg-[#00A3AF] rounded-full animate-pulse" />
-                  <span>Transcribing &amp; translating with Sarvam…</span>
-                </div>
-                {/* Progress indicator for STT + translation */}
-                <div className="w-64 max-w-full">
-                  <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-[#00A3AF] transition-[width] duration-300 ease-out rounded-full"
-                      style={{ width: `${Math.min(100, Math.max(5, transcriptionProgress || 0))}%` }}
-                    />
-                  </div>
-                  <p className="mt-1 text-[11px] text-gray-400 text-center">
-                    {transcriptionProgress < 100
-                      ? `${Math.round(transcriptionProgress || 0)}% complete`
-                      : "Finalizing transcript…"}
-                  </p>
+                  <span>Transcribing &amp; translating with Soniox…</span>
+                  <span className="font-mono font-medium text-[#00A3AF] tabular-nums">
+                    {formatTime(transcriptionElapsedSeconds)}
+                  </span>
                 </div>
                 <button
                   onClick={onStopTranscription}
@@ -796,11 +842,14 @@ export default function AutoTranscription({
           {/* 3. TRANSCRIPT DATA */}
           {!showEmptyState && !showShimmer && (
             <div className="flex flex-col gap-4">
-              {entries.map((entry: TranscriptEntry, index: number) => {
+              {pagedEntries.map((entry: TranscriptEntry, index: number) => {
+                const globalIndex = pageStart + index;
                 const { id, name, time, text, startTime, endTime, state } = entry;
-                const isActive = startTime !== undefined && endTime !== undefined
-                  ? currentTime >= startTime && currentTime < endTime
-                  : false;
+                const isActive =
+                  startTime !== undefined && endTime !== undefined
+                    ? currentTime + TIME_EPSILON >= startTime &&
+                      currentTime <= endTime + TIME_EPSILON
+                    : false;
 
                 const isEditing = editingSpeakerId === name;
 
@@ -814,7 +863,7 @@ export default function AutoTranscription({
                 ];
 
                 return (
-                  <div key={id || index} data-entry-id={id || index} className="flex flex-col gap-2 transition-all duration-300">
+                  <div key={id || globalIndex} data-entry-id={id || globalIndex} className="flex flex-col gap-2 transition-all duration-300">
 
                     {/* HEADER */}
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -859,7 +908,7 @@ export default function AutoTranscription({
                           {stateOptions.map((opt) => (
                             <button
                               key={opt.value}
-                              onClick={() => handleStateSelect(index, opt.value)}
+                              onClick={() => handleStateSelect(globalIndex, opt.value)}
                               className={`
                                 px-2.5 py-1 rounded-lg text-[11px] border transition-all whitespace-nowrap
                                 ${state === opt.value
@@ -873,7 +922,7 @@ export default function AutoTranscription({
                           ))}
 
                           <button
-                            onClick={() => handleAddSpeakerTrigger(index)}
+                            onClick={() => handleAddSpeakerTrigger(globalIndex)}
                             className="px-2.5 py-1 rounded-lg text-[11px] border border-dashed border-[#00A3AF] text-[#00A3AF] hover:bg-[#00A3AF]/5 transition-all whitespace-nowrap flex items-center gap-1"
                           >
                             <PlusIcon className="w-3 h-3" />
@@ -924,6 +973,29 @@ export default function AutoTranscription({
                   </div>
                 );
               })}
+
+              {/* Pagination controls */}
+              {totalEntries > PAGE_SIZE && (
+                <div className="mt-4 flex items-center justify-center gap-3 text-xs text-gray-500">
+                  <button
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                    disabled={safePage === 0}
+                    className="px-2 py-1 rounded border border-gray-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    Previous
+                  </button>
+                  <span>
+                    Page {safePage + 1} of {totalPages}
+                  </span>
+                  <button
+                    onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                    disabled={safePage >= totalPages - 1}
+                    className="px-2 py-1 rounded border border-gray-200 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

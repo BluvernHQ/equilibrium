@@ -43,8 +43,6 @@ export default function Recordings() {
   const [isCreateFolderModalOpen, setIsCreateFolderModalOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
-  const [isMoveModalOpen, setIsMoveModalOpen] = useState(false);
-  const [itemToMove, setItemToMove] = useState<{ id: string; type: 'video' | 'folder' } | null>(null);
   const [selectedVideo, setSelectedVideo] = useState<VideoItem | null>(null);
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
   const [isMerging, setIsMerging] = useState(false);
@@ -68,7 +66,7 @@ export default function Recordings() {
   const folderIdFromRoute = pathname?.startsWith("/project/") && params?.folderId ? String(params.folderId) : null;
   const isRoot = pathname === "/" || pathname === "/project";
 
-  const { setVideoUrl, queueUploads, uploadQueue, abortUpload, isUploading, uploadStatus, uploadProgress, setUploadFolderId } = useSession();
+  const { setVideoUrl, queueUploads, uploadQueue, abortUpload, isUploading, uploadStatus, uploadProgress, setUploadFolderId, lastTranscribedVideoId } = useSession();
   const { confirm } = useConfirm();
   const { toast, toastError } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -92,6 +90,19 @@ export default function Recordings() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [selectedVideo]);
+
+  // When a transcription finishes elsewhere (auto transcription page),
+  // update the corresponding video's hasTranscription flag in this grid.
+  useEffect(() => {
+    if (!lastTranscribedVideoId) return;
+    setVideos((prev) =>
+      prev.map((video) =>
+        video.id === lastTranscribedVideoId
+          ? { ...video, hasTranscription: true }
+          : video
+      )
+    );
+  }, [lastTranscribedVideoId]);
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -382,32 +393,6 @@ export default function Recordings() {
     }
   };
 
-  const handleMoveItem = async (folderId: string | null) => {
-      if (!itemToMove) return;
-      
-      try {
-          const response = await fetch('/api/folders/move', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                  videoIds: itemToMove.type === 'video' ? [itemToMove.id] : [],
-                  folderId: folderId,
-              }),
-          });
-          const data = await response.json();
-          if (data.success) {
-              setIsMoveModalOpen(false);
-              setItemToMove(null);
-              fetchVideos(currentFolderId);
-              fetchFolders(currentFolderId);
-          } else {
-              alert(data.error || "Failed to move item");
-          }
-      } catch (error) {
-          console.error("Move item error:", error);
-          alert("An error occurred");
-      }
-  };
 
   const handleMergeTranscriptions = async () => {
     if (selectedVideoIds.size < 2) return;
@@ -947,18 +932,6 @@ export default function Recordings() {
                       {video.id && (
                         <>
                           <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setItemToMove({ id: video.id!, type: 'video' });
-                              setIsMoveModalOpen(true);
-                              setOpenMenuId(null);
-                            }}
-                            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                          >
-                            <FolderIcon className="w-4 h-4" />
-                            Move to Folder
-                          </button>
-                          <button
                             onClick={(e) => { e.stopPropagation(); openRenameVideo(video); }}
                             className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
                           >
@@ -1335,54 +1308,6 @@ export default function Recordings() {
                           className="px-6 py-2 bg-[#00A3AF] text-white rounded-lg font-medium hover:bg-[#008C97] transition-colors disabled:opacity-50"
                       >
                           {isUploading ? 'Uploading...' : 'Upload'}
-                      </button>
-                  </div>
-              </div>
-          </div>
-      )}
-
-      {/* Move Item Modal */}
-      {isMoveModalOpen && (
-          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-              <div className="bg-white rounded-xl max-w-lg w-full p-6 shadow-2xl">
-                  <h2 className="text-xl font-semibold mb-2 text-gray-900">Move to Folder</h2>
-                  <p className="text-sm text-gray-500 mb-4">Select a destination folder</p>
-                  
-                  <div className="max-h-[300px] overflow-y-auto border border-gray-100 rounded-lg mb-6">
-                      {/* Root Option */}
-                      <button
-                        onClick={() => handleMoveItem(null)}
-                        className="w-full px-4 py-3 text-left hover:bg-gray-50 flex items-center gap-3 border-b border-gray-50 transition-colors"
-                      >
-                          <ArrowUturnLeftIcon className="w-5 h-5 text-gray-400" />
-                          <span className="font-medium">Move to Root</span>
-                      </button>
-                      
-                      {/* Available Folders (exclude current item if it's a folder) */}
-                      {folders.map(folder => (
-                          <button
-                            key={folder.id}
-                            onClick={() => handleMoveItem(folder.id)}
-                            className="w-full px-4 py-3 text-left hover:bg-gray-50 flex items-center gap-3 border-b border-gray-50 transition-colors"
-                          >
-                              <FolderIcon className="w-5 h-5 text-blue-500" />
-                              <span className="font-medium">{folder.name}</span>
-                          </button>
-                      ))}
-                      
-                      {folders.length === 0 && (
-                          <div className="px-4 py-8 text-center text-gray-400 text-sm">
-                              No subfolders available
-                          </div>
-                      )}
-                  </div>
-                  
-                  <div className="flex justify-end gap-3">
-                      <button 
-                        onClick={() => { setIsMoveModalOpen(false); setItemToMove(null); }}
-                        className="px-4 py-2 text-gray-600 hover:text-gray-800 font-medium"
-                      >
-                          Cancel
                       </button>
                   </div>
               </div>
