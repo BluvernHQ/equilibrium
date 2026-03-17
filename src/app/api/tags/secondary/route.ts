@@ -23,13 +23,31 @@ export async function POST(req: NextRequest) {
             );
         }
 
+        const trimmedName = name.trim();
+
+        // Enforce: all secondary tags within a single primary tag must be unique
+        // @ts-ignore
+        const existing = await prisma.secondaryTag.findFirst({
+            where: {
+                primary_tag_id: primaryTagId,
+                name: trimmedName,
+            }
+        });
+
+        if (existing) {
+            return NextResponse.json(
+                { error: "Secondary tag name must be unique within this primary tag" },
+                { status: 400 }
+            );
+        }
+
         // @ts-ignore
         const secondaryTag = await prisma.secondaryTag.create({
             data: {
                 primary_tag: {
                     connect: { id: primaryTagId }
                 },
-                name: name.trim(),
+                name: trimmedName,
             }
         });
 
@@ -98,11 +116,54 @@ export async function PATCH(req: NextRequest) {
             );
         }
 
+        if (name !== undefined && !name.trim()) {
+            return NextResponse.json(
+                { error: "Secondary tag name is required" },
+                { status: 400 }
+            );
+        }
+
+        let trimmedName: string | undefined = undefined;
+        if (name !== undefined) {
+            trimmedName = name.trim();
+        }
+
+        // When renaming, enforce uniqueness within the same primary tag
+        if (trimmedName) {
+            // @ts-ignore
+            const existingTag = await prisma.secondaryTag.findUnique({
+                where: { id },
+            });
+
+            if (!existingTag) {
+                return NextResponse.json(
+                    { error: "Secondary tag not found" },
+                    { status: 404 }
+                );
+            }
+
+            // @ts-ignore
+            const duplicate = await prisma.secondaryTag.findFirst({
+                where: {
+                    primary_tag_id: existingTag.primary_tag_id,
+                    name: trimmedName,
+                    NOT: { id },
+                }
+            });
+
+            if (duplicate) {
+                return NextResponse.json(
+                    { error: "Secondary tag name must be unique within this primary tag" },
+                    { status: 400 }
+                );
+            }
+        }
+
         // @ts-ignore
         const secondaryTag = await prisma.secondaryTag.update({
             where: { id },
             data: {
-                name: name !== undefined ? name.trim() : undefined,
+                name: trimmedName,
             }
         });
 

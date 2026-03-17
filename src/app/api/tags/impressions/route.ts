@@ -323,7 +323,7 @@ export async function DELETE(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
     try {
         const body = await req.json();
-        const { id, comment, secondaryTagName } = body;
+        const { id, comment, secondaryTagName, primaryTagName } = body;
 
         if (!id) {
             return NextResponse.json(
@@ -346,6 +346,52 @@ export async function PATCH(req: NextRequest) {
 
         let updatedImpression;
 
+        // 1. Promote / attach a primary tag to this impression (used when converting a pure highlight into a primary)
+        if (primaryTagName) {
+            const trimmedName = primaryTagName.trim();
+            if (!trimmedName) {
+                return NextResponse.json(
+                    { error: "Primary tag name is required" },
+                    { status: 400 }
+                );
+            }
+
+            // @ts-ignore
+            const masterTagId = existing.master_tag_id;
+            if (!masterTagId) {
+                return NextResponse.json(
+                    { error: "Cannot attach primary tag: impression has no master tag" },
+                    { status: 400 }
+                );
+            }
+
+            // @ts-ignore
+            const primary = await prisma.primaryTag.create({
+                data: {
+                    master_tag_id: masterTagId,
+                    name: trimmedName,
+                }
+            });
+
+            // @ts-ignore
+            updatedImpression = await prisma.tagImpression.update({
+                where: { id },
+                data: {
+                    primary_tag_id: primary.id,
+                }
+            });
+
+            return NextResponse.json({
+                success: true,
+                impression: updatedImpression,
+                primaryTag: {
+                    id: primary.id,
+                    name: primary.name,
+                }
+            });
+        }
+
+        // 2. Add a secondary tag to this impression
         if (secondaryTagName) {
             // Add a secondary tag to this impression
             // For JSON field, we need to handle it carefully
@@ -370,7 +416,7 @@ export async function PATCH(req: NextRequest) {
                 }
             });
         } else {
-            // Update comment
+            // 3. Update comment
             // @ts-ignore
             updatedImpression = await prisma.tagImpression.update({
                 where: { id },

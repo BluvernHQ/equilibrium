@@ -442,6 +442,50 @@ export default function TranscriptionViewPage() {
                         }
                     }
 
+                    // Build lookup maps for later reconciliation
+                    const blockById = new Map<string, TranscriptBlock>();
+                    data.transcription.blocks.forEach((block: TranscriptBlock) => {
+                        if (block.id) {
+                            blockById.set(block.id, block);
+                        }
+                    });
+
+                    const speakerByLabel = new Map<string, Speaker>();
+                    finalSpeakers.forEach((spk: Speaker) => {
+                        speakerByLabel.set(spk.name, spk);
+                    });
+
+                    // Reconcile finalSegments with latest transcript blocks and speakers
+                    finalSegments = finalSegments.map((seg: TranscriptSegment) => {
+                        const updated: TranscriptSegment = { ...seg };
+                        const block = blockById.get(seg.id);
+
+                        if (block) {
+                            if (updated.startTimeSeconds === undefined) {
+                                updated.startTimeSeconds = block.start_time_seconds;
+                            }
+                            if (updated.endTimeSeconds === undefined) {
+                                updated.endTimeSeconds = block.end_time_seconds;
+                            }
+                            if (!updated.timestamp) {
+                                updated.timestamp = formatTime(block.start_time_seconds);
+                            }
+                            if (!updated.selectedSpeakerId) {
+                                const label = block.speaker_label || "Unknown";
+                                const spk = speakerByLabel.get(label);
+                                if (spk) {
+                                    updated.selectedSpeakerId = spk.id;
+                                }
+                            }
+                        }
+
+                        if (!updated.createdAt) {
+                            updated.createdAt = Date.now();
+                        }
+
+                        return updated;
+                    });
+
                     // Ensure at least one segment exists if it's a new manual transcription
                     if (finalSegments.length === 0) {
                         finalSegments = [{
@@ -802,20 +846,31 @@ export default function TranscriptionViewPage() {
 
     // Determine active segment based on current video time (works continuously)
     const activeSegmentId = useMemo(() => {
-        // Always try to find active segment, even if video is paused
-        // This ensures highlighting works at all times
         if (segments.length === 0) return null;
 
-        // Find the segment that contains the current video time
+        // Find the segment that contains the current video time.
+        // Prefer numeric start/end, but fall back to timestamp when needed so
+        // highlighting still works for older/local-draft data.
         const activeSegment = segments.find(segment => {
-            if (segment.startTimeSeconds === undefined || segment.endTimeSeconds === undefined) {
-                return false;
+            let start = segment.startTimeSeconds;
+            let end = segment.endTimeSeconds;
+
+            // Fallback: derive from timestamp if numeric bounds are missing
+            if ((start === undefined || end === undefined) && segment.timestamp) {
+                const tsSeconds = parseTimeToSeconds(segment.timestamp);
+                if (!isNaN(tsSeconds) && tsSeconds >= 0) {
+                    start = tsSeconds;
+                    end = tsSeconds + 5; // default 5s window
+                }
             }
-            // Segment is active if current time is between start and end (inclusive)
-            // Use a small tolerance to handle edge cases
+
+            if (start === undefined || end === undefined) return false;
+
+            // Segment is active if current time is between start and end (inclusive),
+            // with a small tolerance for edge cases.
             const tolerance = 0.1; // 100ms tolerance
-            return currentVideoTime >= (segment.startTimeSeconds - tolerance) &&
-                currentVideoTime <= (segment.endTimeSeconds + tolerance);
+            return currentVideoTime >= (start - tolerance) &&
+                currentVideoTime <= (end + tolerance);
         });
 
         return activeSegment?.id || null;
@@ -1640,6 +1695,7 @@ export default function TranscriptionViewPage() {
                                                 videoId={videoId}
                                                 videoUrl={videoUrl}
                                                 isPlaying={isVideoPlaying}
+                                                onTimeUpdate={(time) => setCurrentVideoTime(time)}
                                                 onPlayStateChange={async (playing) => {
                                                     setIsVideoPlaying(playing);
                                                     

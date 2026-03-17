@@ -8,10 +8,11 @@ interface SessionVideoPlayerProps {
   videoUrl: string;
   isPlaying: boolean; // Controlled by parent
   onPlayStateChange: (playing: boolean) => void; // Notify parent
+  onTimeUpdate?: (currentTime: number) => void; // Notify parent of playback position for transcript sync
 }
 
 const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>(
-  ({ videoId, videoUrl, isPlaying, onPlayStateChange }, ref) => {
+  ({ videoId, videoUrl, isPlaying, onPlayStateChange, onTimeUpdate }, ref) => {
     const internalVideoRef = useRef<HTMLVideoElement>(null);
     const [hasError, setHasError] = useState(false);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -66,9 +67,13 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
       isInitialSeekDone.current = true;
     };
 
-    // Throttle time update saves
+    // Throttle time update saves and notify parent for transcript highlighting
     const lastSaveTime = useRef(0);
     const handleTimeUpdate = () => {
+      const video = internalVideoRef.current;
+      if (video && video.readyState >= 2) {
+        onTimeUpdate?.(video.currentTime);
+      }
       const now = Date.now();
       if (now - lastSaveTime.current > 2000) { // Save every 2 seconds
         saveCurrentTime();
@@ -251,11 +256,22 @@ const SessionVideoPlayer = forwardRef<HTMLVideoElement, SessionVideoPlayerProps>
                     saveCurrentTime();
                   }}
                   onTimeUpdate={handleTimeUpdate}
+                  onSeeked={() => {
+                    const v = internalVideoRef.current;
+                    if (v && v.readyState >= 2) {
+                      onTimeUpdate?.(v.currentTime);
+                    }
+                  }}
                   onLoadedMetadata={() => {
                     setIsMetadataLoaded(true);
                     restoreTime();
                     // Metadata loaded means we can show the video frame and controls
                     setIsLoaded(true);
+                    // Sync current time to parent for transcript highlighting
+                    const v = internalVideoRef.current;
+                    if (v && v.readyState >= 2) {
+                      onTimeUpdate?.(v.currentTime);
+                    }
                   }}
                   onLoadedData={() => {
                     setIsLoaded(true);

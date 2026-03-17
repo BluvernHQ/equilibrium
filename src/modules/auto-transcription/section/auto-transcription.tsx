@@ -810,7 +810,7 @@ export default function AutoTranscription({
               <div className="mb-6 flex flex-col items-center gap-3">
                 <div className="flex items-center gap-2 text-sm text-gray-500">
                   <div className="w-2 h-2 bg-[#00A3AF] rounded-full animate-pulse" />
-                  <span>Transcribing &amp; translating with Soniox…</span>
+                  <span>Transcribing &amp; translating...</span>
                   <span className="font-mono font-medium text-[#00A3AF] tabular-nums">
                     {formatTime(transcriptionElapsedSeconds)}
                   </span>

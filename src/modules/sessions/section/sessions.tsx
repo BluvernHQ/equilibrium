@@ -2435,22 +2435,33 @@ export default function Sessions() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ primaryTagId, name: trimmed })
           });
-          if (res.ok) {
-            const data = await res.json();
-            setTags(prev => prev.map(t => {
-              if (t.id !== entryId) return t;
-              const newList = [...t.primaryList];
-              newList[primaryIndex] = {
-                ...newList[primaryIndex],
-                secondaryTags: [...(newList[primaryIndex].secondaryTags || []), { id: data.secondaryTag.id, value: trimmed }] // Append new secondary tag
-              };
-              return { ...t, primaryList: newList };
-            }));
-            // Clear input value but keep it open
-            setSecondaryInput({ entryId, primaryIndex, value: '' });
+
+          if (!res.ok) {
+            // Surface server-side validation errors (e.g. uniqueness)
+            try {
+              const err = await res.json();
+              showToast(err.error || "Failed to add secondary tag", "error");
+            } catch {
+              showToast("Failed to add secondary tag", "error");
+            }
+            return;
           }
+
+          const data = await res.json();
+          setTags(prev => prev.map(t => {
+            if (t.id !== entryId) return t;
+            const newList = [...t.primaryList];
+            newList[primaryIndex] = {
+              ...newList[primaryIndex],
+              secondaryTags: [...(newList[primaryIndex].secondaryTags || []), { id: data.secondaryTag.id, value: trimmed }] // Append new secondary tag
+            };
+            return { ...t, primaryList: newList };
+          }));
+          // Clear input value but keep it open
+          setSecondaryInput({ entryId, primaryIndex, value: '' });
         } catch (error) {
           console.error("Error adding secondary tag:", error);
+          showToast("Failed to add secondary tag", "error");
         }
       }
     }
@@ -2462,6 +2473,13 @@ export default function Sessions() {
       const newPrimaryList = [...p.primaryList];
       const primary = newPrimaryList[primaryIndex];
       if (primary) {
+        // Enforce uniqueness within a single primary tag even for pending items
+        const existing = (primary.secondaryTags || []).some(sec => sec.value.toLowerCase() === trimmed.toLowerCase());
+        if (existing) {
+          showToast("Secondary tag name must be unique within this primary tag", "error");
+          return p;
+        }
+
         newPrimaryList[primaryIndex] = {
           ...primary,
           secondaryTags: [...(primary.secondaryTags || []), { value: trimmed }] // Append new secondary tag
@@ -3266,11 +3284,12 @@ export default function Sessions() {
     setEditingItem({ id: null, type: null, index: null, tempValue: "" });
   };
 
-  const saveEditing = async () => {
+  const saveEditing = async (overrideValue?: string) => {
     const { id, type, index, tempValue } = editingItem;
     if (!id || !type) return;
 
-    const trimmedVal = tempValue.trim();
+    const valueToUse = overrideValue !== undefined ? overrideValue : tempValue;
+    const trimmedVal = valueToUse.trim();
 
     try {
       if (type === 'master') {
@@ -3307,24 +3326,59 @@ export default function Sessions() {
 
       }
       else if (type === 'primary' && index !== null) {
-        // 1. Update Primary Tag record in DB
         const tag = tags.find(t => t.id === id);
-        const primaryTagId = tag?.primaryList[index]?.id;
+        const primaryEntry = tag?.primaryList[index];
+        const primaryTagId = primaryEntry?.id;
+
         if (primaryTagId) {
+          // 1a. Existing primary tag - rename in DB
           await fetch('/api/tags/primary', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ id: primaryTagId, name: trimmedVal })
           });
+
+          // Update local state
+          setTags(prev => prev.map(t => {
+            if (t.id !== id) return t;
+            if (!trimmedVal) return t;
+            const newList = [...t.primaryList];
+            newList[index] = { ...newList[index], value: trimmedVal };
+            return { ...t, primaryList: newList };
+          }));
+        } else if (primaryEntry?.impressionId) {
+          // 1b. Pure highlight (no primary id) – promote to a real primary tag
+          const res = await fetch('/api/tags/impressions', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: primaryEntry.impressionId, primaryTagName: trimmedVal })
+          });
+
+          if (!res.ok) {
+            try {
+              const err = await res.json();
+              showToast(err.error || "Failed to promote highlight to primary tag", "error");
+            } catch {
+              showToast("Failed to promote highlight to primary tag", "error");
+            }
+          } else {
+            const data = await res.json();
+            const newPrimaryId = data.primaryTag?.id as string | undefined;
+
+            // Update local state: set id and value so this entry behaves as a real primary
+            setTags(prev => prev.map(t => {
+              if (t.id !== id) return t;
+              if (!trimmedVal) return t;
+              const newList = [...t.primaryList];
+              newList[index] = {
+                ...newList[index],
+                id: newPrimaryId,
+                value: trimmedVal,
+              };
+              return { ...t, primaryList: newList };
+            }));
+          }
         }
-        // 2. Update local state
-        setTags(prev => prev.map(t => {
-          if (t.id !== id) return t;
-          if (!trimmedVal) return t;
-          const newList = [...t.primaryList];
-          newList[index] = { ...newList[index], value: trimmedVal };
-          return { ...t, primaryList: newList };
-        }));
       }
       else if (type === 'primary_comment' && index !== null) {
         const tag = tags.find(t => t.id === id);
@@ -4556,7 +4610,7 @@ export default function Sessions() {
                                     onAddPrimary={tag.primaryList.length === 0 ? () => togglePrimaryInput(tag.id) : undefined}
                                     onSave={(newName) => {
                                       setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                      saveEditing();
+                                      saveEditing(newName);
                                     }}
                                     onCancel={() => {
                                       // CRITICAL: Only clear activeMasterTagId if it matches this tag
@@ -4590,7 +4644,7 @@ export default function Sessions() {
                                                   onDelete={() => removeBranchTag(tag.id, b.id)}
                                                   onSave={(newName) => {
                                                     setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                                    saveEditing();
+                                                    saveEditing(newName);
                                                   }}
                                                   onCancel={cancelEditing}
                                                 />
@@ -4640,6 +4694,7 @@ export default function Sessions() {
 
                             {/* 2. Primaries Logic: Rendered ONLY if they exist */}
                             {allPrimaries.map((p, i) => {
+                            const hasRealPrimaryId = !!p.id;
                               return (
                                 <React.Fragment key={p.impressionId || `${p.value}-${i}`}>
                                   {/* Primary Row */}
@@ -4655,7 +4710,10 @@ export default function Sessions() {
                                           onEdit={() => startEditing(tag.id, 'primary', p.value, p.originalIndex)}
                                           onDelete={() => initiateDeletePrimary(tag.id, p.originalIndex, p.impressionId)}
                                           onComment={() => startEditing(tag.id, 'primary_comment', p.comment || "", p.originalIndex)}
-                                          onAdd={isEditingPrimary ? () => toggleSecondaryInput(tag.id, p.originalIndex) : undefined}
+                                          // Only allow adding secondary tags for real primary tags (those with a DB id).
+                                          // Pure "highlight N" entries do not have a primary tag id and cannot own secondary tags.
+                                          // We always pass onAdd when allowed; TagActionsColumn decides when to show the "+" based on isEditing.
+                                          onAdd={hasRealPrimaryId ? () => toggleSecondaryInput(tag.id, p.originalIndex) : undefined}
                                           onClick={() => {
                                             // Collect all block IDs for this specific primary tag
                                             const primaryBlockIds = new Set<string>();
@@ -4684,7 +4742,7 @@ export default function Sessions() {
                                           }}
                                           onSave={(newName) => {
                                             setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                            saveEditing();
+                                            saveEditing(newName);
                                           }}
                                           onCancel={cancelEditing}
                                         />
@@ -4723,7 +4781,7 @@ export default function Sessions() {
                                                   onDelete={() => removeSecondaryTag(tag.id, p.originalIndex, secIdx)}
                                                   onSave={(newName) => {
                                                     setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                                    saveEditing();
+                                                    saveEditing(newName);
                                                   }}
                                                   onCancel={cancelEditing}
                                                 />
@@ -4764,7 +4822,7 @@ export default function Sessions() {
                                       initialValue={editingItem.tempValue}
                                       onSave={(val: string) => {
                                         setEditingItem(prev => ({ ...prev, tempValue: val }));
-                                        saveEditing();
+                                        saveEditing(val);
                                       }}
                                       onCancel={cancelEditing}
                                     />
@@ -5008,7 +5066,7 @@ export default function Sessions() {
                                         }}
                                         className="flex-1 px-2 py-1 text-[10px] border border-[#00A3AF] rounded focus:outline-none"
                                       />
-                                      <button onClick={saveEditing} className="p-0.5 hover:bg-[#E0F7FA] rounded" title="Save comment">
+                                      <button onClick={() => saveEditing()} className="p-0.5 hover:bg-[#E0F7FA] rounded" title="Save comment">
                                         <CheckIcon className="w-3 h-3 text-[#00A3AF]" />
                                       </button>
                                       <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded" title="Cancel editing comment">
@@ -5138,7 +5196,7 @@ export default function Sessions() {
                                                   }}
                                                   className="flex-1 px-2 py-1 text-xs font-semibold border border-[#00A3AF] rounded focus:outline-none"
                                                 />
-                                                <button onClick={saveEditing} className="p-0.5 hover:bg-[#E0F7FA] rounded" title="Save primary tag">
+                                                <button onClick={() => saveEditing()} className="p-0.5 hover:bg-[#E0F7FA] rounded" title="Save primary tag">
                                                   <CheckIcon className="w-3 h-3 text-[#00A3AF]" />
                                                 </button>
                                                 <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded" title="Cancel editing primary tag">
