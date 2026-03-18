@@ -1339,9 +1339,33 @@ export default function ManualTranscription({ audioUrl, initialTranscript, initi
                 <ArrowRightIcon className="w-4 h-4" />
               </Link>
             )}
-            <button className="px-3 lg:px-4 py-1.5 lg:py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-xs lg:text-sm font-medium hover:bg-gray-50 transition">
-              Export
-            </button>
+            {videoId && (
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`/api/transcriptions/${videoId}/export`);
+                    if (!res.ok) {
+                      throw new Error("Failed to export transcript");
+                    }
+                    const blob = await res.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = "transcript.pdf";
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    window.URL.revokeObjectURL(url);
+                  } catch (err) {
+                    console.error(err);
+                    showSnackbar("Failed to download PDF");
+                  }
+                }}
+                className="px-3 lg:px-4 py-1.5 lg:py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-xs lg:text-sm font-medium hover:bg-gray-50 transition"
+              >
+                Export
+              </button>
+            )}
             <button
               onClick={handleGlobalSave}
               disabled={isGlobalSaved || isSaving}

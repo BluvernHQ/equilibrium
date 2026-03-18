@@ -43,6 +43,29 @@ async function readFirstJsonFile(dir: string): Promise<SarvamTranscriptFile> {
     return JSON.parse(raw) as SarvamTranscriptFile;
 }
 
+// Default ~1 hour upper bound (in bytes) unless overridden via env.
+const DEFAULT_MAX_BYTES = 60 * 60 * 1024 * 1024;
+
+function getMaxUploadBytes(): number {
+    const envValue = process.env.SARVAM_MAX_BYTES || process.env.SARVAM_MAX_MB;
+    if (!envValue) {
+        return DEFAULT_MAX_BYTES;
+    }
+
+    // Support either raw bytes (SARVAM_MAX_BYTES) or MB (SARVAM_MAX_MB).
+    const numeric = Number(envValue);
+    if (Number.isNaN(numeric) || numeric <= 0) {
+        return DEFAULT_MAX_BYTES;
+    }
+
+    // Heuristic: if the value is small, treat it as MB; if large, as bytes.
+    // e.g. "500" => 500 MB, "104857600" => 100 MB in bytes.
+    if (numeric < 10_000) {
+        return numeric * 1024 * 1024;
+    }
+    return numeric;
+}
+
 export async function POST(req: NextRequest) {
     const tempRoot = "/tmp";
     const tempId = uuidv4();
@@ -68,7 +91,7 @@ export async function POST(req: NextRequest) {
             });
         }
 
-        const maxSize = 60 * 60 * 1024 * 1024; // ~1 hour upper bound
+        const maxSize = getMaxUploadBytes();
 
         await fs.ensureDir(workDir);
 
@@ -79,7 +102,7 @@ export async function POST(req: NextRequest) {
             if (file.size > maxSize) {
                 throw new ValidationError("File size exceeds maximum allowed size", {
                     field: "file",
-                    maxSize: `${(maxSize / (1024 * 1024)).toFixed(0)}MB (approx 1 hour)`,
+                    maxSize: `${(maxSize / (1024 * 1024)).toFixed(0)}MB`,
                     actualSize: `${(file.size / (1024 * 1024)).toFixed(2)}MB`,
                 });
             }
@@ -127,7 +150,7 @@ export async function POST(req: NextRequest) {
                 if (!Number.isNaN(length) && length > maxSize) {
                     throw new ValidationError("Remote media exceeds maximum allowed size", {
                         field: "videoUrl",
-                        maxSize: `${(maxSize / (1024 * 1024)).toFixed(0)}MB (approx 1 hour)`,
+                        maxSize: `${(maxSize / (1024 * 1024)).toFixed(0)}MB`,
                         actualSize: `${(length / (1024 * 1024)).toFixed(2)}MB`,
                     });
                 }
@@ -138,7 +161,7 @@ export async function POST(req: NextRequest) {
             if (effectiveSize > maxSize) {
                 throw new ValidationError("Remote media exceeds maximum allowed size", {
                     field: "videoUrl",
-                    maxSize: `${(maxSize / (1024 * 1024)).toFixed(0)}MB (approx 1 hour)`,
+                    maxSize: `${(maxSize / (1024 * 1024)).toFixed(0)}MB`,
                     actualSize: `${(effectiveSize / (1024 * 1024)).toFixed(2)}MB`,
                 });
             }

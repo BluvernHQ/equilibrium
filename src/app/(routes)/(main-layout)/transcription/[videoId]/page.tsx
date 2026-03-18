@@ -1589,6 +1589,33 @@ export default function TranscriptionViewPage() {
                                 {isSaving ? "Saving..." : "Save"}
                             </button>
                         )}
+                        {/* Export PDF */}
+                        <button
+                            onClick={async () => {
+                                try {
+                                    if (!videoId) return;
+                                    const res = await fetch(`/api/transcriptions/${videoId}/export`);
+                                    if (!res.ok) {
+                                        throw new Error("Failed to export transcript");
+                                    }
+                                    const blob = await res.blob();
+                                    const url = window.URL.createObjectURL(blob);
+                                    const a = document.createElement("a");
+                                    a.href = url;
+                                    a.download = `${(title || "transcript").replace(/[^a-zA-Z0-9_\-\.]+/g, "_")}.pdf`;
+                                    document.body.appendChild(a);
+                                    a.click();
+                                    a.remove();
+                                    window.URL.revokeObjectURL(url);
+                                } catch (err) {
+                                    console.error(err);
+                                    showSnackbar("Failed to download PDF");
+                                }
+                            }}
+                            className="px-3 lg:px-4 py-1.5 lg:py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-xs lg:text-sm font-medium hover:bg-gray-50 transition"
+                        >
+                            Export
+                        </button>
                     </div>
                 </div>
 

@@ -675,9 +675,33 @@ export default function AutoTranscription({
                     <ArrowRightIcon className="w-4 h-4" />
                   </Link>
                 )}
-                <button className="px-3 lg:px-4 py-1.5 lg:py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-xs lg:text-sm font-medium hover:bg-gray-50 transition">
-                  Export
-                </button>
+                {videoId && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch(`/api/transcriptions/${videoId}/export`);
+                        if (!res.ok) {
+                          throw new Error("Failed to export transcript");
+                        }
+                        const blob = await res.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = "transcript.pdf";
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        window.URL.revokeObjectURL(url);
+                      } catch (err) {
+                        console.error(err);
+                        toast("Failed to download PDF", "error");
+                      }
+                    }}
+                    className="px-3 lg:px-4 py-1.5 lg:py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-xs lg:text-sm font-medium hover:bg-gray-50 transition"
+                  >
+                    Export
+                  </button>
+                )}
                 <button
                   onClick={() => setShowShortcuts(true)}
                   className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition"
@@ -753,7 +777,7 @@ export default function AutoTranscription({
               <div className="mb-6 flex flex-col items-center gap-3">
                 <div className="flex items-center gap-2 text-sm text-gray-500">
                   <div className="w-2 h-2 bg-[#00A3AF] rounded-full animate-pulse" />
-                  <span>Transcribing &amp; translating with Sarvam…</span>
+                  <span>Transcribing &amp; translating</span>
                 </div>
                 {/* Progress indicator for STT + translation */}
                 <div className="w-64 max-w-full">
