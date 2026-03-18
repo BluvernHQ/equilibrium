@@ -52,6 +52,55 @@ export const EditModal = ({ isOpen, title, initialValue, onClose, onSave }: Edit
   );
 };
 
+interface MergeConfirmModalProps {
+  isOpen: boolean;
+  newName: string;
+  existingMasterName: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+export const MergeConfirmModal = ({ isOpen, newName, existingMasterName, onConfirm, onCancel }: MergeConfirmModalProps) => {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fadeIn">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="p-2 bg-cyan-100 rounded-full flex-shrink-0">
+            <svg className="w-5 h-5 text-[#00A3AF]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+          </div>
+          <h3 className="text-base font-bold text-gray-900">Master Tag Already Exists</h3>
+        </div>
+
+        <p className="text-sm text-gray-600 mb-2">
+          A Master Tag named <span className="font-semibold text-gray-800">&ldquo;{existingMasterName}&rdquo;</span> already exists.
+        </p>
+        <p className="text-sm text-gray-600 mb-5">
+          Do you want to <span className="font-semibold text-[#00A3AF]">connect these tags with a dotted line</span>? Both groups will keep their own primary tags and remain independent — they will just be visually linked because they share the same name.
+        </p>
+
+        <div className="flex justify-end gap-3">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+          >
+            Cancel Rename
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 text-sm font-medium text-white bg-[#00A3AF] rounded-lg hover:bg-[#008C97] transition-colors shadow-sm"
+          >
+            Connect with Dotted Line
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 interface DeleteModalProps {
   isOpen: boolean;
   title: string;

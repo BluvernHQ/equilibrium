@@ -8,12 +8,13 @@ export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
         const { 
-            action,           // 'move_primary' | 'move_to_section' | 'detach_from_section'
-            primaryTagId,     // For moving primary tags
-            impressionId,     // For moving section context
-            targetMasterTagId,// Target master tag (for move_primary)
-            targetSectionId,  // Target section (for move_to_section)
-            targetSubsectionId, // Target subsection (optional)
+            action,              // 'move_primary' | 'move_to_section' | 'detach_from_section' | 'merge_masters'
+            primaryTagId,        // For moving primary tags
+            impressionId,        // For moving section context
+            sourceMasterTagId,   // Source master tag (for merge_masters)
+            targetMasterTagId,   // Target master tag (for move_primary / merge_masters)
+            targetSectionId,     // Target section (for move_to_section)
+            targetSubsectionId,  // Target subsection (optional)
         } = body;
 
         if (!action) {
@@ -142,6 +143,64 @@ export async function POST(req: NextRequest) {
                             subsectionId: null,
                         },
                         message: "Tag detached from section"
+                    };
+                }
+
+                case 'merge_masters': {
+                    // Merge all primaries, impressions, and branch tags from source into target, then delete source
+                    if (!sourceMasterTagId || !targetMasterTagId) {
+                        throw new Error("Source and target master tag IDs are required");
+                    }
+                    if (sourceMasterTagId === targetMasterTagId) {
+                        throw new Error("Source and target master tags must be different");
+                    }
+
+                    const targetMaster = await tx.masterTag.findUnique({ where: { id: targetMasterTagId } });
+                    if (!targetMaster) throw new Error("Target master tag not found");
+
+                    const sourceMaster = await tx.masterTag.findUnique({ where: { id: sourceMasterTagId } });
+                    if (!sourceMaster) throw new Error("Source master tag not found");
+
+                    // 1. Reassign all primary tags from source to target
+                    await tx.primaryTag.updateMany({
+                        where: { master_tag_id: sourceMasterTagId },
+                        data: { master_tag_id: targetMasterTagId },
+                    });
+
+                    // 2. Reassign all tag impressions from source to target
+                    await tx.tagImpression.updateMany({
+                        where: { master_tag_id: sourceMasterTagId },
+                        data: { master_tag_id: targetMasterTagId },
+                    });
+
+                    // 3. Move branch tags — skip duplicates (case-insensitive)
+                    const targetBranches = await tx.branchTag.findMany({
+                        where: { master_tag_id: targetMasterTagId },
+                    });
+                    const targetBranchNames = new Set(targetBranches.map((b: any) => b.name.toLowerCase()));
+                    const sourceBranches = await tx.branchTag.findMany({
+                        where: { master_tag_id: sourceMasterTagId },
+                    });
+                    for (const branch of sourceBranches) {
+                        if (targetBranchNames.has(branch.name.toLowerCase())) {
+                            await tx.branchTag.delete({ where: { id: branch.id } });
+                        } else {
+                            await tx.branchTag.update({
+                                where: { id: branch.id },
+                                data: { master_tag_id: targetMasterTagId },
+                            });
+                        }
+                    }
+
+                    // 4. Delete the now-empty source master tag
+                    await tx.masterTag.delete({ where: { id: sourceMasterTagId } });
+
+                    return {
+                        action: 'merge_masters',
+                        sourceMasterTagId,
+                        targetMasterTagId,
+                        targetMasterName: targetMaster.name,
+                        message: "Master tags merged successfully",
                     };
                 }
 

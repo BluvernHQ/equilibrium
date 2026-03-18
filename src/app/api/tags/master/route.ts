@@ -150,7 +150,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
     try {
         const body = await req.json();
-        const { id, action, description, color, icon, name } = body;
+        const { id, action, description, color, icon, name, forceDuplicate } = body;
 
         if (!id) {
             return NextResponse.json(
@@ -196,9 +196,12 @@ export async function PATCH(req: NextRequest) {
                 }
             });
             
-            if (nameExists && nameExists.id !== id) {
+            if (nameExists && nameExists.id !== id && !forceDuplicate) {
                 return NextResponse.json(
-                    { error: `Master tag "${name.trim()}" already exists` },
+                    {
+                        error: `Master tag "${name.trim()}" already exists`,
+                        existingTag: { id: nameExists.id, name: nameExists.name },
+                    },
                     { status: 409 }
                 );
             }

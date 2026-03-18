@@ -18,7 +18,7 @@ import {
 import { Speaker } from "@/modules/manual-transcription/components/speakers-carousel";
 import UserIcon from "../../../../public/icons/profile-circle.png";
 import MicrophoneIcon from "../../../../public/icons/spk-icon.png";
-import { DeleteModal } from "../components/action-modals";
+import { DeleteModal, MergeConfirmModal } from "../components/action-modals";
 import {
   MasterTagRow,
   PrimaryTagRow,
@@ -544,6 +544,15 @@ export default function Sessions() {
     primaryIndex?: number;
     impressionId?: string;
   }>({ isOpen: false, type: 'master', tagId: '' });
+
+  const [mergeDialog, setMergeDialog] = useState<{
+    isOpen: boolean;
+    sourceTagItemId: string;       // TagItem.id in local state
+    sourceMasterTagId: string;     // DB master tag ID being renamed
+    newName: string;               // The new name user typed
+    existingTagId: string;         // DB master tag ID of the existing same-name tag
+    existingTagName: string;       // Name of the existing master tag
+  } | null>(null);
 
   // Layout Refs
   const [leftRowHeights, setLeftRowHeights] = useState<number[]>([]);
@@ -2155,6 +2164,7 @@ export default function Sessions() {
   }, []);
 
 
+
   const getOffsetInBlock = useCallback((blockElement: Element, targetNode: Node, targetOffset: number): number => {
     const treeWalker = document.createTreeWalker(blockElement, NodeFilter.SHOW_TEXT, null);
     let charCount = 0;
@@ -2344,6 +2354,34 @@ export default function Sessions() {
     window.getSelection()?.removeAllRanges();
   }, [pending, masterCancelled, activeMasterTagId, tags, displayItems, getOffsetInBlock]);
 
+  // Global mouseup listener — catches selections that end outside any individual block div
+  // (e.g. user drags to the sidebar, a gap between blocks, or the speaker label row).
+  // The per-block onMouseUp handlers remain as an immediate fast-path.
+  // The duplicate-selection guard inside handleTextSelection prevents double-firing.
+  useEffect(() => {
+    const handleGlobalMouseUp = (e: MouseEvent) => {
+      // Ignore right-clicks — those fire onContextMenu separately
+      if (e.button !== 0) return;
+
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || !selection.toString().trim()) return;
+
+      // Only act if the selection actually covers at least one transcript block element
+      if (selection.rangeCount === 0) return;
+      const range = selection.getRangeAt(0);
+      const hasBlockInSelection = Array.from(document.querySelectorAll('[data-block-id]'))
+        .some(el => range.intersectsNode(el));
+      if (!hasBlockInSelection) return;
+
+      // handleTextSelection re-discovers the exact block(s) via DOM [data-block-id] queries.
+      // The messageIndex/blockId params here are just unused fallbacks.
+      handleTextSelection(0, undefined);
+    };
+
+    document.addEventListener('mouseup', handleGlobalMouseUp);
+    return () => document.removeEventListener('mouseup', handleGlobalMouseUp);
+  }, [handleTextSelection]);
+
   const handlePrimaryChange = (id: string, value: string) => {
     setPending((prev) =>
       prev.map((p) => (p.id === id ? { ...p, primaryInput: value } : p))
@@ -2426,51 +2464,88 @@ export default function Sessions() {
     const tag = tags.find(t => t.id === entryId);
     if (tag) {
       const primary = tag.primaryList[primaryIndex];
-
       const primaryTagId = primary?.id;
-      if (primaryTagId) {
-        try {
-          const res = await fetch('/api/tags/secondary', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ primaryTagId, name: trimmed })
-          });
-          if (res.ok) {
-            const data = await res.json();
-            setTags(prev => prev.map(t => {
-              if (t.id !== entryId) return t;
-              const newList = [...t.primaryList];
-              newList[primaryIndex] = {
-                ...newList[primaryIndex],
-                secondaryTags: [...(newList[primaryIndex].secondaryTags || []), { id: data.secondaryTag.id, value: trimmed }] // Append new secondary tag
-              };
-              return { ...t, primaryList: newList };
-            }));
-            // Clear input value but keep it open
-            setSecondaryInput({ entryId, primaryIndex, value: '' });
-          }
-        } catch (error) {
-          console.error("Error adding secondary tag:", error);
-        }
+      if (!primaryTagId) {
+        showToast("Secondary tags cannot be added to highlight entries", "error");
+        return;
       }
+
+      // Optimistic update — show chip immediately before API responds
+      const tempId = `temp-${Date.now()}`;
+      setTags(prev => prev.map(t => {
+        if (t.id !== entryId) return t;
+        const newList = [...t.primaryList];
+        newList[primaryIndex] = {
+          ...newList[primaryIndex],
+          secondaryTags: [...(newList[primaryIndex].secondaryTags || []), { id: tempId, value: trimmed }]
+        };
+        return { ...t, primaryList: newList };
+      }));
+      setSecondaryInput({ entryId, primaryIndex, value: '' });
+
+      try {
+        const res = await fetch('/api/tags/secondary', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ primaryTagId, name: trimmed })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          // Replace temp ID with real DB id
+          setTags(prev => prev.map(t => {
+            if (t.id !== entryId) return t;
+            const newList = [...t.primaryList];
+            newList[primaryIndex] = {
+              ...newList[primaryIndex],
+              secondaryTags: (newList[primaryIndex].secondaryTags || []).map(s =>
+                s.id === tempId ? { id: data.secondaryTag.id, value: trimmed } : s
+              )
+            };
+            return { ...t, primaryList: newList };
+          }));
+        } else {
+          // Rollback optimistic update
+          setTags(prev => prev.map(t => {
+            if (t.id !== entryId) return t;
+            const newList = [...t.primaryList];
+            newList[primaryIndex] = {
+              ...newList[primaryIndex],
+              secondaryTags: (newList[primaryIndex].secondaryTags || []).filter(s => s.id !== tempId)
+            };
+            return { ...t, primaryList: newList };
+          }));
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || "Failed to add secondary tag", "error");
+        }
+      } catch (error) {
+        // Rollback optimistic update
+        setTags(prev => prev.map(t => {
+          if (t.id !== entryId) return t;
+          const newList = [...t.primaryList];
+          newList[primaryIndex] = {
+            ...newList[primaryIndex],
+            secondaryTags: (newList[primaryIndex].secondaryTags || []).filter(s => s.id !== tempId)
+          };
+          return { ...t, primaryList: newList };
+        }));
+        console.error("Error adding secondary tag:", error);
+      }
+      return;
     }
 
-    // 2. Handle pending tag (state update only)
+    // 2. Handle pending tag (state update only — no DB call needed until final save)
     setPending(prev => prev.map(p => {
       if (p.id !== entryId) return p;
-
       const newPrimaryList = [...p.primaryList];
-      const primary = newPrimaryList[primaryIndex];
-      if (primary) {
+      const prim = newPrimaryList[primaryIndex];
+      if (prim) {
         newPrimaryList[primaryIndex] = {
-          ...primary,
-          secondaryTags: [...(primary.secondaryTags || []), { value: trimmed }] // Append new secondary tag
+          ...prim,
+          secondaryTags: [...(prim.secondaryTags || []), { value: trimmed }]
         };
       }
       return { ...p, primaryList: newPrimaryList };
     }));
-
-    // Clear input value but keep it open for adding more tags
     setSecondaryInput({ entryId, primaryIndex, value: '' });
   };
 
@@ -2505,7 +2580,8 @@ export default function Sessions() {
     const tag = tags.find(t => t.id === entryId);
     if (tag) {
       const secTagId = tag.primaryList[primaryIndex]?.secondaryTags?.[secondaryIndex]?.id;
-      if (secTagId) {
+      // Skip DB call for optimistic temp entries that haven't been persisted yet
+      if (secTagId && !secTagId.startsWith('temp-')) {
         try {
           await fetch(`/api/tags/secondary?id=${secTagId}`, { method: 'DELETE' });
         } catch (error) {
@@ -2554,68 +2630,95 @@ export default function Sessions() {
     const trimmed = value.trim();
     if (!trimmed) return;
 
-    // 1. Handle saved tag (database update)
+    // 1. Handle saved tag
     const tag = tags.find(t => t.id === tagId);
     if (tag) {
-      const masterTagId = tag?.masterTagId;
+      const masterTagId = tag.masterTagId;
+      if (!masterTagId) return;
 
-      if (masterTagId) {
-        try {
-          const res = await fetch('/api/tags/branch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ masterTagId, name: trimmed })
-          });
-          if (res.ok) {
-            const data = await res.json();
-            setTags(prev => prev.map(t => {
-              if (t.id !== tagId) return t;
-              return {
-                ...t,
-                branchTags: [...(t.branchTags || []), { id: data.branchTag.id, name: trimmed }] // Append new branch tag
-              };
-            }));
-            // Clear input value but keep it open
-            setBranchInput({ tagId, value: '' });
-          } else {
-            const err = await res.json();
-            showToast(err.error || "Failed to add branch tag", "error");
-          }
-        } catch (error) {
-          console.error("Error adding branch tag:", error);
+      // Optimistic update — show chip immediately, before the API responds
+      const tempId = `temp-${Date.now()}`;
+      const optimisticBranch = { id: tempId, name: trimmed };
+      setTags(prev => prev.map(t =>
+        (t.masterTagId === masterTagId || t.id === masterTagId)
+          ? { ...t, branchTags: [...(t.branchTags || []), optimisticBranch] }
+          : t
+      ));
+      setBranchInput({ tagId, value: '' });
+
+      try {
+        const res = await fetch('/api/tags/branch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ masterTagId, name: trimmed })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          // Replace the temp ID with the real DB id
+          setTags(prev => prev.map(t =>
+            (t.masterTagId === masterTagId || t.id === masterTagId)
+              ? { ...t, branchTags: (t.branchTags || []).map(b => b.id === tempId ? { id: data.branchTag.id, name: trimmed } : b) }
+              : t
+          ));
+        } else {
+          // Rollback optimistic update
+          setTags(prev => prev.map(t =>
+            (t.masterTagId === masterTagId || t.id === masterTagId)
+              ? { ...t, branchTags: (t.branchTags || []).filter(b => b.id !== tempId) }
+              : t
+          ));
+          const err = await res.json().catch(() => ({}));
+          showToast(err.error || "Failed to add branch tag", "error");
         }
+      } catch (error) {
+        // Rollback optimistic update
+        setTags(prev => prev.map(t =>
+          (t.masterTagId === masterTagId || t.id === masterTagId)
+            ? { ...t, branchTags: (t.branchTags || []).filter(b => b.id !== tempId) }
+            : t
+        ));
+        console.error("Error adding branch tag:", error);
       }
+      return;
     }
 
-    // 2. Handle pending tag (state update only)
+    // 2. Handle pending tag (state update only — no DB call needed until final save)
     setPending(prev => prev.map(p => {
       if (p.id !== tagId) return p;
-      return {
-        ...p,
-        branchTags: [...(p.branchTags || []), { value: trimmed }] // Append new branch tag
-      };
+      return { ...p, branchTags: [...(p.branchTags || []), { value: trimmed }] };
     }));
-
-    // Clear input value but keep it open for adding more tags
     setBranchInput({ tagId, value: '' });
   };
 
   const removeBranchTag = async (tagId: string, branchId?: string, branchIdx?: number) => {
     // 1. Handle saved tag
     const tag = tags.find(t => t.id === tagId);
-    if (tag && branchId) {
-      try {
-        await fetch(`/api/tags/branch?id=${branchId}`, { method: 'DELETE' });
-        setTags(prev => prev.map(t => {
-          if (t.id !== tagId) return t;
-          return {
-            ...t,
-            branchTags: (t.branchTags || []).filter(b => b.id !== branchId)
-          };
-        }));
-      } catch (error) {
-        console.error("Error deleting branch tag:", error);
+    if (tag) {
+      if (branchId) {
+        // Skip DB call for optimistic temp entries that haven't been persisted yet
+        if (branchId.startsWith('temp-')) {
+          const masterTagId = tag.masterTagId;
+          setTags(prev => prev.map(t =>
+            (t.masterTagId === masterTagId || t.id === masterTagId)
+              ? { ...t, branchTags: (t.branchTags || []).filter(b => b.id !== branchId) }
+              : t
+          ));
+          return;
+        }
+        try {
+          await fetch(`/api/tags/branch?id=${branchId}`, { method: 'DELETE' });
+          const masterTagId = tag.masterTagId;
+          // Remove from ALL TagItems sharing the same masterTagId so every card stays in sync
+          setTags(prev => prev.map(t =>
+            (t.masterTagId === masterTagId || t.id === masterTagId)
+              ? { ...t, branchTags: (t.branchTags || []).filter(b => b.id !== branchId) }
+              : t
+          ));
+        } catch (error) {
+          console.error("Error deleting branch tag:", error);
+        }
       }
+      return; // saved-tag path handled
     }
 
     // 2. Handle pending tag
@@ -2641,6 +2744,7 @@ export default function Sessions() {
           transcriptId,
           blockIds: tag.blockIds,
           masterTagName: tag.master,
+          masterTagId: tag.masterTagId,
           primaryTags: [{
             name: trimmed,
             blockIds: tag.blockIds,
@@ -2767,10 +2871,12 @@ export default function Sessions() {
     setMasterComment("");
     setMasterConfirmed(false);
     setMasterCancelled(true);
-    setMasterNameError(false); // Clear error on cancel
-    setDbPrimaryTags([]); // Clear suggestions
-    setActiveMasterTagId(null); // Clear active master (isolation fix)
-    setEditingMasterName(null); // Clear editing context
+    setMasterNameError(false);
+    setDbPrimaryTags([]);
+    setActiveMasterTagId(null);
+    setEditingMasterName(null);
+    // Clear all pending entries — nothing should remain after cancel
+    setPending([]);
   };
 
   const handleEditMaster = () => {
@@ -2887,6 +2993,7 @@ export default function Sessions() {
     let savedMasterTagId: string | undefined;
     const savedImpressions: Array<{
       impressionId: string;
+      primaryTagId?: string | null;
       primaryTagName: string;
       instanceIndex?: number;
       displayName?: string;
@@ -2941,6 +3048,7 @@ export default function Sessions() {
             for (const imp of data.impressions) {
               savedImpressions.push({
                 impressionId: imp.id,
+                primaryTagId: imp.primaryTagId,
                 primaryTagName: imp.primaryTagName,
                 instanceIndex: imp.instanceIndex,
                 displayName: imp.displayName,
@@ -2989,7 +3097,7 @@ export default function Sessions() {
         ? p.primaryList.map((val, valIdx) => {
           const imp = entryImpressions[valIdx];
           return {
-            id: val.id,
+            id: imp?.primaryTagId ?? val.id,  // use DB-returned primary tag ID
             value: val.value,
             comment: val.comment,
             messageIndex: p.messageIndex,
@@ -3266,30 +3374,55 @@ export default function Sessions() {
     setEditingItem({ id: null, type: null, index: null, tempValue: "" });
   };
 
-  const saveEditing = async () => {
+  const saveEditing = async (overrideTempValue?: string) => {
     const { id, type, index, tempValue } = editingItem;
     if (!id || !type) return;
 
-    const trimmedVal = tempValue.trim();
+    const trimmedVal = (overrideTempValue !== undefined ? overrideTempValue : tempValue).trim();
 
     try {
       if (type === 'master') {
-        // 1. Update Master Tag record in DB
         const masterTagId = tags.find(t => t.id === id)?.masterTagId;
+
+        // 1. Attempt to rename Master Tag in DB
         if (masterTagId) {
-          await fetch('/api/tags/master', {
+          const res = await fetch('/api/tags/master', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ id: masterTagId, name: trimmedVal })
           });
+
+          if (res.status === 409) {
+            // Duplicate name detected — ask user if they want to merge/connect
+            const errData = await res.json();
+            const existingTag = errData.existingTag;
+            if (existingTag) {
+              setMergeDialog({
+                isOpen: true,
+                sourceTagItemId: id,
+                sourceMasterTagId: masterTagId,
+                newName: trimmedVal,
+                existingTagId: existingTag.id,
+                existingTagName: existingTag.name,
+              });
+            } else {
+              showToast(errData.error || "A Master Tag with that name already exists", "error");
+            }
+            return; // Do not proceed with local update
+          }
+
+          if (!res.ok) {
+            const errData = await res.json();
+            showToast(errData.error || "Failed to rename Master Tag", "error");
+            return;
+          }
         }
+
         // 2. Update local state for ALL tags sharing this masterTagId (Rule 2.2)
-        const targetMasterId = tags.find(t => t.id === id)?.masterTagId || id;
+        const targetMasterId = masterTagId || id;
         setTags(prev => prev.map(t => (t.masterTagId === targetMasterId || t.id === targetMasterId) ? { ...t, master: trimmedVal } : t));
 
-        // 3. Exit Master Workspace Mode (Close Master)
-
-        // CRITICAL: Only clear activeMasterTagId, don't affect other masters
+        // 3. Exit Master Workspace Mode
         setActiveMasterTagId(null);
         setEditingMasterName(null);
       }
@@ -3365,6 +3498,7 @@ export default function Sessions() {
       else if (type === 'master_branch' && index !== null) {
         const tag = tags.find(t => t.id === id);
         const branchTagId = tag?.branchTags?.[index]?.id;
+        const masterTagId = tag?.masterTagId;
         if (branchTagId) {
           await fetch('/api/tags/branch', {
             method: 'PATCH',
@@ -3372,10 +3506,14 @@ export default function Sessions() {
             body: JSON.stringify({ id: branchTagId, name: trimmedVal })
           });
         }
+        // Rename on ALL TagItems sharing the same masterTagId so every card stays in sync
         setTags(prev => prev.map(t => {
-          if (t.id !== id || !t.branchTags) return t;
+          if (!t.branchTags) return t;
+          if (masterTagId ? (t.masterTagId !== masterTagId && t.id !== masterTagId) : t.id !== id) return t;
+          const branchIdx = t.branchTags.findIndex(b => b.id === branchTagId);
+          if (branchIdx === -1) return t;
           const newList = [...t.branchTags];
-          newList[index] = { ...newList[index], name: trimmedVal };
+          newList[branchIdx] = { ...newList[branchIdx], name: trimmedVal };
           return { ...t, branchTags: newList };
         }));
       }
@@ -3405,6 +3543,50 @@ export default function Sessions() {
       showToast("Failed to save changes", "error");
     }
     cancelEditing();
+  };
+
+  const handleConfirmMerge = async () => {
+    if (!mergeDialog) return;
+    const { sourceMasterTagId, newName } = mergeDialog;
+
+    try {
+      // Force-rename: bypass the uniqueness check so both masters share the same name.
+      // The dotted-line system will automatically connect them visually because
+      // masterTagMetadata detects same-name / different-ID tags and sets hasDuplicateName = true.
+      const res = await fetch('/api/tags/master', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: sourceMasterTagId, name: newName, forceDuplicate: true }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        showToast(errData.error || "Failed to rename Master Tag", "error");
+        return;
+      }
+
+      // Update local state: rename this master tag's name in all its TagItems
+      setTags(prev => prev.map(t =>
+        (t.masterTagId === sourceMasterTagId || t.id === sourceMasterTagId)
+          ? { ...t, master: newName }
+          : t
+      ));
+
+      showToast("Master Tags connected with dotted line!", "success");
+    } catch (error) {
+      console.error("Connect master tags error:", error);
+      showToast("Error connecting Master Tags", "error");
+    } finally {
+      setMergeDialog(null);
+      cancelEditing();
+      setActiveMasterTagId(null);
+      setEditingMasterName(null);
+    }
+  };
+
+  const handleCancelMerge = () => {
+    setMergeDialog(null);
+    // Keep the editing state intact so user can try a different name
   };
 
   const initiateDeleteMaster = (id: string) => {
@@ -3767,6 +3949,14 @@ export default function Sessions() {
           : "Are you sure you want to delete this primary tag?"}
         onClose={() => setDeleteState({ ...deleteState, isOpen: false })}
         onConfirm={handleConfirmDelete}
+      />
+
+      <MergeConfirmModal
+        isOpen={!!mergeDialog?.isOpen}
+        newName={mergeDialog?.newName || ""}
+        existingMasterName={mergeDialog?.existingTagName || ""}
+        onConfirm={handleConfirmMerge}
+        onCancel={handleCancelMerge}
       />
 
       <main className="flex-1 flex flex-col h-full overflow-hidden">
@@ -4556,7 +4746,7 @@ export default function Sessions() {
                                     onAddPrimary={tag.primaryList.length === 0 ? () => togglePrimaryInput(tag.id) : undefined}
                                     onSave={(newName) => {
                                       setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                      saveEditing();
+                                      saveEditing(newName);
                                     }}
                                     onCancel={() => {
                                       // CRITICAL: Only clear activeMasterTagId if it matches this tag
@@ -4590,7 +4780,7 @@ export default function Sessions() {
                                                   onDelete={() => removeBranchTag(tag.id, b.id)}
                                                   onSave={(newName) => {
                                                     setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                                    saveEditing();
+                                                    saveEditing(newName);
                                                   }}
                                                   onCancel={cancelEditing}
                                                 />
@@ -4655,7 +4845,7 @@ export default function Sessions() {
                                           onEdit={() => startEditing(tag.id, 'primary', p.value, p.originalIndex)}
                                           onDelete={() => initiateDeletePrimary(tag.id, p.originalIndex, p.impressionId)}
                                           onComment={() => startEditing(tag.id, 'primary_comment', p.comment || "", p.originalIndex)}
-                                          onAdd={isEditingPrimary ? () => toggleSecondaryInput(tag.id, p.originalIndex) : undefined}
+                                          onAdd={isEditingPrimary && p.id ? () => toggleSecondaryInput(tag.id, p.originalIndex) : undefined}
                                           onClick={() => {
                                             // Collect all block IDs for this specific primary tag
                                             const primaryBlockIds = new Set<string>();
@@ -4684,7 +4874,7 @@ export default function Sessions() {
                                           }}
                                           onSave={(newName) => {
                                             setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                            saveEditing();
+                                            saveEditing(newName);
                                           }}
                                           onCancel={cancelEditing}
                                         />
@@ -4723,7 +4913,7 @@ export default function Sessions() {
                                                   onDelete={() => removeSecondaryTag(tag.id, p.originalIndex, secIdx)}
                                                   onSave={(newName) => {
                                                     setEditingItem(prev => ({ ...prev, tempValue: newName }));
-                                                    saveEditing();
+                                                    saveEditing(newName);
                                                   }}
                                                   onCancel={cancelEditing}
                                                 />
@@ -4744,8 +4934,8 @@ export default function Sessions() {
                                     </TagRowLayout>
                                   )}
 
-                                  {/* Secondary Tag Input Slot */}
-                                  {secondaryInput?.entryId === tag.id && secondaryInput?.primaryIndex === p.originalIndex && (
+                                  {/* Secondary Tag Input Slot — only for real primaries (not highlights) */}
+                                  {secondaryInput?.entryId === tag.id && secondaryInput?.primaryIndex === p.originalIndex && p.id && (
                                     <ReservedEditSlotRow
                                       level={2}
                                       placeholder="Add secondary tag..."
@@ -4764,7 +4954,7 @@ export default function Sessions() {
                                       initialValue={editingItem.tempValue}
                                       onSave={(val: string) => {
                                         setEditingItem(prev => ({ ...prev, tempValue: val }));
-                                        saveEditing();
+                                        saveEditing(val);
                                       }}
                                       onCancel={cancelEditing}
                                     />
@@ -5008,7 +5198,7 @@ export default function Sessions() {
                                         }}
                                         className="flex-1 px-2 py-1 text-[10px] border border-[#00A3AF] rounded focus:outline-none"
                                       />
-                                      <button onClick={saveEditing} className="p-0.5 hover:bg-[#E0F7FA] rounded" title="Save comment">
+                                      <button onClick={() => saveEditing()} className="p-0.5 hover:bg-[#E0F7FA] rounded" title="Save comment">
                                         <CheckIcon className="w-3 h-3 text-[#00A3AF]" />
                                       </button>
                                       <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded" title="Cancel editing comment">
@@ -5046,7 +5236,7 @@ export default function Sessions() {
                               </div>
                             )}
 
-                            {!entry.primaryInputClosed && (
+                            {!entry.primaryInputClosed && !masterCancelled && (
                               <div className="flex flex-col w-full relative">
                                 <div className="flex items-center gap-2 w-full">
                                   <div className="relative flex-1">
@@ -5107,7 +5297,11 @@ export default function Sessions() {
                                       </div>
                                     )}
                                   </div>
-                                  <button onClick={() => handleInitiateAddPrimary(entry.id)} className="px-4 py-2 bg-[#00A3AF] text-white rounded-lg text-sm font-medium" title="Add primary tag">+</button>
+                                  <button
+                                    onClick={() => masterInput.trim() ? handleInitiateAddPrimary(entry.id) : (setMasterNameError(true), showToast("Enter a Master Tag name first", "error"))}
+                                    className={`px-4 py-2 rounded-lg text-sm font-medium ${masterInput.trim() ? 'bg-[#00A3AF] text-white' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+                                    title={masterInput.trim() ? "Add primary tag" : "Enter a master tag name first"}
+                                  >+</button>
                                 </div>
                               </div>
                             )}
@@ -5138,7 +5332,7 @@ export default function Sessions() {
                                                   }}
                                                   className="flex-1 px-2 py-1 text-xs font-semibold border border-[#00A3AF] rounded focus:outline-none"
                                                 />
-                                                <button onClick={saveEditing} className="p-0.5 hover:bg-[#E0F7FA] rounded" title="Save primary tag">
+                                                <button onClick={() => saveEditing()} className="p-0.5 hover:bg-[#E0F7FA] rounded" title="Save primary tag">
                                                   <CheckIcon className="w-3 h-3 text-[#00A3AF]" />
                                                 </button>
                                                 <button onClick={cancelEditing} className="p-0.5 hover:bg-gray-100 rounded" title="Cancel editing primary tag">
@@ -5180,16 +5374,14 @@ export default function Sessions() {
                                           <div className="flex items-center gap-1 mt-1">
                                             {editingItem.id === entry.id && editingItem.type === 'pending_primary' && editingItem.index === pIndex ? null : (
                                               <>
-                                                {/* Add Secondary Tag Button - Limit to 1 */}
-                                                {(!p.secondaryTags || p.secondaryTags.length === 0) && (
-                                                  <button
-                                                    onClick={() => toggleSecondaryInput(entry.id, pIndex)}
-                                                    className="p-1 hover:bg-gray-100 rounded text-gray-400"
-                                                    title="Add secondary tag"
-                                                  >
-                                                    <PlusIcon className="w-3.5 h-3.5" />
-                                                  </button>
-                                                )}
+                                                {/* Add Secondary Tag Button */}
+                                                <button
+                                                  onClick={() => toggleSecondaryInput(entry.id, pIndex)}
+                                                  className="p-1 hover:bg-gray-100 rounded text-gray-400"
+                                                  title="Add secondary tag"
+                                                >
+                                                  <PlusIcon className="w-3.5 h-3.5" />
+                                                </button>
 
                                                 <button
                                                   onClick={() => startEditing(entry.id, 'pending_primary', p.value, pIndex)}

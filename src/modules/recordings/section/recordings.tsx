@@ -224,84 +224,73 @@ export default function Recordings() {
     setLoadingVideos(true);
     try {
       const dbUrl = folderId ? `/api/videos/db?folderId=${folderId}` : "/api/videos/db?folderId=root";
-      const [spacesResponse, dbResponse] = await Promise.all([
-        fetch("/api/videos"),
-        fetch(dbUrl),
-      ]);
-      const spacesData = spacesResponse.ok ? await spacesResponse.json() : { videos: [] };
-      const dbData = dbResponse.ok ? await dbResponse.json() : { videos: [] };
 
-      // Merge data: use Spaces as source of truth, enrich with DB data
-      const spacesVideos = spacesData.videos || [];
-      const dbVideos = dbData.videos || [];
-
-      // Create multiple lookup maps for matching
-      const dbVideosByKey = new Map(
-        dbVideos.filter((v: any) => v.fileKey).map((v: any) => [v.fileKey, v])
-      );
-
-      // Also match by source_url containing the video filename
-      const findDbVideo = (spacesVideo: VideoItem) => {
-        // First try by fileKey
-        if (dbVideosByKey.has(spacesVideo.key)) {
-          return dbVideosByKey.get(spacesVideo.key);
-        }
-        // Then try matching by source_url containing the filename
-        const filename = spacesVideo.fileName || spacesVideo.key.split('/').pop();
-        return dbVideos.find((v: any) =>
-          v.source_url?.includes(filename) ||
-          v.fileUrl?.includes(filename)
-        );
-      };
-
-      // If we're in a specific folder, only show videos that belong to it in the DB
-      // Note: Spaces videos are always in "Equilibrium/" prefix. 
-      // If we're in root, we might want to show videos not in any DB folder yet.
-      // If we're in a folder, we only show videos that the DB says are in that folder.
-      
+      // When inside a specific folder, we only need DB-backed videos for that folder.
+      // Skip the Spaces listing to avoid unnecessary network I/O.
       let mergedVideos: VideoItem[] = [];
-      
-      if (folderId) {
-          // In a subfolder, only show videos explicitly assigned to it in DB
-          mergedVideos = dbVideos.map((dbVideo: any) => {
-              // Find matching spaces video for the URL
-              const spacesVideo = spacesVideos.find((sv: any) => 
-                  sv.key === dbVideo.fileKey || 
-                  sv.fileName === dbVideo.fileName
-              );
-              
-              return {
-                  key: dbVideo.fileKey || `db-${dbVideo.id}`,
-                  fileName: dbVideo.fileName,
-                  url: spacesVideo?.url || dbVideo.source_url || dbVideo.fileUrl,
-                  size: parseInt(dbVideo.fileSize || "0"),
-                  lastModified: dbVideo.createdAt,
-                  id: dbVideo.id,
-                  hasTranscription: dbVideo.hasTranscript || false,
-                  transcriptionType: dbVideo.latestTranscript?.transcription_type,
-                  hasSession: dbVideo.hasSession || false,
-                  source_type: dbVideo.source_type,
-              };
-          });
-      } else {
-          // In root, show videos assigned to root in DB AND videos not in DB yet (orphans)
-          mergedVideos = spacesVideos.map((video: VideoItem) => {
-            const dbVideo = findDbVideo(video);
-            
-            // If dbVideo exists but is in a folder, don't show it in root
-            if (dbVideo && dbVideo.folder_id) {
-                return null;
-            }
 
-            return {
-              ...video,
-              id: dbVideo?.id,
-              hasTranscription: dbVideo?.hasTranscript || false,
-              transcriptionType: dbVideo?.latestTranscript?.transcription_type,
-              hasSession: dbVideo?.hasSession || false,
-              source_type: dbVideo?.source_type,
-            };
-          }).filter(Boolean) as VideoItem[];
+      if (folderId) {
+        const dbResponse = await fetch(dbUrl);
+        const dbData = dbResponse.ok ? await dbResponse.json() : { videos: [] };
+        const dbVideos = dbData.videos || [];
+
+        mergedVideos = dbVideos.map((dbVideo: any) => ({
+          key: dbVideo.fileKey || `db-${dbVideo.id}`,
+          fileName: dbVideo.fileName,
+          url: dbVideo.source_url || dbVideo.fileUrl || "",
+          size: parseInt(dbVideo.fileSize || "0"),
+          lastModified: dbVideo.createdAt,
+          id: dbVideo.id,
+          hasTranscription: dbVideo.hasTranscript || false,
+          transcriptionType: dbVideo.latestTranscript?.transcription_type,
+          hasSession: dbVideo.hasSession || false,
+          source_type: dbVideo.source_type,
+        }));
+      } else {
+        // In root, we still merge Spaces listing with DB metadata so users can see
+        // orphaned uploads that are not yet attached to any project.
+        const [spacesResponse, dbResponse] = await Promise.all([
+          fetch("/api/videos"),
+          fetch(dbUrl),
+        ]);
+        const spacesData = spacesResponse.ok ? await spacesResponse.json() : { videos: [] };
+        const dbData = dbResponse.ok ? await dbResponse.json() : { videos: [] };
+
+        const spacesVideos = spacesData.videos || [];
+        const dbVideos = dbData.videos || [];
+
+        const dbVideosByKey = new Map(
+          dbVideos.filter((v: any) => v.fileKey).map((v: any) => [v.fileKey, v])
+        );
+
+        const findDbVideo = (spacesVideo: VideoItem) => {
+          if (dbVideosByKey.has(spacesVideo.key)) {
+            return dbVideosByKey.get(spacesVideo.key);
+          }
+          const filename = spacesVideo.fileName || spacesVideo.key.split('/').pop();
+          return dbVideos.find((v: any) =>
+            v.source_url?.includes(filename) ||
+            v.fileUrl?.includes(filename)
+          );
+        };
+
+        mergedVideos = spacesVideos.map((video: VideoItem) => {
+          const dbVideo = findDbVideo(video);
+
+          // If dbVideo exists but is in a folder, don't show it in root
+          if (dbVideo && dbVideo.folder_id) {
+            return null;
+          }
+
+          return {
+            ...video,
+            id: dbVideo?.id,
+            hasTranscription: dbVideo?.hasTranscript || false,
+            transcriptionType: dbVideo?.latestTranscript?.transcription_type,
+            hasSession: dbVideo?.hasSession || false,
+            source_type: dbVideo?.source_type,
+          };
+        }).filter(Boolean) as VideoItem[];
       }
 
       setVideos(mergedVideos);
@@ -1413,7 +1402,20 @@ export default function Recordings() {
               </button>
             </div>
             <div className="aspect-video bg-black rounded-lg overflow-hidden relative">
-              {videoError ? (
+              {selectedVideo.source_type === 'merged' ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 text-center p-6">
+                  <div className="w-16 h-16 bg-emerald-500/10 rounded-full flex items-center justify-center mb-4">
+                    <DocumentDuplicateIcon className="w-8 h-8 text-emerald-400" />
+                  </div>
+                  <h3 className="text-white font-medium mb-2">Merged Transcription Only</h3>
+                  <p className="text-gray-400 text-sm max-w-sm">
+                    This item is a merged transcript created from multiple recordings, so there&apos;s no single video or audio file to play back.
+                  </p>
+                  <p className="text-gray-500 text-xs mt-4">
+                    You can still open the transcript and tagging view to work with the combined text.
+                  </p>
+                </div>
+              ) : videoError ? (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 text-center p-6">
                   <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mb-4">
                     <XCircleIcon className="w-10 h-10 text-red-500" />
@@ -1434,7 +1436,11 @@ export default function Recordings() {
                   autoPlay
                   onError={(e) => {
                     const video = e.currentTarget;
-                    if (video.error?.code === video.error?.MEDIA_ERR_SRC_NOT_SUPPORTED || selectedVideo.fileName?.toLowerCase().endsWith('.mts') || selectedVideo.fileName?.toLowerCase().endsWith('.m2ts')) {
+                    if (
+                      video.error?.code === video.error?.MEDIA_ERR_SRC_NOT_SUPPORTED ||
+                      selectedVideo.fileName?.toLowerCase().endsWith('.mts') ||
+                      selectedVideo.fileName?.toLowerCase().endsWith('.m2ts')
+                    ) {
                       setVideoError("This video format (.MTS) is not supported by your browser for direct playback.");
                     } else {
                       setVideoError("An error occurred while trying to play this video.");
